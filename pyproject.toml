@@ -1,0 +1,30 @@
+[project]
+name = "mindmap"
+version = "0.0.1"
+description = "Python package to do EEG source reconstruction."
+authors = [
+    {name = "Nino Herve", email = "herve.nino@gmail.com"},
+]
+dependencies = [
+    "numpy>=0.0.1",
+    "mne>=0.0.1",
+    "nibabel>=0.0.1",
+    "pyyaml>=0.0.1",
+    "pandas>=0.0.1",
+    "antspyx>=0.0.1",
+    "h5py>=0.0.1",
+    "pygsp>=0.0.1",
+    "gpytoolbox>=0.0.1",
+]
+
+[project.optional-dependencies]
+eval = [
+    "jupyter>=0.0.1",
+    "pyvista[all]>=0.0.1",
+    "pyqt5>=0.0.1",         # pyqt6 did not work for 3d backend.
+    "pyvistaqt>=0.0.1",
+]
+test = ["pytest>=0.0.1"]
+
+[tool.setuptools]
+py-modules = ["mindmap"]
