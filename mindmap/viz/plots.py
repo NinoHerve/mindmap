@@ -1,0 +1,135 @@
+import nibabel as nib
+import numpy as np
+import matplotlib.pyplot as plt
+import pyvista as pv
+import mindmap as mm
+
+
+def show_slices(
+        volume: np.ndarray | nib.Nifti1Image, 
+        slice_indices: list[int] = None, 
+        axis: int = 2,
+        cmap: str = "gray",
+) -> None:
+    """
+    Display slices from a volume.
+
+    Parameters
+    ----------
+    volume: nib.Nifti1Image
+        Volume.
+
+    slice_indices: list[int]
+        List of slice indices to display. If None, defaults to the middle slice.
+
+    axis: int
+        Axis along which to slice (0,1 or 2).
+
+    cmap: str
+        Color map.
+    """
+    if isinstance(volume, nib.Nifti1Image):
+        volume = volume.get_fdata()
+
+    if slice_indices == None:
+        slice_indices = [volume.shape[axis]//2] # default
+
+    fig, axes = plt.subplots(1, len(slice_indices), figsize=(15,5))
+
+    if len(slice_indices) == 1:
+        axes = [axes]
+
+    for i, slice_idx in enumerate(slice_indices):
+        if axis == 0:
+            slice_vol = volume[slice_idx, :, :]
+        elif axis == 1:
+            slice_vol = volume[:, slice_idx, :]
+        elif axis == 2:
+            slice_vol = volume[:, :, slice_idx]
+
+        if len(slice_vol) > 2:  # RGB image
+            axes[i].imshow(slice_vol, cmap=cmap, origin="lower")
+            axes[i].set_title(f"Slice {slice_idx} (axis {axis})")
+            axes[i].axis("off")
+        else:
+            axes[i].imshow(slice_vol.T, cmap=cmap, origin="lower")
+            axes[i].set_title(f"Slice {slice_idx} (axis {axis})")
+            axes[i].axis("off")
+
+    plt.show()
+
+
+def plot_brain_signal(sources, signal, n_points=2, name="signal", cmap="RdBu", clim=None):
+    # sources
+    pointslh = sources[0]["rr"][sources[0]["vertno"]]
+    pointsrh = sources[1]["rr"][sources[1]["vertno"]]
+
+    pointslh = pv.PolyData(pointslh)
+    pointsrh = pv.PolyData(pointsrh)
+
+    # signal 
+    split = sources[0]["nuse"]
+    pointslh[name] = signal[:split]
+    pointsrh[name] = signal[split:]
+
+    # surfaces
+    vertices, faces = sources[0]["rr"], sources[0]["tris"]
+    surflh = mm.utils.surf_to_polydata(vertices, faces)
+
+    vertices, faces = sources[1]["rr"], sources[1]["tris"]
+    surfrh = mm.utils.surf_to_polydata(vertices, faces)
+
+    # interpolate signal on surface
+    surflh = surflh.interpolate(pointslh, strategy="closest_point", n_points=n_points)
+    surfrh = surfrh.interpolate(pointsrh, strategy="closest_point", n_points=n_points)
+
+    plotter = pv.Plotter()
+    plotter.add_mesh(surflh, cmap=cmap, smooth_shading=True, clim=clim, name="lh")
+    plotter.add_mesh(surfrh, cmap=cmap, smooth_shading=True, clim=clim, name="rh")
+
+    return plotter
+    
+
+
+class TimeMesh:
+    def __init__(self, sources, time_series, sfreq, cmap="RdBu"):
+        self.sources = sources
+        self.time_series = time_series
+        self.sfreq = sfreq
+
+        half = int(time_series.shape[1]/2)
+        self.plotter = mm.viz.plot_brain_signal(
+            sources, 
+            time_series[:,half], 
+            clim = [time_series.min(), time_series.max()], 
+            cmap = cmap
+        )
+
+
+    def __call__(self, time_point):
+        # convert time_point to indices
+        i = int(time_point*self.sfreq)
+
+        # generate new images
+        new_plotter = mm.viz.plot_brain_signal(
+            self.sources,
+            self.time_series[:, i],
+        )
+
+        # instanciate new images
+        self.plotter.meshes[0].copy_from(new_plotter.meshes[0])
+        self.plotter.meshes[1].copy_from(new_plotter.meshes[1])
+
+
+def plot_brain_time_series(sources, time_series, sfreq=200, cmap="RdBu"):
+    time_mesh = TimeMesh(sources, time_series, sfreq, cmap=cmap)
+ 
+    time_mesh.plotter.add_slider_widget(
+        callback = lambda value: time_mesh(value),
+        rng = [0.0, time_series.shape[1]/sfreq],
+        value =  time_series.shape[1]/sfreq/2,
+        title = "Time (s)",
+        style = "modern",
+    )
+
+    time_mesh.plotter.show()
