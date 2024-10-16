@@ -1,4 +1,4 @@
 dataset/
 __pycache__/
 solverOutput/
-mindmap.eeg-info/
+mindmap.egg-info/
