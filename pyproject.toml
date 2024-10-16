@@ -14,7 +14,6 @@ dependencies = [
     "antspyx>=0.0.1",
     "h5py>=0.0.1",
     "pygsp>=0.0.1",
-    "gpytoolbox>=0.0.1",
 ]
 
 [project.optional-dependencies]
