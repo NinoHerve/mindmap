@@ -6,7 +6,6 @@ import pandas as pd
 import nibabel as nib
 import numpy as np
 import re
-import ants
 import mne
 from ..utils.eeg import get_ch_positions
 import glob
@@ -90,40 +89,6 @@ def read_clut(fname: str | Path) -> pd.DataFrame:
                 clut["A"].append(float(s[5]))
 
     return pd.DataFrame(clut)
-
-
-def read_volume(
-        fname: str | Path, 
-        dtype: str ="nib",
-) -> nib.Nifti1Image | ants.ANTsImage | np.ndarray:
-    """
-    Read MRI volume.
-
-    Parameters
-    ----------
-    fname: path-like
-        File name.
-
-    dtype: str
-        Volume format:
-            - 'nib': NiBabel image
-            - 'ants': ANTs image
-            - 'np': numpy array
-
-    Returns
-    -------
-    nib.Nifty1Image | ants.ANTsImage | np.ndarray
-    """
-
-    if dtype == "nib":
-        return nib.load(fname)
-    
-    elif dtype == "ants":
-        return ants.image_read(str(fname))
-    
-    elif dtype == "np":
-        nifti = nib.load(fname) 
-        return nifti.get_fdata()
     
 
 def read_eeg(

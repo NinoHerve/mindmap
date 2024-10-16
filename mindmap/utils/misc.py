@@ -4,6 +4,7 @@ import numpy as np
 import pyvista as pv
 import mne 
 import nibabel as nib
+import ants
 
 def get_folders(
         func: str,
@@ -131,3 +132,18 @@ def compute_transformation(
     trans = np.concatenate([trans, C], axis=0)
 
     return mne.transforms.Transform(fro=fro, to=to, trans=trans)
+
+
+def ants_to_nibabel(
+        ants_img: ants.core.ants_image.ANTsImage,
+    ) -> nib.Nifti1Image:
+
+    tmp = Path("./tmp.nii.gz")
+
+    ants.image_write(ants_img, str(tmp))
+    nib_img = nib.load(tmp)
+    nib_img = nib.Nifti1Image(nib_img.get_fdata(), nib_img.affine)          # so that data is on the RAM. Else it accesses data only when using .get_fdata() but file will be deleted by then
+
+    tmp.unlink()
+
+    return nib_img
