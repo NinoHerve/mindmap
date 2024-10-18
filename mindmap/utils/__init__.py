@@ -1,6 +1,6 @@
 
-from .mri import Parcellation, make_dparc, make_pparc, make_bem, surf_correction
-from .dmri import make_MultiConn, infer_wm_tracks, interpol_gm_tracks
+from .mri import Parcellation, make_bem, surf_correction
+from .dmri import infer_wm_tracks, interpol_gm_tracks
 from .eeg import get_ch_positions, eeg_rising_phase, point_to_plane_icp_with_scaling, optimize_scaling_translation, project_points_to_surface
 from .misc import surf_to_polydata, compute_transformation, ants_to_nibabel
 from .sources import get_src_position, get_src_directions

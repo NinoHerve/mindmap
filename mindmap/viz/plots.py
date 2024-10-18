@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pyvista as pv
 import mindmap as mm
+import mne
 
 
 def show_slices(
@@ -59,7 +60,7 @@ def show_slices(
     plt.show()
 
 
-def plot_brain_signal(sources, signal, n_points=2, name="signal", cmap="RdBu", clim=None):
+def plot_sources(sources: mne.SourceSpaces, src_color: str = "red", brain_color: str = "lightblue") -> pv.Plotter:
     # sources
     pointslh = sources[0]["rr"][sources[0]["vertno"]]
     pointsrh = sources[1]["rr"][sources[1]["vertno"]]
@@ -67,7 +68,31 @@ def plot_brain_signal(sources, signal, n_points=2, name="signal", cmap="RdBu", c
     pointslh = pv.PolyData(pointslh)
     pointsrh = pv.PolyData(pointsrh)
 
-    # signal 
+    # surfaces
+    vertices, faces = sources[0]["rr"], sources[0]["tris"]
+    surflh = mm.utils.surf_to_polydata(vertices, faces)
+
+    vertices, faces = sources[1]["rr"], sources[1]["tris"]
+    surfrh = mm.utils.surf_to_polydata(vertices, faces)
+
+    plotter = pv.Plotter()
+    plotter.add_mesh(surflh, show_edges=True, color=brain_color)
+    plotter.add_mesh(surfrh, show_edges=True, color=brain_color)
+    plotter.add_mesh(pointslh, src_color, render_points_as_spheres=True)
+    plotter.add_mesh(pointsrh, src_color, render_points_as_spheres=True)
+
+    return plotter
+
+
+def plot_brain_signal(sources, signal=None, n_points=2, name="signal", cmap="RdBu", clim=None):
+    # sources
+    pointslh = sources[0]["rr"][sources[0]["vertno"]]
+    pointsrh = sources[1]["rr"][sources[1]["vertno"]]
+
+    pointslh = pv.PolyData(pointslh)
+    pointsrh = pv.PolyData(pointsrh)
+
+    # signal
     split = sources[0]["nuse"]
     pointslh[name] = signal[:split]
     pointsrh[name] = signal[split:]
@@ -133,3 +158,43 @@ def plot_brain_time_series(sources, time_series, sfreq=200, cmap="RdBu"):
     )
 
     time_mesh.plotter.show()
+
+
+def plot_leadfield(eeg, forward):
+    # get electrode positions
+    points = mm.utils.get_ch_positions(eeg)
+    cap    = pv.PolyData(points)
+    cap["highlight"] = np.zeros(len(points))
+
+    # get leadfield matrix
+    leadfield = mne.convert_forward_solution(
+        forward, surf_ori=True, force_fixed=True, use_cps=True,
+    )
+    leadfield = leadfield["sol"]["data"]
+
+    # plot
+    plotter = mm.viz.plot_brain_signal(forward["src"], np.zeros(leadfield.shape[1]), clim=[leadfield.min(), leadfield.max()])
+    plotter.add_mesh(cap, point_size=10, render_points_as_spheres=True, name="cap")
+    plotter.remove_scalar_bar(title="highlight")
+
+    # callback
+    def pick_electrode(picked_point):
+        if picked_point is not None:
+            # get index of the closest point
+            closest_point_id = cap.find_closest_point(picked_point)
+
+            # change highlighted electrode
+            cap["highlight"] = np.zeros(len(points))
+            cap["highlight"][closest_point_id] = 1
+
+            # change leadfield vector
+            tmp = mm.viz.plot_brain_signal(forward["src"], leadfield[closest_point_id])
+            plotter.meshes[0]["signal"] = tmp.meshes[0]["signal"]
+            plotter.meshes[1]["signal"] = tmp.meshes[1]["signal"]
+
+            # update the plotter
+            plotter.render()
+
+    plotter.enable_point_picking(callback=pick_electrode)
+    
+    return plotter

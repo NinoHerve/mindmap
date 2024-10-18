@@ -92,7 +92,7 @@ def read_clut(fname: str | Path) -> pd.DataFrame:
     
 
 def read_eeg(
-    fname: str | Path,
+    folder: str | Path,
     dataset: str,
 ) -> mne.Epochs | mne.Evoked:
     """
@@ -105,7 +105,7 @@ def read_eeg(
     Parameters
     ----------
     fname: path-like
-        EEG file name or folder name.
+        EEG folder.
 
     dataset: str
         Dataset name. Reading is different depending on the dataset.
@@ -114,9 +114,11 @@ def read_eeg(
     -------
     eeg: mne.Epochs | mne.Evoked depending on dataset.
     """ 
+    folder = Path(folder)
 
     if dataset == "spike":
-        eeg  = mne.io.read_raw_brainvision(fname, scale=1e-6, misc=[], verbose="error")    # reads it in [V], hence the scale. misc=[] is a hack I found so that it reads the electrodes according to metadata. Else all electrodes are misc.
+        file = glob.glob(str(folder/"*204*.vhdr"))[0]
+        eeg  = mne.io.read_raw_brainvision(file, scale=1e-6, misc=[], verbose="error")    # reads it in [V], hence the scale. misc=[] is a hack I found so that it reads the electrodes according to metadata. Else all electrodes are misc.
         data = eeg.get_data()
         info = eeg.info
 
@@ -124,7 +126,7 @@ def read_eeg(
 
     elif dataset == "intra":
         # files
-        folder = Path(fname)
+        folder = Path(folder)
         eegs   = glob.glob(str(folder/"*_desc-cleaned_eeg.vhdr")) 
         pos    = glob.glob(str(folder/"*electrodes.tsv"))[0]
 
