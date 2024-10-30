@@ -9,11 +9,12 @@ import re
 import mne
 from ..utils.eeg import get_ch_positions
 import glob
-import mindmap as mm
 import h5py 
 import ants
 
+import mindmap as mm
 from mindmap.utils.misc import _retrieve_path
+
 
 def read_config(file: str | Path, env: bool = False) -> Optional[dict[str, Any]]:
     """
@@ -159,7 +160,11 @@ def read_eeg(
     
     else:
         raise ValueError("Unknown dataset ('{}') for eeg reading.")
-    
+
+
+# -------------------------------
+# ******* DATASET READER ********
+# -------------------------------
 
 def read_dataset(subject: str, *args: str) -> dict:
     """
@@ -203,7 +208,7 @@ def read_dataset(subject: str, *args: str) -> dict:
             if name.lower() == "eeg_raw":
                 # Initial EEG
                 folder = ds_dir/"derivatives"/"cartool-v3.80"/subject/"ses-preop"/"eeg"
-                data[name] = mm.io.read_eeg(folder, dataset=dataset)
+                data[name] = read_eeg(folder, dataset=dataset)
 
             if name.lower() == "eeg_clean":
                 # EEG after cleaning
@@ -231,7 +236,7 @@ def read_dataset(subject: str, *args: str) -> dict:
                 data[name] = mne.read_forward_solution(file, verbose="warning")
 
             if name.lower() == "parc":
-                # Brain parcellation
+                # Brain parcellation (MultiConn Atlas)
                 file = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
                 clut = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
                 data[name] = mm.utils.Parcellation(file, clut)
@@ -272,7 +277,41 @@ def read_dataset(subject: str, *args: str) -> dict:
         pass 
 
     elif dataset.lower() == "vep":
-        pass
+        dirs   = _retrieve_path("DS_DIR", "FS_DIR", "MM_DIR")
+        #ds_dir = Path(dirs["DS_DIR"])
+        fs_dir = Path(dirs["FS_DIR"])
+        #mm_dir = Path(dirs["MM_DIR"])
+
+        for name in args:
+            if name.lower() == "t1":
+                # T1 MRI template (Colin27)
+                file =  fs_dir/"Colin27"/"mri"/"orig"/"001.mgz"
+                data[name] = nib.load(file)
+
+            if name.lower() == "t1-ants":
+                # T1 MRI loaded with ants
+                file = fs_dir/"Colin27"/"mri"/"orig"/"001.mgz"
+                data[name] = ants.image_read(str(file))
+
+            if name.lower() == "parc":
+                # Brain parcellation (VEP atlas)
+                file = fs_dir/"Colin27"/"mri"/"aparc+aseg.vep.mgz"
+                clut = fs_dir/"Colin27"/"label"/"VepFreeSurferColorLut.txt"
+                data[name] = mm.utils.Parcellation(file, clut)
+
+            if name.lower() in ["eeg_dum", "eeg_clean"]:        # to fit standardization of mindmap
+                # Dummy eeg (zero signal)
+                montage  = mne.channels.make_standard_montage("biosemi64")
+                ch_names = montage.ch_names
+                ch_types = ["eeg"] * len(ch_names)
+                sfreq    = 200 
+
+                info = mne.create_info(ch_names, sfreq, ch_types)
+                info.set_montage(montage)
+
+                recordings = np.zeros((len(ch_names), sfreq*10))
+                data[name] = mne.io.RawArray(recordings, info, verbose="warning")
+                
 
 
     if len(data.keys()) < len(args):
@@ -281,6 +320,9 @@ def read_dataset(subject: str, *args: str) -> dict:
     return data
 
 
+# -------------------------------
+# ****** STANDARDS READER *******
+# -------------------------------
 
 def read_standards(*args: str) -> dict:
     """
