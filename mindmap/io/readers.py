@@ -187,13 +187,18 @@ def read_dataset(subject: str, *args: str) -> dict:
         dirs   = _retrieve_path("DS_DIR", "FS_DIR", "MM_DIR")
         ds_dir = Path(dirs["DS_DIR"])
         fs_dir = Path(dirs["FS_DIR"])
-        mm_dir = Path(dirs["MM_DIRS"])
+        mm_dir = Path(dirs["MM_DIR"])
 
         for name in args:
             if name.lower() == "t1":
                 # T1 MRI
-                file   =  fs_dir/subject/"mri"/"orig"/"001.mgz"
+                file =  fs_dir/subject/"mri"/"orig"/"001.mgz"
                 data[name] = nib.load(file)
+
+            if name.lower() == "t1-ants":
+                # T1 MRI loaded with ants
+                file = fs_dir/subject/"mri"/"orig"/"001.mgz"
+                data[name] = ants.image_read(str(file))
             
             if name.lower() == "eeg_raw":
                 # Initial EEG
@@ -202,61 +207,61 @@ def read_dataset(subject: str, *args: str) -> dict:
 
             if name.lower() == "eeg_clean":
                 # EEG after cleaning
-                file   = mm_dir/subject/"eeg"/f"{subject}_clean-ave.fif"
+                file = mm_dir/subject/"eeg"/f"{subject}_clean-ave.fif"
                 data[name] = mne.read_evokeds(file, verbose="warning")[0]
 
             if name.lower() == "eeg_coreg":
                 # EEG after cleaning + coregistered to head
-                file   = mm_dir/subject/"eeg"/f"{subject}_coreg_ave.fif"
+                file = mm_dir/subject/"eeg"/f"{subject}_coreg_ave.fif"
                 data[name] = mne.read_evokeds(file, verbose="warning")[0]
 
             if name.lower() == "cst":
                 # Connectome Spectrum Transform
-                file   = mm_dir/subject/"cst"/f"{subject}_cst-template.npy"
+                file = mm_dir/subject/"cst"/f"{subject}_cst-template.npy"
                 data[name] = np.load(file)
 
             if name.lower() == "bem":
                 # Boundary Element Model (contains surfaces)
-                file   = mm_dir/subject/"fwd"/f"{subject}_hm-bem.fif"
+                file = mm_dir/subject/"fwd"/f"{subject}_hm-bem.fif"
                 data[name] = mne.read_bem_surfaces(file, verbose="warning")
 
             if name.lower() == "fwd":
                 # Forward solution (a.k.a lead field matrix)
-                file   = mm_dir/subject/"fwd"/f"{subject}_bem_surf-7mm_fwd.fif"
+                file = mm_dir/subject/"fwd"/f"{subject}_bem_surf-7mm_fwd.fif"
                 data[name] = mne.read_forward_solution(file, verbose="warning")
 
             if name.lower() == "parc":
                 # Brain parcellation
-                file   = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
-                clut   = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
+                file = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
+                clut = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
                 data[name] = mm.utils.Parcellation(file, clut)
 
             if name.lower() == "gm":
                 # Gray matter mask
-                file   = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
-                clut   = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
-                parc   = mm.utils.Parcellation(file, clut)
+                file = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
+                clut = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
+                parc = mm.utils.Parcellation(file, clut)
                 data[name] = parc.create_mask()
             
             if name.lower() == "ctx":
                 # Cortical mask
-                file   = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
-                clut   = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
-                parc   = mm.utils.Parcellation(file, clut)
+                file = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
+                clut = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
+                parc = mm.utils.Parcellation(file, clut)
 
-                df   = parc.get_clut()
-                ctx  = df[df["Label name"].str.startswith("ctx")]
+                df  = parc.get_clut()
+                ctx = df[df["Label name"].str.startswith("ctx")]
                 data[name] = parc.create_mask(ctx["#No."].values)
 
             if name.lower() == "src":
                 # Brain sources (distributed dipoles)
-                file   = mm_dir/subject/"src"/f"{subject}_ddm-surf-7-src.fif"
+                file = mm_dir/subject/"src"/f"{subject}_ddm-surf-7-src.fif"
                 data[name] = mne.read_source_spaces(file, verbose="warning")
 
             if name.lower() == "white":
                 # White surfaced (boundary between white and gray matter)
-                fileL  = fs_dir/subject/"surf"/"lh.white"
-                fileR  = fs_dir/subject/"surf"/"rh.white"
+                fileL = fs_dir/subject/"surf"/"lh.white"
+                fileR = fs_dir/subject/"surf"/"rh.white"
 
                 whiteL = nib.freesurfer.io.read_geometry(fileL)
                 whiteR = nib.freesurfer.io.read_geometry(fileR)
