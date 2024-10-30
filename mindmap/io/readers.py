@@ -9,6 +9,11 @@ import re
 import mne
 from ..utils.eeg import get_ch_positions
 import glob
+import mindmap as mm
+import h5py 
+import ants
+
+from mindmap.utils.misc import _retrieve_path
 
 def read_config(file: str | Path, env: bool = False) -> Optional[dict[str, Any]]:
     """
@@ -154,3 +159,177 @@ def read_eeg(
     
     else:
         raise ValueError("Unknown dataset ('{}') for eeg reading.")
+    
+
+def read_dataset(subject: str, *args: str) -> dict:
+    """
+    Read data according to configuration. To use this function, first read a configuration file with env=True.
+
+    Parameters
+    ----------
+    subject: str
+        Subject name.
+
+    *args: str
+        Names of data objects to load.
+
+    Returns
+    -------
+    data: dict(dataName: dataObject)
+        Data.
+    """
+    dataset = _retrieve_path("NAME")
+    assert dataset.lower() in ["spike", "intra", "vep"], f"Unknown dataset '{dataset}'"
+    
+    data = dict()
+
+    if dataset.lower() == "spike":
+        dirs   = _retrieve_path("DS_DIR", "FS_DIR", "MM_DIR")
+        ds_dir = Path(dirs["DS_DIR"])
+        fs_dir = Path(dirs["FS_DIR"])
+        mm_dir = Path(dirs["MM_DIRS"])
+
+        for name in args:
+            if name.lower() == "t1":
+                # T1 MRI
+                file   =  fs_dir/subject/"mri"/"orig"/"001.mgz"
+                data[name] = nib.load(file)
+            
+            if name.lower() == "eeg_raw":
+                # Initial EEG
+                folder = ds_dir/"derivatives"/"cartool-v3.80"/subject/"ses-preop"/"eeg"
+                data[name] = mm.io.read_eeg(folder, dataset=dataset)
+
+            if name.lower() == "eeg_clean":
+                # EEG after cleaning
+                file   = mm_dir/subject/"eeg"/f"{subject}_clean-ave.fif"
+                data[name] = mne.read_evokeds(file, verbose="warning")[0]
+
+            if name.lower() == "eeg_coreg":
+                # EEG after cleaning + coregistered to head
+                file   = mm_dir/subject/"eeg"/f"{subject}_coreg_ave.fif"
+                data[name] = mne.read_evokeds(file, verbose="warning")[0]
+
+            if name.lower() == "cst":
+                # Connectome Spectrum Transform
+                file   = mm_dir/subject/"cst"/f"{subject}_cst-template.npy"
+                data[name] = np.load(file)
+
+            if name.lower() == "bem":
+                # Boundary Element Model (contains surfaces)
+                file   = mm_dir/subject/"fwd"/f"{subject}_hm-bem.fif"
+                data[name] = mne.read_bem_surfaces(file, verbose="warning")
+
+            if name.lower() == "fwd":
+                # Forward solution (a.k.a lead field matrix)
+                file   = mm_dir/subject/"fwd"/f"{subject}_bem_surf-7mm_fwd.fif"
+                data[name] = mne.read_forward_solution(file, verbose="warning")
+
+            if name.lower() == "parc":
+                # Brain parcellation
+                file   = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
+                clut   = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
+                data[name] = mm.utils.Parcellation(file, clut)
+
+            if name.lower() == "gm":
+                # Gray matter mask
+                file   = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
+                clut   = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
+                parc   = mm.utils.Parcellation(file, clut)
+                data[name] = parc.create_mask()
+            
+            if name.lower() == "ctx":
+                # Cortical mask
+                file   = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
+                clut   = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
+                parc   = mm.utils.Parcellation(file, clut)
+
+                df   = parc.get_clut()
+                ctx  = df[df["Label name"].str.startswith("ctx")]
+                data[name] = parc.create_mask(ctx["#No."].values)
+
+            if name.lower() == "src":
+                # Brain sources (distributed dipoles)
+                file   = mm_dir/subject/"src"/f"{subject}_ddm-surf-7-src.fif"
+                data[name] = mne.read_source_spaces(file, verbose="warning")
+
+            if name.lower() == "white":
+                # White surfaced (boundary between white and gray matter)
+                fileL  = fs_dir/subject/"surf"/"lh.white"
+                fileR  = fs_dir/subject/"surf"/"rh.white"
+
+                whiteL = nib.freesurfer.io.read_geometry(fileL)
+                whiteR = nib.freesurfer.io.read_geometry(fileR)
+                data[name] = [whiteL, whiteR]
+
+
+    elif dataset.lower() == "intra":
+        pass 
+
+    elif dataset.lower() == "vep":
+        pass
+
+
+    if len(data.keys()) < len(args):
+        print("\033[93mSome arguments did not correpond to the list of available objects to load. Check the list of arguments again.")
+
+    return data
+
+
+
+def read_standards(*args: str) -> dict:
+    """
+    Read standardized data (atlas, templates ...) according to configuration. To use this function, first read a configuration file with env=True.
+
+    Parameters
+    ----------
+    *args: str
+        Names of data objects to load.
+
+    Returns
+    -------
+    data: dict(dataName: dataObject)
+        Data.
+    """
+    
+    dataset = _retrieve_path("NAME")
+    assert dataset.lower() in ["spike", "intra", "vep"], f"Unknown dataset '{dataset}'"
+    
+    data = dict()
+
+    if dataset.lower() == "spike":
+        for name in args:
+            if name.lower() == "conn":
+                # Connectome atlas (h5 format)
+                file = _retrieve_path("CONN")
+                data[name] = h5py.File(file)
+
+            if name.lower() == "ctx":
+                # Cortical atlas (lausanne 2018 file paths)
+                data[name] = _retrieve_path("LAUSL", "LAUSR")
+
+            if name.lower() == "thal":
+                # Thalamus Nuclei atlas (ants)
+                file = _retrieve_path("THAL")
+                data[name] = ants.image_read(file)
+
+            if name.lower() == "thal_clut":
+                # Thalamus Nuclei color look up table (file path)
+                data[name] = _retrieve_path("THAL_CLUT")
+
+            if name.lower() == "mni":
+                # MNI template (MNI152 NLIN 2009) (ants)
+                file = _retrieve_path("MNI")
+                data[name] = ants.image_read(file)
+
+
+    elif dataset.lower() == "intra": 
+        pass 
+
+    elif dataset.lower() == "vep":
+        pass
+
+    if len(data.keys()) < len(args):
+        print("\033[93mSome arguments did not correpond to the list of available objects to load. Check the list of arguments again.")
+
+    return data

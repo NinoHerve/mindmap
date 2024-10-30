@@ -147,3 +147,19 @@ def ants_to_nibabel(
     tmp.unlink()
 
     return nib_img
+
+
+def _retrieve_path(*args):
+        try:
+            if len(args)==1:
+                vars = os.environ[args[0]]
+            
+            else:
+                vars = dict()
+                for key in args:
+                    vars[key] = os.environ[key]
+        
+        except KeyError as e:
+            raise KeyError(f"Environment variable {e} could not be found. Read configuration file.")   
+
+        return vars
