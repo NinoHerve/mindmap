@@ -4,7 +4,7 @@ import nibabel as nib
 
 
 
-def mask_sources(sources: mne.SourceSpaces, mask: nib.Nifti1Image, torig: np.ndarray):
+def mask_sources(sources: mne.SourceSpaces, mask: nib.Nifti1Image, cras: np.ndarray):
     """
     Mask sources not in mask (usually gray matter mask).
 
@@ -16,9 +16,8 @@ def mask_sources(sources: mne.SourceSpaces, mask: nib.Nifti1Image, torig: np.nda
     mask: nib.NIfTi1Image
         Binary mask. If a source is on a voxel with value 0 it will be masked ('inuse'=False).
 
-    torig: np.ndarray (4x4)
-        Transformation matrix to convert voxel indices to coordinates in the MRI surface 
-        RAS space.
+    cras: np.ndarray (3x1)
+        Translation to convert image in talairach conform space to individual space.
 
     Returns
     -------
@@ -30,12 +29,13 @@ def mask_sources(sources: mne.SourceSpaces, mask: nib.Nifti1Image, torig: np.nda
     for src in sources:
         # select used sources
         inuse = src["inuse"].astype(bool)
-        pos   = src["rr"][inuse]*1000                           # source positions in surface RAS space [mm]
+        pos   = src["rr"][inuse]*1000                           # source positions in talairach space [mm]
+        pos   = pos + cras                                      # source positions in subject space [mm]
 
         # place sources in voxel space
-        inv_torig = np.linalg.inv(torig)
-        pos_vox   = mne.transforms.apply_trans(inv_torig, pos)
-        pos_vox   = np.round(pos_vox).astype(int)               # source positions in voxel space
+        inv_affine = np.linalg.inv(mask.affine)
+        pos_vox    = mne.transforms.apply_trans(inv_affine, pos)
+        pos_vox    = np.round(pos_vox).astype(int)               # source positions in voxel space
 
         # keep only sources inside GM mask
         volume = mask.get_fdata()

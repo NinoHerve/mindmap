@@ -60,26 +60,56 @@ def show_slices(
     plt.show()
 
 
-def plot_sources(sources: mne.SourceSpaces, src_color: str = "red", brain_color: str = "lightblue") -> pv.Plotter:
-    # sources
-    pointslh = sources[0]["rr"][sources[0]["vertno"]]
-    pointsrh = sources[1]["rr"][sources[1]["vertno"]]
-
-    pointslh = pv.PolyData(pointslh)
-    pointsrh = pv.PolyData(pointsrh)
-
-    # surfaces
-    vertices, faces = sources[0]["rr"], sources[0]["tris"]
-    surflh = mm.utils.surf_to_polydata(vertices, faces)
-
-    vertices, faces = sources[1]["rr"], sources[1]["tris"]
-    surfrh = mm.utils.surf_to_polydata(vertices, faces)
-
+def plot_sources(
+        sources: mne.SourceSpaces,
+        mask: nib.Nifti1Image = None,
+        cras: np.ndarray = np.array([0,0,0]),
+        src_size: float = 5,
+        src_color: str = "red",
+        src_clut: np.ndarray = None, 
+        brain_color: str = "lightblue",
+        mask_opacity: float = 0.2, 
+) -> pv.Plotter:
+    
     plotter = pv.Plotter()
-    plotter.add_mesh(surflh, show_edges=True, color=brain_color)
-    plotter.add_mesh(surfrh, show_edges=True, color=brain_color)
-    plotter.add_mesh(pointslh, src_color, render_points_as_spheres=True)
-    plotter.add_mesh(pointsrh, src_color, render_points_as_spheres=True)
+
+    # sources
+    points = mm.utils.get_src_position(sources)
+
+    if mask is None:
+        # surfaces
+        vertices, faces = sources[0]["rr"], sources[0]["tris"]
+        surflh = mm.utils.surf_to_polydata(vertices, faces)
+
+        vertices, faces = sources[1]["rr"], sources[1]["tris"]
+        surfrh = mm.utils.surf_to_polydata(vertices, faces)
+
+        # plot
+        plotter.add_mesh(surflh, show_edges=True, color=brain_color)
+        plotter.add_mesh(surfrh, show_edges=True, color=brain_color)
+        
+    else: 
+        if np.all(cras == [0,0,0]):
+            print("\033[93mNo cras translation applied")
+        
+        # sources
+        points     = points*1000 + cras
+        inv_affine = np.linalg.inv(mask.affine)
+        points     = mne.transforms.apply_trans(inv_affine, points)
+        points     = pv.PolyData(points)
+
+        # mask
+        volume = pv.ImageData(dimensions=mask.shape, spacing=(1,1,1), origin=(0,0,0))
+        volume.point_data["scalars"] = mask.get_fdata().flatten(order="F")
+
+        # plot
+        plotter.add_mesh(volume.contour(3), color="white", opacity=mask_opacity)
+
+    if src_clut is None:
+        plotter.add_mesh(points, src_color, point_size=src_size, render_points_as_spheres=True)
+    else:
+        plotter.add_mesh(points, scalars=src_clut, point_size=src_size, render_points_as_spheres=True)
+
 
     return plotter
 

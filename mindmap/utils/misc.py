@@ -163,3 +163,25 @@ def _retrieve_path(*args):
             raise KeyError(f"Environment variable {e} could not be found. Read configuration file.")   
 
         return vars
+
+
+def rolling_window(array, window_size):
+    """
+    Returns data of each window, when doing a rolling window.
+    Reference: Erik Rigtorp - https://rigtorp.se/2011/01/01/rolling-statistics-numpy.html 
+
+    Parameters
+    ----------
+    array: np.ndarray (X, N) 
+        Array to roll over. Roll over happens on last dimension.
+    window_size: int 
+        Window size.
+
+    Returns
+    -------
+    out: np.ndarray (X, N-window_size+1, window_size)
+        Windows. N-window+1 correponds to the number of windows. X can be replaced by multiple dimensions.
+    """
+    shape = array.shape[:-1] + (array.shape[-1] - window_size + 1, window_size)
+    strides = array.strides + (array.strides[-1],)
+    return np.lib.stride_tricks.as_strided(array, shape=shape, strides=strides)

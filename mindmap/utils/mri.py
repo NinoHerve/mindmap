@@ -209,7 +209,7 @@ class Parcellation():
 
         return image
     
-    def get_ids(self, points: np.ndarray, trans: np.ndarray) -> List[str]:
+    def label_points(self, points: np.ndarray, id: bool = False) -> List[str]:
         """
         Get labels of the points given as input.
 
@@ -217,22 +217,39 @@ class Parcellation():
         ----------
         points: np.ndarray (Nx3)
             Points of interest.
-        
-        trans: np.ndarray(4x4)
-            Transform to project points in voxel space.
+
+        id: bool
+            Returns label id rather than label name if True.
 
         Returns
         -------
         labels: list[str]
             List of size N indicating for each point the regions it belongs to.
         """
-        inv_trans = np.linalg.inv(trans)
+        inv_trans = np.linalg.inv(self.affine)
         voxels    = nib.affines.apply_affine(inv_trans, points)
         voxels    = np.round(voxels).astype(int)
 
-        labels = self.volume[voxels[:,0], voxels[:,1], voxels[:,2]]
+        labels = self.volume[voxels[:,0], voxels[:,1], voxels[:,2]].astype(int)
 
-        return labels.astype(int)
+        if id == False:
+            id_to_name = dict(zip(self.clut["#No."], self.clut["Label name"]))
+            labels     = [id_to_name[l] for l in labels]
+
+        return labels
+    
+    def get_colors(self, labels):
+        color_table = np.array([self.clut["R"], self.clut["G"], self.clut["B"]]).T
+
+        if isinstance(labels[0], str):
+            label_to_color = dict(zip(self.clut["Label name"], color_table))
+            colors         = [label_to_color[l] for l in labels]
+
+        else:
+            id_to_color = dict(zip(self.clut["#No."], color_table))
+            colors      = [id_to_color[id] for id in labels]
+
+        return np.vstack(colors)
     
     def create_mask(self, regions: List[int] = None) -> nib.Nifti1Image:
         """
