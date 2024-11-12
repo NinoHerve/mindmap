@@ -17,7 +17,7 @@ import mindmap as mm
 from mindmap.utils.misc import _retrieve_path
 
 
-def read_config(file: str | Path, env: bool = False) -> Optional[dict[str, Any]]:
+def read_config(file: str | Path) -> Optional[dict[str, Any]]:
     """
     Read configuration file.
 
@@ -39,12 +39,10 @@ def read_config(file: str | Path, env: bool = False) -> Optional[dict[str, Any]]
     with open(file, "r") as f:
         config = yaml.safe_load(f)
 
-    if env == True:
-        for key, value in config.items():
-            os.environ[key] = value 
+    for key, value in config.items():
+        os.environ[key] = value 
 
-    else:
-        return config
+    return config
     
 
 
