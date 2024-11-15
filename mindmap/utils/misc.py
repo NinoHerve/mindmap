@@ -185,3 +185,114 @@ def rolling_window(array, window_size):
     shape = array.shape[:-1] + (array.shape[-1] - window_size + 1, window_size)
     strides = array.strides + (array.strides[-1],)
     return np.lib.stride_tricks.as_strided(array, shape=shape, strides=strides)
+
+
+
+def compute_snr(signal: np.ndarray, noise:np.ndarray) -> float:
+    """
+    Compute the signal to noise ratio.
+
+    Parameters:
+    ----------
+    signal: np.ndarray (N, T)
+        Signal of shape 'number of sensors' times 'number of time points'.
+
+    noise: np.ndarray (N, T)
+        Noise of shape 'number of sensors' times 'number of time points'.
+
+    Returns:
+    -------
+    snr: np.ndarray (N,)
+        Signal to noise ratio at each sensor.
+    """
+    assert signal.shape == noise.shape, "signal and noise must have the same size to compute SNR."
+
+    signal_zero_mean = signal - signal.mean(axis=-1).reshape(-1,1)
+    noise_zero_mean  = noise - noise.mean(axis=-1).reshape(-1, 1)
+
+    Ps = np.sum(signal_zero_mean**2, axis=-1)/signal.shape[-1]
+    Pn = np.sum(noise_zero_mean**2, axis=-1)/noise.shape[-1]
+
+    snr = 10*np.log10(Ps/Pn)
+
+    return snr 
+
+
+def compute_eeg_snr(brain_signal: mne.SourceEstimate, fwd: mne.Forward, roi_mask: np.ndarray) -> float:
+    """
+    Compute the signal to noise ratio of EEG sensors.
+
+    Parameters:
+    ----------
+    brain_signal: mne.SourceEstimate 
+        Dipole activity.
+
+    fwd: mne.Forward
+        Forward solution.
+
+    roi_mask: list | np.ndarray
+        Mask for regions of interest.
+
+    Returns:
+    -------
+    snr: np.ndarray (N,)
+        Signal to noise ratio at each EEG electrode.
+    """
+    # extract data
+    brain_signal = brain_signal.data 
+
+    fwd = mne.convert_forward_solution(fwd, force_fixed=True, verbose="warning")
+    fwd = fwd["sol"]["data"]
+
+    signal     = fwd[:,roi_mask] @ brain_signal[roi_mask, :]
+    background = fwd[:,~roi_mask] @ brain_signal[~roi_mask, :]
+
+    snr = compute_snr(signal, background)
+
+    return snr
+
+
+
+def find_neighbor_regions(surface, parcellation, cras):
+    """
+    Defines neighboring regions. 
+
+    Parameters:
+    ----------
+    surface: [np.ndarray, np.ndarray]
+        Cortical surface (or white surface). First element indicate vertices.
+        Second element indicate triangles.
+
+    parcellation: Parcellation
+        Volumetric parcellation with N regions.
+
+    cras: np.ndarray
+        Shift of the Talaraich transform.
+
+    Returns:
+    -------
+    neighbors: (N,N)
+        Neighborhood matrix. Like an adjacency matrix where a connection 
+        means that two regions are neighbors.
+    """
+    labels    = parcellation.label_points(surface[0]+cras, id=True)
+    regions   = parcellation.get_clut()["#No."].values
+    neighbors = np.zeros((len(regions), len(regions)))
+
+    # find triangles having vertices in different regions
+    tri_regions = labels[surface[1]]                             # triangles where vertex id is replaced by region id
+    tri_regions = tri_regions[np.sum(tri_regions==0, axis=1)==0] # delete triangles having vertex with id 0 (unknown)  
+    info1 = np.abs(tri_regions[:,0] - tri_regions[:,1]) > 0      # True if vertex 1 is not in the same region as vertex 2
+    info2 = np.abs(tri_regions[:,0] - tri_regions[:,2]) > 0      # True if vertex 1 is not in the same region as vertex 3
+
+    # mark neighbors based on info1
+    idx1 = np.searchsorted(regions, tri_regions[info1][:,0])
+    idx2 = np.searchsorted(regions, tri_regions[info1][:,1])
+    neighbors[idx1, idx2]= 1
+
+    # mark neighbors based on info2
+    idx1 = np.searchsorted(regions, tri_regions[info2][:,0])
+    idx2 = np.searchsorted(regions, tri_regions[info2][:,2])
+    neighbors[idx1, idx2]= 1
+
+    return neighbors

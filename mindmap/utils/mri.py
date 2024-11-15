@@ -284,7 +284,7 @@ class Parcellation():
         if self.affine is None:
             self.affine = other.affine
         else:
-            assert np.allclose(self.affine, other.affine, atol=1e-15), "Affines of parcellations don't match, cancel joining of parcellations."
+            assert np.allclose(self.affine, other.affine), "Affines of parcellations don't match, cancel joining of parcellations."
 
         if self.volume is None:
             self.volume = np.zeros_like(other.volume)
