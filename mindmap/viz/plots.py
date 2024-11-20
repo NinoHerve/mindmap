@@ -152,11 +152,17 @@ class TimeMesh:
         self.time_series = time_series
         self.sfreq = sfreq
 
+        if np.all(time_series>0):
+            clim = [0, time_series.max()]
+        else:
+            max_abs = max(abs(time_series.min()), abs(time_series.max()))
+            clim    = [-max_abs, max_abs]
+
         half = int(time_series.shape[1]/2)
         self.plotter = mm.viz.plot_brain_signal(
             sources, 
             time_series[:,half], 
-            clim = [time_series.min(), time_series.max()], 
+            clim = clim, 
             cmap = cmap
         )
 

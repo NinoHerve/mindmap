@@ -296,7 +296,7 @@ def _read_dataset_spike(subject, *args):
             file = mm_dir/subject/"eeg"/f"{subject}_clean-ave.fif"
             data[name] = mne.read_evokeds(file, verbose="warning")[0]
 
-        if name.lower() in ["eeg_coreg", "eeg_fwd"]:
+        if name.lower() in ["eeg_coreg", "eeg_fwd", "eeg_inv"]:
             # EEG after cleaning + coregistered to head
             file = mm_dir/subject/"eeg"/f"{subject}_coreg_ave.fif"
             data[name] = mne.read_evokeds(file, verbose="warning")[0]
