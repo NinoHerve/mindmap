@@ -5,6 +5,7 @@ import pyvista as pv
 import mne 
 import nibabel as nib
 import ants
+import pandas as pd
 
 def get_folders(
         func: str,
@@ -149,18 +150,28 @@ def ants_to_nibabel(
     return nib_img
 
 
-def _retrieve_path(*args):
+def _retrieve_env(*args):
         try:
             if len(args)==1:
                 vars = os.environ[args[0]]
+
+                if isinstance(vars, str) and not (args[0].lower() == "name"):
+                    vars = Path(vars)
             
             else:
                 vars = dict()
+
                 for key in args:
-                    vars[key] = os.environ[key]
+                    v = os.environ[key]
+                    if (v == "True") or (v == "False"):
+                        vars[key] = (v == "True") or (v == "true") or (v == 1)
+                    elif v == "NAME":
+                        vars[key] = v
+                    else:
+                        vars[key] = Path(v)
         
         except KeyError as e:
-            raise KeyError(f"Environment variable {e} could not be found. Read configuration file.")   
+            raise KeyError(f"Environment variable {e} was not found. Read configuration file or check configuration file.")  
 
         return vars
 
@@ -296,3 +307,26 @@ def find_neighbor_regions(surface, parcellation, cras):
     neighbors[idx1, idx2]= 1
 
     return neighbors
+
+
+def correct_labels(labels, sources, parcel):
+    """
+    Correct labels that misplace left and right hemisphere dipoles because the parcellation is not perfect.
+    """
+    # map to switch from label id to label name
+    clut = parcel.get_clut()
+    map  = pd.Series(clut["Label name"].values, index=clut["#No."]).to_dict()
+    
+    label_names = [map[id] for id in labels]
+
+    # left/right hemisphere seperation
+    split = len(sources[0]["vertno"])
+
+    # switch 'lh' labels in right hemisphere to 'rh' homologue and vice virsa
+    label_names[:split] = [l.replace("-rh-", "-lh-") for l in label_names[:split]]
+    label_names[split:] = [l.replace("-lh-", "-rh-") for l in label_names[split:]]
+
+    # convert back to lable ids
+    new_labels = [list(map.keys())[list(map.values()).index(n)] for n in label_names]
+
+    return new_labels

@@ -1,6 +1,7 @@
 import mne 
 import numpy as np
 import nibabel as nib
+import scipy as sp
 
 
 
@@ -74,3 +75,18 @@ def get_src_directions(sources):
         positions.append(src["nn"][src["vertno"]])
 
     return np.concatenate(positions, axis=0)
+
+
+
+def get_geodist(sources):
+    """
+    Get matrix showing geodesic distances between sources. Left and right hemispheres are seperated surfaces, 
+    hence distances between a left and right source is infinite.
+    """
+
+    geodist = []
+    for src in sources:
+        vertno = src["vertno"]
+        geodist.append(src["dist"][vertno][:, vertno])
+
+    return sp.sparse.block_diag(geodist, format="csr")

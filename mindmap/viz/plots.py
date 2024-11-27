@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import pyvista as pv
 import mindmap as mm
 import mne
+import plotly.graph_objs as go
 
 
 def show_slices(
@@ -234,3 +235,66 @@ def plot_leadfield(eeg, forward):
     plotter.enable_point_picking(callback=pick_electrode)
     
     return plotter
+
+
+
+def plot_connectome(connectome, name="Connectome", nonzero=False):
+    degree = np.sum(connectome, axis=1)
+
+    fig, axs = plt.subplots(1,2, figsize=(12,5))
+
+    axs[0].matshow(connectome, cmap="Blues")
+    axs[0].set_title(name)
+    axs[0].set_xlabel("Dipoles")
+    axs[0].set_ylabel("Dipoles")
+
+    if nonzero == True:
+        degree = degree[degree>0]
+
+    axs[1].hist(degree, bins=100, color="skyblue")
+    axs[1].set_title("Degree Distribution")
+    axs[1].set_xlabel("Degree")
+    axs[1].set_ylabel("Frequency")
+
+    plt.tight_layout()
+    plt.show()
+
+
+
+def plot_spectrum(spectrum):
+    """
+    Plot the connectome spectrum.
+
+    Parameters
+    ----------
+        spectrum: nd.array (nb_nodes,)
+            Connectome spectrum.
+
+    Returns
+    -------
+        fig: plotly.graph_objs
+    """
+    trace = go.Bar(
+        y=spectrum,
+        marker=dict(
+            color="darkblue",
+            line=dict(color="darkblue"),
+        ),
+    )
+
+    layout = go.Layout(dict(
+        title="Fourier graph coefficients",
+        showlegend=False, 
+        plot_bgcolor="white",
+        xaxis=dict(
+            title="frequency indices",
+            linecolor="black",
+        ),
+        yaxis=dict(
+            title="amplitude",
+            linecolor="black",
+            gridcolor="black",
+        ),
+    ))
+
+    return go.Figure(trace, layout=layout)

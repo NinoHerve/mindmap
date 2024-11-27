@@ -12,9 +12,10 @@ import glob
 import h5py 
 import ants
 import ast
+import scipy as sp
 
 import mindmap as mm
-from mindmap.utils.misc import _retrieve_path
+from mindmap.utils.misc import _retrieve_env
 
 
 def read_config(file: str | Path) -> Optional[dict[str, Any]]:
@@ -189,7 +190,7 @@ def read_dataset(subject: str, *args: str) -> dict:
     data: dict(dataName: dataObject)
         Data.
     """
-    dataset = _retrieve_path("NAME")
+    dataset = _retrieve_env("NAME")
 
     if dataset.lower() == "spike":
         data = _read_dataset_spike(subject, *args)
@@ -232,7 +233,7 @@ def read_standards(*args: str) -> dict:
         Data.
     """
     
-    dataset = _retrieve_path("NAME")
+    dataset = _retrieve_env("NAME")
     
     data = dict()
 
@@ -249,7 +250,7 @@ def read_standards(*args: str) -> dict:
         data = _read_standards_vepcon(*args)
 
     elif dataset.lower() == "simf":
-        data = _read_standards_vepcon(*args)
+        data = _read_standards_spike(*args)
 
     else: 
         raise ValueError(f"Unknown dataset '{dataset}' for read_standards()")
@@ -267,72 +268,68 @@ def read_standards(*args: str) -> dict:
 
 def _read_dataset_spike(subject, *args):
     
-    dirs    = _retrieve_path("NAME", "DS_DIR", "FS_DIR", "MM_DIR")
-    dataset = dirs["NAME"]
-    ds_dir  = Path(dirs["DS_DIR"])
-    fs_dir  = Path(dirs["FS_DIR"])
-    mm_dir  = Path(dirs["MM_DIR"])
+    env = _retrieve_env("NAME", "DS_DIR", "FS_DIR", "MM_DIR")
 
     data = dict()
 
     for name in args:
         if name.lower() == "t1":
             # T1 MRI
-            file =  fs_dir/subject/"mri"/"orig"/"001.mgz"
+            file =  env["FS_DIR"]/subject/"mri"/"orig"/"001.mgz"
             data[name] = nib.load(file)
 
         if name.lower() == "t1-ants":
             # T1 MRI loaded with ants
-            file = fs_dir/subject/"mri"/"orig"/"001.mgz"
+            file = env["FS_DIR"]/subject/"mri"/"orig"/"001.mgz"
             data[name] = ants.image_read(str(file))
             
         if name.lower() == "eeg_raw":
             # Initial EEG
-            folder = ds_dir/"derivatives"/"cartool-v3.80"/subject/"ses-preop"/"eeg"
-            data[name] = read_eeg(folder, dataset=dataset)
+            folder = env["DS_DIR"]/"derivatives"/"cartool-v3.80"/subject/"ses-preop"/"eeg"
+            data[name] = read_eeg(folder, dataset=env["NAME"])
 
         if name.lower() in ["eeg_clean", "eeg_proc"]:
             # EEG after cleaning
-            file = mm_dir/subject/"eeg"/f"{subject}_clean-ave.fif"
+            file = env["MM_DIR"]/subject/"eeg"/f"{subject}_clean-ave.fif"
             data[name] = mne.read_evokeds(file, verbose="warning")[0]
 
         if name.lower() in ["eeg_coreg", "eeg_fwd", "eeg_inv"]:
             # EEG after cleaning + coregistered to head
-            file = mm_dir/subject/"eeg"/f"{subject}_coreg_ave.fif"
+            file = env["MM_DIR"]/subject/"eeg"/f"{subject}_coreg_ave.fif"
             data[name] = mne.read_evokeds(file, verbose="warning")[0]
 
         if name.lower() == "cst":
             # Connectome Spectrum Transform
-            file = mm_dir/subject/"cst"/f"{subject}_cst-template.npy"
+            file = env["MM_DIR"]/subject/"cst"/f"{subject}_cst-template.npy"
             data[name] = np.load(file)
 
         if name.lower() == "bem":
             # Boundary Element Model (contains surfaces)
-            file = mm_dir/subject/"fwd"/f"{subject}_hm-bem.fif"
+            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_hm-bem.fif"
             data[name] = mne.read_bem_surfaces(file, verbose="warning")
 
         if name.lower() == "fwd":
             # Forward solution (a.k.a lead field matrix)
-            file = mm_dir/subject/"fwd"/f"{subject}_bem_surf-7mm_fwd.fif"
+            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem_surf-7mm_fwd.fif"
             data[name] = mne.read_forward_solution(file, verbose="warning")
 
         if name.lower() == "parc":
             # Brain parcellation (MultiConn Atlas)
-            file = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
-            clut = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
+            file = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
+            clut = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
             data[name] = mm.utils.Parcellation(file, clut)
 
         if name.lower() == "gm":
             # Gray matter mask
-            file = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
-            clut = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
+            file = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
+            clut = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
             parc = mm.utils.Parcellation(file, clut)
             data[name] = parc.create_mask()
             
         if name.lower() == "ctx":
             # Cortical mask
-            file = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
-            clut = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
+            file = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
+            clut = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
             parc = mm.utils.Parcellation(file, clut)
 
             df  = parc.get_clut()
@@ -341,14 +338,14 @@ def _read_dataset_spike(subject, *args):
 
         if name.lower() == "src":
             # Brain sources (distributed dipoles)
-            file = mm_dir/subject/"fwd"/f"{subject}_bem_surf-7mm_fwd.fif"
+            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem_surf-7mm_fwd.fif"
             fwd  = mne.read_forward_solution(file, verbose="warning")
             data[name] = fwd["src"]
 
         if name.lower() == "white":
             # White surfaced (boundary between white and gray matter)
-            fileL = fs_dir/subject/"surf"/"lh.white"
-            fileR = fs_dir/subject/"surf"/"rh.white"
+            fileL = env["FS_DIR"]/subject/"surf"/"lh.white"
+            fileR = env["FS_DIR"]/subject/"surf"/"rh.white"
 
             whiteL = nib.freesurfer.io.read_geometry(fileL)
             whiteR = nib.freesurfer.io.read_geometry(fileR)
@@ -356,7 +353,7 @@ def _read_dataset_spike(subject, *args):
 
         if name.lower() == "cras":
             # Translation part of the Talairach transform
-            file = fs_dir/subject/"mri"/"transforms"/"talairach.lta"
+            file = env["FS_DIR"]/subject/"mri"/"transforms"/"talairach.lta"
             data[name] = read_talairach(file)[:3,3]
 
     return data
@@ -368,35 +365,31 @@ def _read_dataset_intra(subject, *args):
 
 def _read_dataset_vep(subject, *args):
         
-    dirs    = _retrieve_path("FS_DIR", "TVB_DIR", "MM_DIR", "DS_DIR")
-    fs_dir  = Path(dirs["FS_DIR"])
-    tvb_dir = Path(dirs["TVB_DIR"])
-    mm_dir  = Path(dirs["MM_DIR"])
-    ds_dir  = Path(dirs["DS_DIR"])
+    env = _retrieve_env("FS_DIR", "TVB_DIR", "MM_DIR", "DS_DIR")
 
     data = dict()
 
     for name in args:
         if name.lower() == "t1":
             # T1 MRI template (Colin27)
-            file =  fs_dir/"Colin27"/"mri"/"orig"/"001.mgz"
+            file =  env["FS_DIR"]/"Colin27"/"mri"/"orig"/"001.mgz"
             data[name] = nib.load(file)
 
         if name.lower() == "t1-ants":
             # T1 MRI loaded with ants
-            file = fs_dir/"Colin27"/"mri"/"orig"/"001.mgz"
+            file = env["FS_DIR"]/"Colin27"/"mri"/"orig"/"001.mgz"
             data[name] = ants.image_read(str(file))
 
         if name.lower() == "parc":
             # Brain parcellation of template (VEP atlas)
-            file = fs_dir/"Colin27"/"mri"/"aparc+aseg.vep.mgz"
-            clut = fs_dir/"VepFreeSurferColorLut.txt"
+            file = env["FS_DIR"]/"Colin27"/"mri"/"aparc+aseg.vep.mgz"
+            clut = env["FS_DIR"]/"VepFreeSurferColorLut.txt"
             data[name] = mm.utils.Parcellation(file, clut)
 
         if name.lower() == "ctx":
             # Cortical mask of template (without cerebellum)
-            file = fs_dir/"Colin27"/"mri"/"aparc+aseg.vep.mgz"
-            clut = fs_dir/"VepFreeSurferColorLut.txt"
+            file = env["FS_DIR"]/"Colin27"/"mri"/"aparc+aseg.vep.mgz"
+            clut = env["FS_DIR"]/"VepFreeSurferColorLut.txt"
             parc = mm.utils.Parcellation(file, clut)
 
             df  = parc.get_clut()
@@ -420,43 +413,43 @@ def _read_dataset_vep(subject, *args):
 
         if name.lower() == "eeg_tmp":
             # Template EEG (coregistered to template head)
-            file = mm_dir/"Colin27"/"eeg"/"Colin27_coreg_null-raw.fif"
+            file = env["MM_DIR"]/"Colin27"/"eeg"/"Colin27_coreg_null-raw.fif"
             data[name] = mne.io.read_raw(file, verbose="warning")
 
         if name.lower() in ["eeg_sim", "eeg_proc"]:
             # Simulated eeg (coregistered to template head)
-            file = mm_dir/subject/f"{subject}_sim-raw.fif"
+            file = env["MM_DIR"]/subject/f"{subject}_sim-raw.fif"
             data[name] = mne.io.read_raw(file, verbose="warning")
 
         if name.lower() == "fwd":
             # Forward solution of template head
-            file = mm_dir/"Colin27"/"fwd"/"Colin27_bem-fwd.fif"
+            file = env["MM_DIR"]/"Colin27"/"fwd"/"Colin27_bem-fwd.fif"
             data[name] = mne.read_forward_solution(file, verbose="warning")
 
         if name.lower() == "src":
             # Sources of template head
-            file = mm_dir/"Colin27"/"fwd"/"Colin27_bem-fwd.fif"
+            file = env["MM_DIR"]/"Colin27"/"fwd"/"Colin27_bem-fwd.fif"
             fwd  = mne.read_forward_solution(file, verbose="warning")
             data[name] = fwd["src"]
 
         if name.lower() == "bem":
             # Boundary Element Model of template head
-            file = mm_dir/"Colin27"/"fwd"/"Colin27_hm-bem.fif"
+            file = env["MM_DIR"]/"Colin27"/"fwd"/"Colin27_hm-bem.fif"
             data[name] = mne.read_bem_surfaces(file, verbose="warning")
 
         if name.lower() == "cras":
             # Translation part of the Talairach transform from template head
-            file = fs_dir/"Colin27"/"mri"/"transforms"/"talairach.lta"
+            file = env["FS_DIR"]/"Colin27"/"mri"/"transforms"/"talairach.lta"
             data[name] = read_talairach(file)[:3,3]
 
         if name.lower() == "sim_tvb":
             # Simulated brain signals (tvb)
-            file = tvb_dir/subject/"ses-03"/"VEPhypothesis"/f"{subject}_simulated_source_timeseries_run-01.npz"
+            file = env["TVB_DIR"]/subject/"ses-03"/"VEPhypothesis"/f"{subject}_simulated_source_timeseries_run-01.npz"
             data[name] = np.load(file)
 
         if name.lower() == "atlas":
             # Region names
-            file  = ds_dir/"vep_atlas.tsv"
+            file  = env["DS_DIR"]/"vep_atlas.tsv"
             atlas = pd.read_csv(file, sep="\t")
             data[name] = atlas
 
@@ -489,7 +482,7 @@ def _read_dataset_vep(subject, *args):
             data[name] = sim
 
         if name.lower() == "ez":
-            file = tvb_dir/subject/"ses-03"/"VEPhypothesis"/"parameters"/f"{subject}_epileptor_parameters_run-01.tsv"
+            file = env["TVB_DIR"]/subject/"ses-03"/"VEPhypothesis"/"parameters"/f"{subject}_epileptor_parameters_run-01.tsv"
             df   = pd.read_csv(file, sep="\t")
             data[name] = ast.literal_eval(df["EZ"].values[0])
 
@@ -497,53 +490,50 @@ def _read_dataset_vep(subject, *args):
 
 
 def _read_dataset_vepcon(subject, *args):
-    dirs   = _retrieve_path("NAME", "DS_DIR", "FS_DIR", "MM_DIR")
-    ds_dir = Path(dirs["DS_DIR"])
-    fs_dir = Path(dirs["FS_DIR"])
-    mm_dir = Path(dirs["MM_DIR"])
+    env = _retrieve_env("NAME", "DS_DIR", "FS_DIR", "MM_DIR")
 
     data = dict()
 
     for name in args:
         if name.lower() == "fwd":
             # forward solution
-            file =  ds_dir/"derivatives"/"cscs"/subject/f"{subject}_fwd.fif"
+            file =  env["DS_DIR"]/"derivatives"/"cscs"/subject/f"{subject}_fwd.fif"
             data[name] = mne.read_forward_solution(file, verbose="warning")
 
         if name.lower() in ["eeg_raw", "eeg_fwd"]:
             # T1 MRI loaded with ants
-            file = ds_dir/"derivatives"/"eeglab-v14.1.1"/subject/"eeg"/f"{subject}_task-faces_desc-preproc_eeg.set"
+            file = env["DS_DIR"]/"derivatives"/"eeglab-v14.1.1"/subject/"eeg"/f"{subject}_task-faces_desc-preproc_eeg.set"
             data[name] = mne.read_epochs_eeglab(file, verbose="warning")
             
         if name.lower() == "cst":
             # Connectome spectrum transform
-            file = ds_dir/"derivatives"/"cscs"/subject/f"{subject}-harmonics.npy"
+            file = env["DS_DIR"]/"derivatives"/"cscs"/subject/f"{subject}-harmonics.npy"
             data[name] = np.load(file, allow_pickle=True)
 
         if name.lower() == "bem":
             # Boundary Element Surfaces
-            file = fs_dir/subject/"bem"/f"{subject}-head.fif"
+            file = env["FS_DIR"]/subject/"bem"/f"{subject}-head.fif"
             data[name] = mne.read_bem_surfaces(file, verbose="warning")
 
         if name.lower() == "cras":
             # Translation part of the Talairach transform
-            file = fs_dir/subject/"mri"/"transforms"/"talairach.lta"
+            file = env["FS_DIR"]/subject/"mri"/"transforms"/"talairach.lta"
             data[name] = read_talairach(file)[:3,3]
 
         if name.lower() == "t1":
             # T1 MRI
-            file =  fs_dir/subject/"mri"/"orig"/"001.mgz"
+            file =  env["FS_DIR"]/subject/"mri"/"orig"/"001.mgz"
             data[name] = nib.load(file)
 
         if name.lower() == "t1-ants":
             # T1 MRI loaded with ants
-            file = fs_dir/subject/"mri"/"orig"/"001.mgz"
+            file = env["FS_DIR"]/subject/"mri"/"orig"/"001.mgz"
             data[name] = ants.image_read(str(file))
 
         if name.lower() == "ctx_mask":
             # Cortical mask
-            file = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
-            clut = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
+            file = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
+            clut = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
             parc = mm.utils.Parcellation(file, clut)
 
             df  = parc.get_clut()
@@ -554,24 +544,68 @@ def _read_dataset_vepcon(subject, *args):
 
 
 def _read_dataset_simf(subject, *args):
-    dirs   = _retrieve_path("FS_DIR", "MM_DIR", "HR")
-    fs_dir = Path(dirs["FS_DIR"])
-    mm_dir = Path(dirs["MM_DIR"])
-    hr     = bool(dirs["HR"])             # option high resolution (True) or low resolution (False)
+    env = _retrieve_env("FS_DIR", "MM_DIR", "CMP_DIR", "HR", "SIM_DIR", "DATA")
 
     data = dict()
 
     for name in args:
         if name.lower() in ["fwd", "fwd_hr", "fwd_lr"]:
-            if (name.lower() == "fwd" and hr == True) or name.lower() == "fwd_hr":
+            if ((name.lower() == "fwd") and (env["HR"] == True)) or name.lower() == "fwd_hr":
                 # high resolution forward solution
-                file =  mm_dir/subject/"fwd"/f"{subject}_bem-hr-fwd.fif"
-                data[name] = mne.read_forward_solution(file, verbose="warning")
+                file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-hr-fwd.fif"
+                data[name] = mne.read_forward_solution(file, verbose="warning")         
 
             else:
                 # low resolution forward solution
-                file = mm_dir/subject/"fwd"/f"{subject}_bem-lr-fwd.fif"
+                file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-lr-fwd.fif"
                 data[name] = mne.read_forward_solution(file, verbose="warning")
+
+        if name.lower() == "src":
+            if ((name.lower() == "src") and (env["HR"] == True)) or name.lower() == "src_hr":
+                # high resolution source space
+                file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-hr-fwd.fif"
+                fwd  = mne.read_forward_solution(file, verbose="warning")
+                data[name] = fwd["src"] 
+
+            else:
+                # low resolution source space
+                file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-lr-fwd.fif"
+                fwd  = mne.read_forward_solution(file, verbose="warning")
+                data[name] = fwd["src"]
+
+        if name.lower() in ["sc", "sc_hr", "sc_lr"]:
+            if ((name.lower() == "sc") and (env["HR"] == True)) or name.lower() == "sc_hr":
+                # high resolution connectome
+                file = env["MM_DIR"]/subject/"sc"/f"{subject}_sc-hr-template.npy"
+                data[name] = np.load(file)         
+
+            else:
+                # low resolution connectome
+                file = env["MM_DIR"]/subject/"fwd"/f"{subject}_sc-lr-template.npy"
+                data[name] = np.load(file)
+
+        if name.lower() in ["cst", "cst_hr", "cst_lr"]:
+            if ((name.lower() == "cst") and (env["HR"] == True)) or name.lower() == "cst_hr":
+                # Connectome spectrum transform of high resolution connectome
+                file = env["MM_DIR"]/subject/"sc"/f"{subject}_cst-hr-template.npy"
+                data[name] = np.load(file, allow_pickle=True)
+            else:
+                # Connectome spectrum transform of low resolution connectome
+                file = env["MM_DIR"]/subject/"sc"/f"{subject}_cst-lr-template.npy"
+                data[name] = np.load(file, allow_pickle=True)
+            
+        if name.lower() == "src":
+            if ((name.lower() == "src") and (env["HR"] == True)) or name.lower() == "src_hr":
+                # high resolution source space
+                file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-hr-fwd.fif"
+                fwd  = mne.read_forward_solution(file, verbose="warning")
+                data[name] = fwd["src"] 
+
+            else:
+                # low resolution source space
+                file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-lr-fwd.fif"
+                fwd  = mne.read_forward_solution(file, verbose="warning")
+                data[name] = fwd["src"]
 
         if name.lower() in ["eeg_dum", "eeg_fwd"]:
             # Dummy eeg (zero signal)
@@ -588,38 +622,33 @@ def _read_dataset_simf(subject, *args):
 
         if name.lower() == "eeg_coreg":
             # Coregistered dummy eeg (zero signal)
-            file = mm_dir/subject/"eeg"/f"{subject}_coreg_null-raw.fif"
+            file = env["MM_DIR"]/subject/"eeg"/f"{subject}_coreg_null-raw.fif"
             data[name] = mne.io.read_raw(file, verbose="warning")
-            
-        if name.lower() == "cst":
-            # Connectome spectrum transform
-            file = mm_dir/subject/"cst"/f"{subject}_cst.npy"
-            data[name] = np.load(file, allow_pickle=True)
 
         if name.lower() == "bem":
             # Boundary Element Surfaces
-            file = fs_dir/subject/"bem"/f"{subject}-head.fif"
+            file = env["FS_DIR"]/subject/"bem"/f"{subject}-head.fif"
             data[name] = mne.read_bem_surfaces(file, verbose="warning")
 
         if name.lower() == "cras":
             # Translation part of the Talairach transform
-            file = fs_dir/subject/"mri"/"transforms"/"talairach.lta"
+            file = env["FS_DIR"]/subject/"mri"/"transforms"/"talairach.lta"
             data[name] = read_talairach(file)[:3,3]
 
         if name.lower() == "t1":
             # T1 MRI
-            file =  fs_dir/subject/"mri"/"orig"/"001.mgz"
+            file =  env["FS_DIR"]/subject/"mri"/"orig"/"001.mgz"
             data[name] = nib.load(file)
 
         if name.lower() == "t1-ants":
             # T1 MRI loaded with ants
-            file = fs_dir/subject/"mri"/"orig"/"001.mgz"
+            file = env["FS_DIR"]/subject/"mri"/"orig"/"001.mgz"
             data[name] = ants.image_read(str(file))
 
         if name.lower() == "ctx_mask":
             # Cortical mask
-            file = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
-            clut = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
+            file = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
+            clut = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
             parc = mm.utils.Parcellation(file, clut)
 
             df  = parc.get_clut()
@@ -628,18 +657,37 @@ def _read_dataset_simf(subject, *args):
 
         if name.lower() == "parc":
             # parcellation
-            file = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
-            clut = mm_dir/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
+            file = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
+            clut = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
             data[name] = mm.utils.Parcellation(file, clut)
 
         if name.lower() == "white":
             # White surfaced (boundary between white and gray matter)
-            fileL = fs_dir/subject/"surf"/"lh.white"
-            fileR = fs_dir/subject/"surf"/"rh.white"
+            fileL = env["FS_DIR"]/subject/"surf"/"lh.white"
+            fileR = env["FS_DIR"]/subject/"surf"/"rh.white"
 
             whiteL = nib.freesurfer.io.read_geometry(fileL)
             whiteR = nib.freesurfer.io.read_geometry(fileR)
             data[name] = [whiteL, whiteR]
+
+        if name.lower() == "tracto":
+            # Tractogram
+            file = env["CMP_DIR"]/subject/"dwi"/f"sub-10_model-CSD_desc-DET_tractogram.trk"
+            data[name] = nib.streamlines.load(file)
+
+        if name.lower() == "diff_affine":
+            # Affine (diffusion -> T1)
+            file   = env["CMP_DIR"]/subject/"xfm"/"final0GenericAffine.mat"
+            affine = sp.io.loadmat(str(file))["AffineTransform_double_3_3"].reshape(3, 4, order="F")
+            data[name] = np.concatenate((affine, np.array([[0, 0, 0, 1]])))
+
+        if "sample" in name.lower():
+            # simulation data
+            folder = env["SIM_DIR"]/env["DATA"]/name
+            ground_truth = mne.read_source_estimate(folder/f"{subject}_{name}_stc.fif")
+            simulation   = mne.read_evokeds(folder/f"{subject}_{name}_ave.fif", verbose="warning")[0]
+            data[name] = [ground_truth, simulation]
+
 
     return data
 
@@ -656,25 +704,25 @@ def _read_standards_spike(*args):
     for name in args:
         if name.lower() == "conn":
             # Connectome atlas (h5 format)
-            file = _retrieve_path("CONN")
+            file = _retrieve_env("CONN")
             data[name] = h5py.File(file)
 
         if name.lower() == "ctx":
             # Cortical atlas (lausanne 2018 file paths)
-            data[name] = _retrieve_path("LAUSL", "LAUSR")
+            data[name] = _retrieve_env("LAUSL", "LAUSR")
 
         if name.lower() == "thal":
             # Thalamus Nuclei atlas (ants)
-            file = _retrieve_path("THAL")
+            file = _retrieve_env("THAL")
             data[name] = ants.image_read(file)
 
         if name.lower() == "thal_clut":
             # Thalamus Nuclei color look up table (file path)
-            data[name] = _retrieve_path("THAL_CLUT")
+            data[name] = _retrieve_env("THAL_CLUT")
 
         if name.lower() == "mni":
             # MNI template (MNI152 NLIN 2009) (ants)
-            file = _retrieve_path("MNI")
+            file = _retrieve_env("MNI")
             data[name] = ants.image_read(file) 
 
     return data
@@ -687,20 +735,20 @@ def _read_standards_vepcon(*args):
     for name in args:
         if name.lower() == "ctx":
             # Cortical atlas (lausanne 2018 file paths)
-            data[name] = _retrieve_path("LAUSL", "LAUSR")
+            data[name] = _retrieve_env("LAUSL", "LAUSR")
 
         if name.lower() == "thal":
             # Thalamus Nuclei atlas (ants)
-            file = _retrieve_path("THAL")
+            file = _retrieve_env("THAL")
             data[name] = ants.image_read(file)
 
         if name.lower() == "thal_clut":
             # Thalamus Nuclei color look up table (file path)
-            data[name] = _retrieve_path("THAL_CLUT")
+            data[name] = _retrieve_env("THAL_CLUT")
 
         if name.lower() == "mni":
             # MNI template (MNI152 NLIN 2009) (ants)
-            file = _retrieve_path("MNI")
+            file = _retrieve_env("MNI")
             data[name] = ants.image_read(file) 
 
     return data
