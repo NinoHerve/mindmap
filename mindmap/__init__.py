@@ -1,10 +1,10 @@
 
-from . import source, forward, inverse, prior, utils, io, viz
+from . import source, forward, inv, prior, utils, io, viz
 
 __all__ = [
     "source",
     "forward",
-    "inverse",
+    "inv",
     "prior",
     "utils",
     "io",

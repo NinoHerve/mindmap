@@ -109,7 +109,7 @@ class Parcellation():
 
         if clut is None:
             self.clut = {"#No.":[], "Label name":[], "R":[], "G":[], "B":[], "A":[]}
-        elif isinstance(clut, str) or isinstance(volume, Path):
+        elif isinstance(clut, str) or isinstance(clut, Path):
             self.load(clut_fname=clut)
         else:
             self.clut = clut.to_dict(orient="list")
@@ -178,6 +178,16 @@ class Parcellation():
             with open(clut_fname, "w") as colorLUT_f:
                 colorLUT_f.write("\n".join(lines))
 
+    def id2name(self, rois):
+        map_  = dict(zip(self.clut["#No."], self.clut["Label name"]))
+        names = [map_[r] for r in rois]
+        return names 
+    
+    def name2id(self, rois):
+        map_ = dict(zip(self.clut["Label name"], self.clut["#No."]))
+        ids  = [map_[r] for r in rois]
+        return ids
+
     # get
     # ---
 
@@ -233,8 +243,7 @@ class Parcellation():
         labels = self.volume[voxels[:,0], voxels[:,1], voxels[:,2]].astype(int)
 
         if id == False:
-            id_to_name = dict(zip(self.clut["#No."], self.clut["Label name"]))
-            labels     = [id_to_name[l] for l in labels]
+            labels = self.id2name(labels)
 
         return labels
     
@@ -251,6 +260,30 @@ class Parcellation():
 
         return np.vstack(colors)
     
+    def get_position(self, rois=None):
+        """
+        Get position of regions of interest. The position is defined as the center of mass of 
+        all voxels belonging to the region. 
+        """
+        if rois is None:
+            rois = self.clut["#No."]
+        if (not isinstance(rois, list)) and (not isinstance(rois, np.ndarray)):
+            rois = [rois]
+        if isinstance(rois[0], str):
+            rois = self.name2id(rois)
+
+        positions = []
+
+        for r in rois:
+            voxels = np.argwhere(self.volume == r)
+            pos    = np.mean(voxels, axis=0)
+            pos    = nib.affines.apply_affine(self.affine, pos)
+        
+            positions.append(pos)
+
+        return np.vstack(positions)
+    
+    
     def create_mask(self, regions: List[int] = None) -> nib.Nifti1Image:
         """
         Create mask of parcellation.
@@ -263,7 +296,11 @@ class Parcellation():
         """
         if regions is None:
             regions = self.clut["#No."]
-
+        if (not isinstance(regions, list)) and (not isinstance(regions, np.ndarray)):
+            regions = [regions]
+        if isinstance(regions[0], str):
+            regions = self.name2id(regions)
+            
         mask = np.isin(self.volume, regions)
 
         return nib.Nifti1Image(mask.astype(float), self.affine)

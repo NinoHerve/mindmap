@@ -115,13 +115,13 @@ def plot_sources(
     return plotter
 
 
-def plot_brain_signal(sources, signal=None, n_points=2, name="signal", cmap="RdBu", clim=None):
+def plot_brain_signal(sources, signal=None, n_points=2, name="signal", cmap="bwr", clim=None, show_max=False):
     # sources
-    pointslh = sources[0]["rr"][sources[0]["vertno"]]
-    pointsrh = sources[1]["rr"][sources[1]["vertno"]]
+    src_lh = sources[0]["rr"][sources[0]["vertno"]]
+    src_rh = sources[1]["rr"][sources[1]["vertno"]]
 
-    pointslh = pv.PolyData(pointslh)
-    pointsrh = pv.PolyData(pointsrh)
+    pointslh = pv.PolyData(src_lh)
+    pointsrh = pv.PolyData(src_rh)
 
     # signal
     split = sources[0]["nuse"]
@@ -143,15 +143,26 @@ def plot_brain_signal(sources, signal=None, n_points=2, name="signal", cmap="RdB
     plotter.add_mesh(surflh, cmap=cmap, smooth_shading=True, clim=clim, name="lh")
     plotter.add_mesh(surfrh, cmap=cmap, smooth_shading=True, clim=clim, name="rh")
 
+    if show_max == True:
+        idx_max = np.argmax(np.abs(signal))
+        if idx_max < split:
+            map_max = src_lh[idx_max]
+        else:
+            map_max = src_rh[idx_max-split]
+        
+        plotter.add_mesh(map_max, render_points_as_spheres=True, color="violet", point_size=10)
+
+
     return plotter
     
 
 
 class TimeMesh:
-    def __init__(self, sources, time_series, sfreq, cmap="RdBu"):
+    def __init__(self, sources, t_start, time_series, sfreq, cmap="RdBu"):
         self.sources = sources
         self.time_series = time_series
         self.sfreq = sfreq
+        self.t_start = t_start
 
         if np.all(time_series>0):
             clim = [0, time_series.max()]
@@ -170,7 +181,7 @@ class TimeMesh:
 
     def __call__(self, time_point):
         # convert time_point to indices
-        i = int(time_point*self.sfreq)
+        i = int((time_point-self.t_start)*self.sfreq)
 
         # generate new images
         new_plotter = mm.viz.plot_brain_signal(
@@ -183,15 +194,15 @@ class TimeMesh:
         self.plotter.meshes[1].copy_from(new_plotter.meshes[1])
 
 
-def plot_brain_time_series(sources, time_series, sfreq=200, cmap="RdBu"):
-    time_mesh = TimeMesh(sources, time_series, sfreq, cmap=cmap)
+def plot_brain_time_series(sources, time_series, t_start=0.0, sfreq=200, cmap="bwr"):
+    time_mesh = TimeMesh(sources, t_start, time_series, sfreq, cmap=cmap)
  
     time_mesh.plotter.add_slider_widget(
         callback = lambda value: time_mesh(value),
-        rng = [0.0, time_series.shape[1]/sfreq],
-        value =  time_series.shape[1]/sfreq/2,
-        title = "Time (s)",
-        style = "modern",
+        rng      = [t_start, t_start + time_series.shape[1]/sfreq],
+        value    =  t_start + time_series.shape[1]/sfreq/2,
+        title    = "Time [s]",
+        style    = "modern",
     )
 
     time_mesh.plotter.show()
@@ -209,8 +220,11 @@ def plot_leadfield(eeg, forward):
     )
     leadfield = leadfield["sol"]["data"]
 
+    max_abs = max([abs(leadfield.max()), abs(leadfield.min())])
+    clim    = [-max_abs, max_abs]
+
     # plot
-    plotter = mm.viz.plot_brain_signal(forward["src"], np.zeros(leadfield.shape[1]), clim=[leadfield.min(), leadfield.max()])
+    plotter = mm.viz.plot_brain_signal(forward["src"], np.zeros(leadfield.shape[1]), clim=clim)
     plotter.add_mesh(cap, point_size=10, render_points_as_spheres=True, name="cap")
     plotter.remove_scalar_bar(title="highlight")
 
@@ -225,7 +239,7 @@ def plot_leadfield(eeg, forward):
             cap["highlight"][closest_point_id] = 1
 
             # change leadfield vector
-            tmp = mm.viz.plot_brain_signal(forward["src"], leadfield[closest_point_id])
+            tmp = mm.viz.plot_brain_signal(forward["src"], leadfield[closest_point_id], clim=clim)
             plotter.meshes[0]["signal"] = tmp.meshes[0]["signal"]
             plotter.meshes[1]["signal"] = tmp.meshes[1]["signal"]
 
@@ -238,10 +252,10 @@ def plot_leadfield(eeg, forward):
 
 
 
-def plot_connectome(connectome, name="Connectome", nonzero=False):
+def plot_connectome(connectome, name="Connectome", nonzero=False, figsize=(12,5)):
     degree = np.sum(connectome, axis=1)
 
-    fig, axs = plt.subplots(1,2, figsize=(12,5))
+    fig, axs = plt.subplots(1,2, figsize=figsize)
 
     axs[0].matshow(connectome, cmap="Blues")
     axs[0].set_title(name)

@@ -173,7 +173,7 @@ def read_talairach(fname: str | Path) -> np.ndarray:
 
 
 
-def read_dataset(subject: str, *args: str) -> dict:
+def read_dataset(subject: str, *args: str, sample: str = None) -> dict:
     """
     Read data according to configuration. To use this function, first read a configuration file with env=True.
 
@@ -202,10 +202,10 @@ def read_dataset(subject: str, *args: str) -> dict:
         data = _read_dataset_vep(subject, *args)
     
     elif dataset.lower() == "vepcon":
-        data = _read_dataset_vepcon(subject, *args)
+        data = _read_dataset_vepcon(subject, *args, sample=sample)
 
     elif dataset.lower() == "simf":
-        data = _read_dataset_simf(subject, *args)
+        data = _read_dataset_simf(subject, *args, sample=sample)
 
     else: 
         raise ValueError(f"Unknown dataset '{dataset}' for read_dataset()")
@@ -326,7 +326,7 @@ def _read_dataset_spike(subject, *args):
             parc = mm.utils.Parcellation(file, clut)
             data[name] = parc.create_mask()
             
-        if name.lower() == "ctx":
+        if name.lower() == "ctx_mask":
             # Cortical mask
             file = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
             clut = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
@@ -386,7 +386,7 @@ def _read_dataset_vep(subject, *args):
             clut = env["FS_DIR"]/"VepFreeSurferColorLut.txt"
             data[name] = mm.utils.Parcellation(file, clut)
 
-        if name.lower() == "ctx":
+        if name.lower() == "ctx_mask":
             # Cortical mask of template (without cerebellum)
             file = env["FS_DIR"]/"Colin27"/"mri"/"aparc+aseg.vep.mgz"
             clut = env["FS_DIR"]/"VepFreeSurferColorLut.txt"
@@ -543,87 +543,63 @@ def _read_dataset_vepcon(subject, *args):
     return data
 
 
-def _read_dataset_simf(subject, *args):
-    env = _retrieve_env("FS_DIR", "MM_DIR", "CMP_DIR", "HR", "SIM_DIR", "DATA")
+def _read_dataset_simf(subject, *args, sample=None):
+    env = _retrieve_env("FS_DIR", "MM_DIR", "CMP_DIR", "HR", "SIM_DIR", "DATA", "MONTAGE")
 
     data = dict()
 
     for name in args:
-        if name.lower() in ["fwd", "fwd_hr", "fwd_lr"]:
-            if ((name.lower() == "fwd") and (env["HR"] == True)) or name.lower() == "fwd_hr":
-                # high resolution forward solution
-                file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-hr-fwd.fif"
-                data[name] = mne.read_forward_solution(file, verbose="warning")         
+        if name.lower() == "fwd":
+            # forward solution for source reconstruction
+            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-sim-fwd.fif"
+            data[name] = mne.read_forward_solution(file, verbose="warning")
 
-            else:
-                # low resolution forward solution
-                file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-lr-fwd.fif"
-                data[name] = mne.read_forward_solution(file, verbose="warning")
+        if name.lower() == "fwd_sim":
+            # forward solution for simulations
+            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-sim-fwd.fif"
+            data[name] = mne.read_forward_solution(file, verbose="warning")
 
         if name.lower() == "src":
-            if ((name.lower() == "src") and (env["HR"] == True)) or name.lower() == "src_hr":
-                # high resolution source space
-                file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-hr-fwd.fif"
-                fwd  = mne.read_forward_solution(file, verbose="warning")
-                data[name] = fwd["src"] 
+            # source space 
+            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-sim-fwd.fif"
+            fwd  = mne.read_forward_solution(file, verbose="warning")
+            data[name] = fwd["src"]
 
-            else:
-                # low resolution source space
-                file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-lr-fwd.fif"
-                fwd  = mne.read_forward_solution(file, verbose="warning")
-                data[name] = fwd["src"]
+        if name.lower() == "sc":
+            # Structural connectome
+            file = env["MM_DIR"]/subject/"sc"/f"{subject}_sc-tracto.npy"
+            data[name] = np.load(file) 
 
-        if name.lower() in ["sc", "sc_hr", "sc_lr"]:
-            if ((name.lower() == "sc") and (env["HR"] == True)) or name.lower() == "sc_hr":
-                # high resolution connectome
-                file = env["MM_DIR"]/subject/"sc"/f"{subject}_sc-hr-template.npy"
-                data[name] = np.load(file)         
-
-            else:
-                # low resolution connectome
-                file = env["MM_DIR"]/subject/"fwd"/f"{subject}_sc-lr-template.npy"
-                data[name] = np.load(file)
-
-        if name.lower() in ["cst", "cst_hr", "cst_lr"]:
-            if ((name.lower() == "cst") and (env["HR"] == True)) or name.lower() == "cst_hr":
-                # Connectome spectrum transform of high resolution connectome
-                file = env["MM_DIR"]/subject/"sc"/f"{subject}_cst-hr-template.npy"
-                data[name] = np.load(file, allow_pickle=True)
-            else:
-                # Connectome spectrum transform of low resolution connectome
-                file = env["MM_DIR"]/subject/"sc"/f"{subject}_cst-lr-template.npy"
-                data[name] = np.load(file, allow_pickle=True)
-            
-        if name.lower() == "src":
-            if ((name.lower() == "src") and (env["HR"] == True)) or name.lower() == "src_hr":
-                # high resolution source space
-                file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-hr-fwd.fif"
-                fwd  = mne.read_forward_solution(file, verbose="warning")
-                data[name] = fwd["src"] 
-
-            else:
-                # low resolution source space
-                file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-lr-fwd.fif"
-                fwd  = mne.read_forward_solution(file, verbose="warning")
-                data[name] = fwd["src"]
+        if name.lower() == "cst":
+            file = env["MM_DIR"]/subject/"sc"/f"{subject}_cst-tracto.npy"
+            data[name] = np.load(file, allow_pickle=True)
 
         if name.lower() in ["eeg_dum", "eeg_fwd"]:
-            # Dummy eeg (zero signal)
-            montage  = mne.channels.make_standard_montage("biosemi64")
-            ch_names = montage.ch_names
-            ch_types = ["eeg"] * len(ch_names)
-            sfreq    = 200 
+            # Initial EEG
+            folder   = env["MONTAGE"]
+            eeg      = mm.io.read_eeg(folder, dataset="spike")
+            eeg.data = np.zeros((eeg.info["nchan"], int(eeg.info["sfreq"]*1)))
 
-            info = mne.create_info(ch_names, sfreq, ch_types)
-            info.set_montage(montage)
+            data[name] = eeg
 
-            recordings = np.zeros((len(ch_names), sfreq))
-            data[name] = mne.io.RawArray(recordings, info, verbose="warning")
+        #if name.lower() in ["eeg_dum", "eeg_fwd"]:
+        #    # Dummy eeg (zero signal)
+        #    montage  = mne.channels.make_standard_montage("biosemi256")
+        #    ch_names = montage.ch_names
+        #    ch_types = ["eeg"] * len(ch_names)
+        #    sfreq    = 200 
+
+        #    info = mne.create_info(ch_names, sfreq, ch_types)
+        #    info.set_montage(montage)
+        #    info["bads"] = ...
+
+        #    recordings = np.zeros((len(ch_names), sfreq))
+        #    data[name] = mne.io.RawArray(recordings, info, verbose="warning")
 
         if name.lower() == "eeg_coreg":
             # Coregistered dummy eeg (zero signal)
-            file = env["MM_DIR"]/subject/"eeg"/f"{subject}_coreg_null-raw.fif"
-            data[name] = mne.io.read_raw(file, verbose="warning")
+            file = env["MM_DIR"]/subject/"eeg"/f"{subject}_coreg_null-ave.fif"
+            data[name] = mne.read_evokeds(file, verbose="warning")[0]
 
         if name.lower() == "bem":
             # Boundary Element Surfaces
@@ -672,8 +648,21 @@ def _read_dataset_simf(subject, *args):
 
         if name.lower() == "tracto":
             # Tractogram
-            file = env["CMP_DIR"]/subject/"dwi"/f"sub-10_model-CSD_desc-DET_tractogram.trk"
+            if subject == "vepcon_sub-10":
+                file = env["CMP_DIR"]/subject/"dwi"/f"sub-10_model-CSD_desc-DET_tractogram.trk"
+            else:
+                file = env["CMP_DIR"]/subject/"fibtracking"/"sd_stream"/"dwi_denoised_eddy_distc_corrected_1mm_shore_sdstream.trk"
             data[name] = nib.streamlines.load(file)
+
+        if name.lower() == "t12diff":
+            # Transforms from T1 to diffusion
+            if subject == "vepcon_sub-10":
+                file = env["CMP_DIR"]/"vepcon_sub-10"/"xfm"/"final0GenericAffine.mat"
+            else:
+                file = env["CMP_DIR"]/subject/"transforms"/"all_t12diff0GenericAffine.mat"
+            affine = sp.io.loadmat(str(file))["AffineTransform_double_3_3"].reshape(3, 4, order="F")
+            data[name] = np.concatenate((affine, np.array([[0, 0, 0, 1]])))
+
 
         if name.lower() == "diff_affine":
             # Affine (diffusion -> T1)
@@ -681,12 +670,30 @@ def _read_dataset_simf(subject, *args):
             affine = sp.io.loadmat(str(file))["AffineTransform_double_3_3"].reshape(3, 4, order="F")
             data[name] = np.concatenate((affine, np.array([[0, 0, 0, 1]])))
 
-        if "sample" in name.lower():
+        if name.lower() in ["eeg", "eeg_inv"]:
             # simulation data
-            folder = env["SIM_DIR"]/env["DATA"]/name
-            ground_truth = mne.read_source_estimate(folder/f"{subject}_{name}_stc.fif")
-            simulation   = mne.read_evokeds(folder/f"{subject}_{name}_ave.fif", verbose="warning")[0]
-            data[name] = [ground_truth, simulation]
+            if sample is None: raise ValueError("Require sample name to read data 'eeg'.")
+            file = env["SIM_DIR"]/env["DATA"]/sample/f"{subject}_{sample}_ave.fif"
+            data[name] = mne.read_evokeds(file, verbose="warning")[0]
+
+        if name.lower() == "gt":
+            # ground truth 
+            if sample is None: raise ValueError("Require sample name to read data 'gt'.")
+            file = env["SIM_DIR"]/env["DATA"]/sample/f"{subject}_{sample}_stc.fif"
+            data[name] = mne.read_source_estimate(file)
+
+        if name.lower() == "cset":
+            # reconstructed source time course using CSET
+            if sample is None: raise ValueError("Require sample name to read reconstructed CSET source time course")
+            file = env["MM_DIR"]/subject/"stc"/env["DATA"]/f"{subject}_{sample}_cset-0.1-lh.stc"
+            data[name] = mne.read_source_estimate(file)
+
+        if name.lower() == "sloreta":
+            # reconstructed source time course using sloreta
+            if sample is None: raise ValueError("Require sample name to read reconstructed sLORETA source time course")
+            file = env["MM_DIR"]/subject/"stc"/env["DATA"]/f"{subject}_{sample}_sloreta-0.1-lh.stc"
+            data[name] = mne.read_source_estimate(file)
+
 
 
     return data
@@ -714,7 +721,7 @@ def _read_standards_spike(*args):
         if name.lower() == "thal":
             # Thalamus Nuclei atlas (ants)
             file = _retrieve_env("THAL")
-            data[name] = ants.image_read(file)
+            data[name] = ants.image_read(str(file))
 
         if name.lower() == "thal_clut":
             # Thalamus Nuclei color look up table (file path)
@@ -723,7 +730,7 @@ def _read_standards_spike(*args):
         if name.lower() == "mni":
             # MNI template (MNI152 NLIN 2009) (ants)
             file = _retrieve_env("MNI")
-            data[name] = ants.image_read(file) 
+            data[name] = ants.image_read(str(file)) 
 
     return data
 
@@ -740,7 +747,7 @@ def _read_standards_vepcon(*args):
         if name.lower() == "thal":
             # Thalamus Nuclei atlas (ants)
             file = _retrieve_env("THAL")
-            data[name] = ants.image_read(file)
+            data[name] = ants.image_read(str(file))
 
         if name.lower() == "thal_clut":
             # Thalamus Nuclei color look up table (file path)
@@ -749,6 +756,6 @@ def _read_standards_vepcon(*args):
         if name.lower() == "mni":
             # MNI template (MNI152 NLIN 2009) (ants)
             file = _retrieve_env("MNI")
-            data[name] = ants.image_read(file) 
+            data[name] = ants.image_read(str(file)) 
 
     return data

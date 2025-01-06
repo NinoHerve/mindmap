@@ -6,6 +6,8 @@ import mne
 import nibabel as nib
 import ants
 import pandas as pd
+from mindmap.utils.sources import get_src_position, mask_sources
+
 
 def get_folders(
         func: str,
@@ -263,6 +265,18 @@ def compute_eeg_snr(brain_signal: mne.SourceEstimate, fwd: mne.Forward, roi_mask
     return snr
 
 
+def avg_power(signal):
+    """
+    Compute average power of a signal. 
+    """
+    if len(signal.shape) == 1:
+        signal = signal.reshape(1,-1)
+
+    pow = signal - np.mean(signal, axis=1)[:,None]
+    pow = np.sum(pow**2, axis=1)/signal.shape[-1]
+
+    return pow
+
 
 def find_neighbor_regions(surface, parcellation, cras):
     """
@@ -330,3 +344,69 @@ def correct_labels(labels, sources, parcel):
     new_labels = [list(map.keys())[list(map.values()).index(n)] for n in label_names]
 
     return new_labels
+
+
+def compute_distance(pos, area, m=1):
+    """
+    Compute distance between points and area.
+    The algorithm computes the average vector distance to the m closest voxels of the area. If m=1, it's the distance to
+    the closest point in the area, if m='all' it's the distance to the center of mass.
+
+    Parameters
+    ----------
+    pos: np.ndarray (N,3)
+        Position of points.
+
+    area: nib.Nifti1Image
+        Area as a nibabel image.
+
+    m: int or 'all' 
+        Number of voxels to take into account.
+
+    Returns
+    -------
+    distances: np.ndarray (N,)
+        Distances to area as norm of average distance vector.
+    """
+    if len(pos.shape) < 2:
+        pos = pos.reshape(1,-1)
+
+    voxels = np.argwhere(area.get_fdata()>0)
+    voxels = mne.transforms.apply_trans(area.affine, voxels)
+    
+    if m == "all":
+        m = voxels.shape[0]
+
+    # compute vector distances
+    vectors = voxels[:,None,:] - pos
+    norms   = np.linalg.norm(vectors, ord=2, axis=-1)
+    norms_i = np.argsort(norms, axis=0)
+    ord_vec = np.take_along_axis(vectors, norms_i[:,:,None], axis=0)        # ordered from smallest to highest
+
+    # compute norm of average of m closest distances
+    avg  = np.mean(ord_vec[:m,:,:], axis=0)
+    dist = np.linalg.norm(avg, axis=1)
+
+    return dist
+
+
+
+def select_sources(subject, spacing="ico1", mask=None, cras=np.zeros(3), n_jobs=1):
+    fs_dir = _retrieve_env("FS_DIR")
+
+    sources = mne.setup_source_space(
+        subject=subject,
+        spacing=spacing,
+        surface="white",
+        add_dist=True,      # geodesic distances between sources
+        subjects_dir=str(fs_dir),
+        n_jobs=n_jobs,
+        verbose="warning",
+    )
+
+    if mask is not None:
+        sources = mask_sources(sources, mask, cras)
+
+    sources = get_src_position(sources)*1000 + cras
+
+    return sources 
