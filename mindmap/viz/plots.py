@@ -164,7 +164,7 @@ class TimeMesh:
         self.sfreq = sfreq
         self.t_start = t_start
 
-        if np.all(time_series>0):
+        if np.all(time_series>-1e-20):
             clim = [0, time_series.max()]
         else:
             max_abs = max(abs(time_series.min()), abs(time_series.max()))

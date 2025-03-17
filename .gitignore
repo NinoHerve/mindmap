@@ -5,3 +5,4 @@ mindmap.egg-info/
 configurations/
 tvb_data/
 .vscode/
+*.gz

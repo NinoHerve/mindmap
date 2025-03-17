@@ -157,7 +157,7 @@ def _retrieve_env(*args):
             if len(args)==1:
                 vars = os.environ[args[0]]
 
-                if isinstance(vars, str) and not (args[0].lower() == "name"):
+                if isinstance(vars, str) and ("/" in vars):
                     vars = Path(vars)
             
             else:
@@ -165,12 +165,13 @@ def _retrieve_env(*args):
 
                 for key in args:
                     v = os.environ[key]
-                    if (v == "True") or (v == "False"):
-                        vars[key] = (v == "True") or (v == "true") or (v == 1)
-                    elif v == "NAME":
-                        vars[key] = v
-                    else:
-                        vars[key] = Path(v)
+                    if isinstance(v, str):
+                        if (v == "True") or (v == "False"):
+                            vars[key] = (v == "True")
+                        elif "/" in v:
+                            vars[key] = Path(v)
+                        else:
+                            vars[key] = v
         
         except KeyError as e:
             raise KeyError(f"Environment variable {e} was not found. Read configuration file or check configuration file.")  

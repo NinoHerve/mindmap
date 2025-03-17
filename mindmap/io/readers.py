@@ -15,7 +15,7 @@ import ast
 import scipy as sp
 
 import mindmap as mm
-from mindmap.utils.misc import _retrieve_env
+from ..utils.misc import _retrieve_env
 
 
 def read_config(file: str | Path) -> Optional[dict[str, Any]]:
@@ -212,7 +212,7 @@ def read_dataset(subject: str, *args: str, sample: str = None) -> dict:
                 
 
     if len(data.keys()) < len(args):
-        print("\033[93mSome arguments did not correpond to the list of available objects to load. Check the list of arguments again.")
+        print("\033[93mSome arguments did not correpond to the list of available objects to load. Check the list of arguments again.\033[0m")
 
     return data
 
@@ -283,24 +283,29 @@ def _read_dataset_spike(subject, *args):
             file = env["FS_DIR"]/subject/"mri"/"orig"/"001.mgz"
             data[name] = ants.image_read(str(file))
             
-        if name.lower() == "eeg_raw":
+        if name.lower() in ["eeg_raw", "eeg_fwd"]:
             # Initial EEG
             folder = env["DS_DIR"]/"derivatives"/"cartool-v3.80"/subject/"ses-preop"/"eeg"
             data[name] = read_eeg(folder, dataset=env["NAME"])
 
-        if name.lower() in ["eeg_clean", "eeg_proc"]:
+        if name.lower() in ["eeg_clean", "eeg_inv"]:
             # EEG after cleaning
-            file = env["MM_DIR"]/subject/"eeg"/f"{subject}_clean-ave.fif"
+            file = env["MM_DIR"]/subject/"eeg"/f"{subject}_clean_ave.fif"
             data[name] = mne.read_evokeds(file, verbose="warning")[0]
 
-        if name.lower() in ["eeg_coreg", "eeg_fwd", "eeg_inv"]:
+        if name.lower() in ["eeg_coreg", "eeg_proc"]:
             # EEG after cleaning + coregistered to head
             file = env["MM_DIR"]/subject/"eeg"/f"{subject}_coreg_ave.fif"
             data[name] = mne.read_evokeds(file, verbose="warning")[0]
 
+        if name.lower() == "eeg_bad":
+            # EEG without average referencing
+            file = env["MM_DIR"]/subject/"eeg"/f"{subject}_BAD_ave.fif"
+            data[name] = mne.read_evokeds(file, verbose="warning")[0]
+
         if name.lower() == "cst":
             # Connectome Spectrum Transform
-            file = env["MM_DIR"]/subject/"cst"/f"{subject}_cst-template.npy"
+            file = env["MM_DIR"]/subject/"sc"/f"{subject}_cst-hr-template.npy"
             data[name] = np.load(file)
 
         if name.lower() == "bem":
@@ -310,7 +315,7 @@ def _read_dataset_spike(subject, *args):
 
         if name.lower() == "fwd":
             # Forward solution (a.k.a lead field matrix)
-            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem_surf-7mm_fwd.fif"
+            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-sim-fwd.fif"
             data[name] = mne.read_forward_solution(file, verbose="warning")
 
         if name.lower() == "parc":
@@ -338,7 +343,7 @@ def _read_dataset_spike(subject, *args):
 
         if name.lower() == "src":
             # Brain sources (distributed dipoles)
-            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem_surf-7mm_fwd.fif"
+            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-sim-fwd.fif"
             fwd  = mne.read_forward_solution(file, verbose="warning")
             data[name] = fwd["src"]
 
@@ -355,6 +360,51 @@ def _read_dataset_spike(subject, *args):
             # Translation part of the Talairach transform
             file = env["FS_DIR"]/subject/"mri"/"transforms"/"talairach.lta"
             data[name] = read_talairach(file)[:3,3]
+
+        if name.lower() == "sloreta":
+            # sLORETA source reconstruction
+            file = env["MM_DIR"]/subject/"stc"/f"{subject}_sample7_sloreta-0.1"
+            data[name] = mne.read_source_estimate(file)
+
+        if name.lower() == "cset":
+            # CSET source reconstruction
+            file = env["MM_DIR"]/subject/"stc"/f"{subject}_cset-0.1-corrected2"
+            data[name] = mne.read_source_estimate(file)
+
+        if name.lower() == "cset_error1":
+            # CSET without average referencing
+            file = env["MM_DIR"]/subject/"stc"/f"{subject}_cset-0.1-publication"
+            data[name] = mne.read_source_estimate(file)
+        
+        if name.lower() == "cset_error2":
+            # CSET with wrong depth weighting
+            file = env["MM_DIR"]/subject/"stc"/f"{subject}_cset-0.1-corrected1"
+            data[name] = mne.read_source_estimate(file)
+        
+        if name.lower() == "resec":
+            # mask of resected area
+            manual = env["MM_DIR"]/subject/"resec"/f"{subject}_man-recon-seg.nii.gz"
+            auto   = env["MM_DIR"]/subject/"resec"/f"{subject}_auto-seg.nii.gz"
+
+            if manual.exists() == True:
+                data["resec"] = nib.load(manual)
+            elif auto.exists() == True:
+                data["resec"] = nib.load(auto)
+            else:
+                print(f"\033[93mNo resection found for subject {subject}'\033[0m")
+
+        if name.lower() == "lam":
+            # eigenvalues
+            file = env["MM_DIR"]/subject/"sc"/f"{subject}_lam-template.npy"
+            data[name] = np.load(file)
+
+        if name.lower() == "mri":
+            file = env["DS_DIR"]/"derivatives"/"cmp-v3.0.0-beta-RC1"/subject/"ses-preop"/"anat"/f"{subject}_ses-preop_res-cmp_desc-brain_T1w.nii.gz"
+            data[name] = nib.load(file)
+
+        if name.lower() == "mri_post":
+            file = env["DS_DIR"]/"derivatives"/"cmp-v3.0.0-beta-RC1"/subject/"ses-postop"/"anat"/f"{subject}_ses-postop_space-individual_desc-brain_T1w.nii.gz"
+            data[name] = nib.load(file)
 
     return data
 
@@ -544,7 +594,7 @@ def _read_dataset_vepcon(subject, *args):
 
 
 def _read_dataset_simf(subject, *args, sample=None):
-    env = _retrieve_env("FS_DIR", "MM_DIR", "CMP_DIR", "HR", "SIM_DIR", "DATA", "MONTAGE")
+    env = _retrieve_env("FS_DIR", "MM_DIR", "CMP_DIR", "SIM_DIR", "MONTAGE")
 
     data = dict()
 
@@ -603,7 +653,7 @@ def _read_dataset_simf(subject, *args, sample=None):
 
         if name.lower() == "bem":
             # Boundary Element Surfaces
-            file = env["FS_DIR"]/subject/"bem"/f"{subject}-head.fif"
+            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_hm-bem.fif"
             data[name] = mne.read_bem_surfaces(file, verbose="warning")
 
         if name.lower() == "cras":
@@ -673,27 +723,43 @@ def _read_dataset_simf(subject, *args, sample=None):
         if name.lower() in ["eeg", "eeg_inv"]:
             # simulation data
             if sample is None: raise ValueError("Require sample name to read data 'eeg'.")
-            file = env["SIM_DIR"]/env["DATA"]/sample/f"{subject}_{sample}_ave.fif"
+            file = env["SIM_DIR"]/sample/f"{subject}_{sample}_ave.fif"
             data[name] = mne.read_evokeds(file, verbose="warning")[0]
 
         if name.lower() == "gt":
             # ground truth 
             if sample is None: raise ValueError("Require sample name to read data 'gt'.")
-            file = env["SIM_DIR"]/env["DATA"]/sample/f"{subject}_{sample}_stc.fif"
+            file = env["SIM_DIR"]/sample/f"{subject}_{sample}_stc.fif"
             data[name] = mne.read_source_estimate(file)
 
         if name.lower() == "cset":
             # reconstructed source time course using CSET
             if sample is None: raise ValueError("Require sample name to read reconstructed CSET source time course")
-            file = env["MM_DIR"]/subject/"stc"/env["DATA"]/f"{subject}_{sample}_cset-0.1-lh.stc"
+            file = env["MM_DIR"]/subject/"inv"/f"{subject}_{sample}_cset-0.1-lh.stc"
             data[name] = mne.read_source_estimate(file)
 
         if name.lower() == "sloreta":
             # reconstructed source time course using sloreta
             if sample is None: raise ValueError("Require sample name to read reconstructed sLORETA source time course")
-            file = env["MM_DIR"]/subject/"stc"/env["DATA"]/f"{subject}_{sample}_sloreta-0.1-lh.stc"
+            file = env["MM_DIR"]/subject/"inv"/f"{subject}_{sample}_sloreta-0.001-lh.stc"
             data[name] = mne.read_source_estimate(file)
 
+        if name.lower() == "wcset":
+            # source reconstruction using wCSET
+            if sample is None: raise ValueError("Require sample name to find wCSET")
+            file = env["MM_DIR"]/subject/"inv"/f"{subject}_{sample}_wcset-0.1-lh.stc"
+            data[name] = mne.read_source_estimate(file)
+
+        if name.lower() == "enet":
+            # source reconstruction using wCSET
+            if sample is None: raise ValueError("Require sample name to find enet")
+            file = env["MM_DIR"]/subject/"inv"/f"{subject}_{sample}_enet-0.99-lh.stc"
+            data[name] = mne.read_source_estimate(file)
+
+        if name.lower() == "lam":
+            # eigenvalues
+            file = env["MM_DIR"]/subject/"sc"/f"{subject}_lams-template.npy"
+            data[name] = np.load(file)
 
 
     return data

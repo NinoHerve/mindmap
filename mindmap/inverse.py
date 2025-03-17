@@ -1,0 +1,385 @@
+import mindmap as mm
+import mne
+import numpy as np
+
+import pyxu.abc as pxa
+import pyxu.operator as pxo
+import pyxu.opt.stop as pxst
+from pyxu.opt.solver import PGD
+
+def cset(
+        eeg: mne.Evoked,
+        fwd: mne.Forward,
+        cst: np.ndarray,
+        lam: float,
+        dw: float = 1,
+        win_size: float = 0.1,
+        scale: float = 1,
+        sub: str = None,
+):
+    """
+    Solve the inverse problem using Connectome Spectrum Electromagnetic Tomography (CSET).
+
+    eeg: mne.Evoked
+        Electroencephalograms. 
+
+    fwd: mne.Forward 
+        Forward solution (contains lead field matrix)
+
+    cst: np.ndarray (N,N)
+        Connectome Spectrum Transform 
+
+    lam: float
+        Regularizer parameter
+
+    dw: float
+        Depth weighting scale 
+
+    win_size: float 
+        Time window size in [s]
+
+    scale: float
+        Scale to scale value in case values are too small and pyxu always returns 0 due to computer resolution.
+
+    Returns
+    -------
+    stc: mne.SourceEstimate 
+        Source Time Currents
+    """
+
+    sfreq = eeg.info["sfreq"]
+    _, pt = mm.utils.eeg_rising_phase(eeg, ratio=1)
+
+    # select time window
+    if win_size is None:
+        _, ht = mm.utils.eeg_rising_phase(eeg, ratio=0.5)
+        win_size = ht/sfreq * 2
+        Y = eeg.data[:, [ht,pt]]
+    
+    else:     
+        dt = int(win_size*sfreq/2)
+        Y  = eeg.data[:, pt-dt:pt+dt]
+
+    # extract lead field matrix
+    fwd = mne.convert_forward_solution(fwd, force_fixed=True, verbose="warning")
+    L   = fwd["sol"]["data"].astype("float64")
+
+    # standardize
+    Ynorms = np.linalg.norm(Y, axis=0)
+    Y      = Y/Ynorms[None,:]
+
+    L      = L - np.mean(L, axis=0)
+    Lnorms = np.linalg.norm(L, axis=0)**dw
+    L      = L / Lnorms[None,:] 
+
+    # component-wise transformation
+    L = L @ cst.T
+
+    # pyxu components
+    L     = pxa.LinOp.from_array(L)
+    prior = lam*pxo.L1Norm(dim_shape=cst.shape[0])
+    recon = np.zeros((cst.shape[1], Y.shape[1]))
+    sc    = pxst.MaxIter(1000)
+
+    # ----- Optimization solving -----
+    for t in range(Y.shape[1]):
+        y     = Y[:,t]                                   # data time point
+        s_hat = np.random.random(L.dim_shape[0])*10**(-9)    # initial guess
+
+        likelihood = pxo.SquaredL2Norm(dim_shape=L.codim_shape).argshift(-y)*L
+        likelihood.diff_lipschitz = likelihood.estimate_diff_lipschitz()
+
+        solver = PGD(f=likelihood, g=prior, show_progress=False)
+
+        solver.fit(x0=s_hat, stop_crit=sc)
+
+        s_hat = solver.solution().squeeze()
+        recon[:,t] = (cst.T @ s_hat) * Ynorms[t] / scale
+
+    # Store in MNE object
+    t_peak = pt/sfreq
+    t_start  = t_peak-(win_size/2)
+    vertices = [fwd["src"][0]["vertno"], fwd["src"][1]["vertno"]]
+    stc      = mne.SourceEstimate(recon, vertices, tmin=t_start, tstep=1/sfreq, subject=sub)
+
+    return stc
+
+
+
+def enet(
+        eeg: mne.Evoked,
+        fwd: mne.Forward,
+        cst: np.ndarray,
+        alpha: float,
+        dw: float = 1,
+        win_size: float = 0.1,
+        scale: float = 1,
+        sub: str = None,
+):
+    """
+    Solve the inverse problem using a combination of elastic NET (eNET) and Connectome Spectrum Electromagnetic Tomography (CSET). eNET solves an L1 and
+    L2 problem at the same time, forcing sparsity and smoothness at the same time.
+
+    eeg: mne.Evoked
+        Electroencephalograms. 
+
+    fwd: mne.Forward 
+        Forward solution (contains lead field matrix)
+
+    cst: np.ndarray (N,N)
+        Connectome Spectrum Transform 
+
+    lam: float
+        Regularizer parameter
+
+    dw: float
+        Depth weighting scale 
+
+    win_size: float 
+        Time window size in [s]
+
+    scale: float
+        Scale to scale value in case values are too small and pyxu always returns 0 due to computer resolution.
+
+    Returns
+    -------
+    stc: mne.SourceEstimate 
+        Source Time Currents
+    """
+    # select time window 
+    sfreq = eeg.info["sfreq"]
+    _, pt = mm.utils.eeg_rising_phase(eeg, ratio=1)
+    dt = int(win_size*sfreq/2)
+    Y  = eeg.data[:, pt-dt:pt+dt]
+
+    # extract lead field matrix
+    fwd = mne.convert_forward_solution(fwd, force_fixed=True, verbose="warning")
+    L   = fwd["sol"]["data"].astype("float64")
+
+    # standardize
+    Ynorms = np.linalg.norm(Y, axis=0)
+    Y      = Y/Ynorms[None,:]
+
+    L      = L - np.mean(L, axis=0)
+    Lnorms = np.linalg.norm(L, axis=0)**dw
+    L      = L / Lnorms[None,:] 
+
+    # component-wise transformation
+    L = L @ cst.T
+
+    # define artificial dataset
+    lambda1 = 1-alpha
+    lambda2 = alpha
+    L = (1 + lambda2)**(-1/2) * np.vstack([L, lambda2**(1/2)*np.eye(L.shape[1])])
+    Y = np.vstack([Y, np.zeros((L.shape[1], Y.shape[1]))])
+
+    # regularization parameter
+    gamma = lambda1 / (1+lambda2)**(1/2)
+
+    # pyxu components
+    L     = pxa.LinOp.from_array(L)
+    prior = gamma*pxo.L1Norm(dim_shape=cst.shape[0])
+    recon = np.zeros((cst.shape[1], Y.shape[1]))
+    sc    = pxst.MaxIter(1000)
+
+    # ----- Optimization solving -----
+    for t in range(Y.shape[1]):
+        y     = Y[:,t]                                   # data time point
+        s_hat = (1+lambda2)**(1/2)*np.random.random(L.dim_shape[0])*10**(-9)    # initial guess
+
+        likelihood = pxo.SquaredL2Norm(dim_shape=L.codim_shape).argshift(-y)*L
+        likelihood.diff_lipschitz = likelihood.estimate_diff_lipschitz()
+
+        solver = PGD(f=likelihood, g=prior, show_progress=False)
+
+        solver.fit(x0=s_hat, stop_crit=sc)
+
+        s_hat = solver.solution().squeeze()
+        s_hat = (1+lambda2)**(1/2) * s_hat 
+        recon[:,t] = (cst.T @ s_hat) * Ynorms[t] / scale
+
+    # Store in MNE object
+    t_peak = pt/sfreq
+    t_start  = t_peak-(win_size/2)
+    vertices = [fwd["src"][0]["vertno"], fwd["src"][1]["vertno"]]
+    stc      = mne.SourceEstimate(recon, vertices, tmin=t_start, tstep=1/sfreq, subject=sub)
+
+    return stc
+
+
+def wcset(
+        eeg: mne.Evoked,
+        fwd: mne.Forward,
+        cst: np.ndarray,
+        gap: np.ndarray,
+        lam: float,
+        dw: float = 1/2,
+        hw: float = 1/3,
+        win_size: float = 0.1,
+        scale: float = 1,
+        sub: str = None,
+):
+    """
+    Solve the inverse problem using weighted Connectome Spectrum Electromagnetic Tomography (wCSET). This technique applies unbalanced weights on the harmonics 
+    according to frequency gaps.
+
+    eeg: mne.Evoked
+        Electroencephalograms. 
+
+    fwd: mne.Forward 
+        Forward solution (contains lead field matrix)
+
+    cst: np.ndarray (N,N)
+        Connectome Spectrum Transform 
+
+    gap: np.ndarray (N,)
+        Frequency gap between harmonics
+
+    lam: float
+        Regularizer parameter
+
+    dw: float
+        Depth weighting scale 
+
+    hw: float
+        Harmonic weighting
+
+    win_size: float 
+        Time window size in [s]
+
+    scale: float
+        Scale to scale value in case values are too small and pyxu always returns 0 due to computer resolution.
+
+    Returns
+    -------
+    stc: mne.SourceEstimate 
+        Source Time Currents
+    """
+    # select time window 
+    sfreq = eeg.info["sfreq"]
+    _, pt = mm.utils.eeg_rising_phase(eeg, ratio=1)
+    dt = int(win_size*sfreq/2)
+    Y  = eeg.data[:, pt-dt:pt+dt]
+
+    # extract lead field matrix
+    fwd = mne.convert_forward_solution(fwd, force_fixed=True, verbose="warning")
+    L   = fwd["sol"]["data"].astype("float64")
+
+    # standardize
+    Ynorms = np.linalg.norm(Y, axis=0)
+    Y      = Y/Ynorms[None,:]
+
+    L      = L - np.mean(L, axis=0)
+    Lnorms = np.linalg.norm(L, axis=0)**dw
+    L      = L / Lnorms[None,:] 
+
+    # harmonic weights
+    arr1 = np.abs(gap - np.roll(gap, 1))
+    arr2 = np.abs(gap - np.roll(gap, -1))
+    D    = np.minimum(arr1, arr2)**hw
+    D    = D/np.linalg.norm(D)
+    D    = np.diag(D)
+
+    # component-wise transformation
+    L = L @ cst.T @ D
+
+    # pyxu components
+    L     = pxa.LinOp.from_array(L)
+    prior = lam * pxo.SquaredL2Norm(dim_shape=cst.shape[0])
+    recon = np.zeros((cst.shape[1], Y.shape[1]))
+    sc    = pxst.MaxIter(1000)
+
+    # ----- Optimization solving -----
+    for t in range(Y.shape[1]):
+        y     = Y[:,t]                                   # data time point
+        s_hat = np.random.random(L.dim_shape[0])*10**(-9)    # initial guess
+
+        likelihood = pxo.SquaredL2Norm(dim_shape=L.codim_shape).argshift(-y)*L + prior
+        likelihood.diff_lipschitz = likelihood.estimate_diff_lipschitz()
+
+        solver = PGD(f=likelihood, g=prior, show_progress=False)
+
+        solver.fit(x0=s_hat, stop_crit=sc)
+
+        s_hat = solver.solution().squeeze()
+        recon[:,t] = (cst.T @ s_hat) * Ynorms[t] / scale
+
+    # Store in MNE object
+    t_peak = pt/sfreq
+    t_start  = t_peak-(win_size/2)
+    vertices = [fwd["src"][0]["vertno"], fwd["src"][1]["vertno"]]
+    stc      = mne.SourceEstimate(recon, vertices, tmin=t_start, tstep=1/sfreq, subject=sub)
+
+    return stc
+
+
+
+
+
+
+def sloreta(eeg, fwd, lam=0.1, win_size=None):
+    """
+    Source reconstruction using standardized low resolution electromagnetic tomography.
+
+    Parameters
+    ----------
+    eeg: mne.Evoked
+        EEG recordings.
+
+    fwd: mne.Forward
+        Forward solution.
+
+    lam: float
+        L2 regularizer parameter.
+
+    
+    win_size: float
+        Time window size to reconstruct around peak.
+
+    Returns
+    -------
+    recon: mne.SourceEstimate
+        Source reconstruction.
+    """
+
+    noise_cov = mne.make_ad_hoc_cov(eeg.info, std={"eeg":1})
+    
+    # prepare eeg
+    eeg.set_eeg_reference(projection=True)
+
+    # solve inverse problem
+    inverse = mne.minimum_norm.make_inverse_operator(
+        eeg.info,
+        fwd,
+        noise_cov,
+        fixed=True,
+        depth=0,
+        verbose="warning",
+    )
+
+    stc = mne.minimum_norm.apply_inverse(
+        eeg, 
+        inverse, 
+        lambda2=lam,
+        method="sLORETA",
+        verbose="warning",
+    )
+
+    # crop time window
+    if win_size is None:
+        _, ht = mm.utils.eeg_rising_phase(eeg, ratio=0.5)       # 50% rising phase
+        _, pt = mm.utils.eeg_rising_phase(eeg, ratio=1)         # peak phase
+        
+        stc.data = stc.data[:, [ht, pt]]
+    else:
+        _, pt  = mm.utils.eeg_rising_phase(eeg, ratio=1)
+        t_peak = pt/eeg.info["sfreq"]
+
+        dt      = int(win_size * eeg.info["sfreq"] /2)
+        t_start = t_peak-(win_size/2)
+
+        stc.data = stc.data[:, pt-dt:pt+dt]
+        stc.tmin = t_start
+
+    return stc
+    
