@@ -3,13 +3,14 @@ import nibabel as nib
 from typing import Optional, List, Tuple, Dict, Callable
 import numpy as np
 import pandas as pd
-from ..io.readers import read_clut
+from ..io.readers import read_clut, _retrieve_env
 from .misc import get_folders
 import subprocess
 import ants
 import mne
 import mindmap as mm
 import pyvista as pv
+import os
 
 
 # -----------------------------------------------------------------------------------
@@ -516,6 +517,316 @@ class Parcellation():
         parcellation = Parcellation(image, self.get_clut())
 
         return parcellation
+
+
+def correct_labels(labels, sources, parcel):
+    """
+    Correct labels that misplace left and right hemisphere dipoles because the parcellation is not perfect.
+    """
+    # map to switch from label id to label name
+    clut = parcel.get_clut()
+    map  = pd.Series(clut["Label name"].values, index=clut["#No."]).to_dict()
+    
+    label_names = [map[id] for id in labels]
+
+    # left/right hemisphere seperation
+    split = len(sources[0]["vertno"])
+
+    # switch 'lh' labels in right hemisphere to 'rh' homologue and vice virsa
+    label_names[:split] = [l.replace("-rh-", "-lh-") for l in label_names[:split]]
+    label_names[split:] = [l.replace("-lh-", "-rh-") for l in label_names[split:]]
+
+    # convert back to lable ids
+    new_labels = [list(map.keys())[list(map.values()).index(n)] for n in label_names]
+
+    return new_labels
+
+
+def parcelate(sub, parcellation="multiconn", margin:float = 0, threshold:float = 0.05, verbose:int = 1):
+    """
+    Parcelate subject according to given parcellation.
+
+    Parameters:
+    ----------
+    sub: str
+        Subject name.
+
+    parcellation: str
+        Parcellation name.
+        - multiconn
+        - Lausanne2018
+        - Thalamic
+
+    margin: float
+        Margin for the Lausanne 2018 atlas.
+
+    threshold: float:
+        Probability threshold for the Thalamic atlas.
+        
+    Returns:
+    -------
+    parcel: mm.Parcellation
+        Parcellation
+    """
+
+    if parcellation.lower() == "lausanne2018":
+        parcel = parcelate_lausanne2018(sub, margin=margin, verbose=verbose)
+    elif parcellation.lower() == "thal":
+        parcel = parcelate_thal(sub, threshold=threshold, verbose=verbose)
+    elif parcellation.lower() == "multiconn":
+        parcel = parcelate_multiconn(sub, margin, threshold, verbose=verbose)
+    else:
+        raise ValueError(f"Unknown Parcellation '{parcellation}'")
+        
+    return parcel
+
+
+def parcelate_lausanne2018(sub:str, margin:float = 0, verbose:int = 1):
+    """
+    Register the Lausanne 2018 atlas to subject. Output in FreeSurfer space.
+
+    Parameters:
+    ----------
+    sub: str
+        Subject
+
+    margin: float
+        Margin of gray matter area onto white matter area
+
+    verbose: int
+        Verbosity level (0 or 1)
+
+    Returns:
+    -------
+    laus2018: mm.Parcellation
+        Lausanne2018 Parcellation in FreeSurfer space.
+    """
+    if verbose == 1:
+        print(f"\033[96mSegmenting subject {sub} according to the Lausanne 2018 atlas ...\033[0m")
+
+    env = _retrieve_env("FS_DIR", "FS_HOME")
+
+    # retrieve data
+    if verbose == 1:
+        print(f"\033[96mLoading data ...\033[0m")
+    std  = mm.io.read_standards("ctx")
+
+    # set freesurfer configuration
+    os.environ["SUBJECTS_DIR"]    = str(env["FS_DIR"])
+    os.environ["FREESURFER_HOME"] = str(env["FS_HOME"])  
+
+    # temporary files
+    annotL    = env["FS_DIR"]/sub/"label"/"lh.my-atlas.annot" 
+    annotR    = env["FS_DIR"]/sub/"label"/"rh.my-atlas.annot" 
+    dparc_fs  = env["FS_DIR"]/sub/"mri"/"my-atlas_space-fs_dparc.nii.gz"
+
+    # Registration of surface-based segmentation
+    if verbose == 1:
+        print(f"\033[96mRegistering surface-based segmentation ...\033[0m")
+    subprocess.run(
+        [
+            "mri_surf2surf",
+            "--srcsubject", "fsaverage",
+            "--trgsubject", sub,
+            "--hemi", "lh",
+            "--sval-annot", std["ctx"]["LAUSL"],
+            "--tval", str(annotL),
+        ],
+        stdout=subprocess.PIPE,
+        universal_newlines=True,
+    )
+
+    subprocess.run(
+        [
+            "mri_surf2surf",
+            "--srcsubject", "fsaverage",
+            "--trgsubject", sub,
+            "--hemi", "rh",
+            "--sval-annot", std["ctx"]["LAUSR"],
+            "--tval", str(annotR),
+        ],
+        stdout=subprocess.PIPE,
+        universal_newlines=True,
+    )
+
+    # Expanding surface-based segmentation to volumetric segmentation
+    if verbose == 1:
+        print(f"\033[96mExpanding surface-based segmentation to volumetric segmentation ...\033[0m")
+    subprocess.run(
+        [
+            "mri_aparc2aseg",
+            "--s", sub,
+            "--annot", "my-atlas",
+            "--wmparc-dmax", str(margin),
+            "--labelwm",
+            "--hypo-as-wm",
+            "--new-ribbon",
+            "--o", str(dparc_fs),
+        ],
+        stdout=subprocess.PIPE,
+        universal_newlines=True,
+    )
+
+    # load data
+    volume  = nib.load(dparc_fs)
+    fs_clut = mm.io.read_clut(env["FS_HOME"]/"FreeSurferColorLUT.txt")     # FreeSurfer color LUT 
+    lh_clut = mm.io.read_clut(annotL)                                      # Left annotation color LUT
+    rh_clut = mm.io.read_clut(annotR)                                      # Right annotation color LUT 
+
+    # correct clut
+    if verbose == 1:
+        print(f"\033[96mFixing FreeSurfer color LUT ...\033[0m")
+    laus2018_clut = fs_clut[(fs_clut["#No."]<1000) | (fs_clut["#No."]>4999)]     # Keep non-cortical regions 
+
+    gm_lh_clut, wm_lh_clut = lh_clut.copy(), lh_clut.copy()
+    gm_rh_clut, wm_rh_clut = rh_clut.copy(), rh_clut.copy()
+
+    gm_lh_clut["#No."] += 1000          # 1000-1999 
+    gm_rh_clut["#No."] += 2000          # 2000-2999
+    wm_lh_clut["#No."] += 3000          # 3000-3999
+    wm_rh_clut["#No."] += 4000          # 4000-4999
+
+    laus2018_clut = pd.concat([laus2018_clut, gm_lh_clut, gm_rh_clut, wm_lh_clut, wm_lh_clut])
+    laus2018_clut = laus2018_clut.sort_values(by=["#No."])
+
+    laus2018 = Parcellation(volume, laus2018_clut)
+    laus2018.change_ids([(3001, 3999), (4001, 4999)], lambda x: x-2000)
+
+    # delete temporary files
+    if verbose == 1:
+        print(f"\033[96mDeleting Temporary files ...\033[0m")
+    annotL.unlink()
+    annotR.unlink()
+    dparc_fs.unlink()
+
+    if verbose == 1:
+        print(f"\033[92mLausanne Parcellation of subject {sub} finished\033[0m]")
+
+    return laus2018
+
+    
+
+def parcelate_thal(sub, thresh=0.05, verbose=1):
+    """
+    Register the Thalamic atlas to the subject.
+
+    Parameters:
+    ----------
+    sub: str
+        Subject's name.
+
+    thresh: float
+        Threshold to convert probabilistic atlas to deterministic atlas.
+    
+    verbose: int
+        Verbosity level.
+
+    Returns:
+    -------
+    thal: mm.Parcellation
+        Thalamic parcellation in FreeSurfer space.
+    """
+    if verbose == 1:
+        print(f"\033[96mSegmenting subject {sub} according to the thalamic atlas ...\033[0m")
+
+    # retrieve data
+    if verbose == 1:
+        print(f"\033[96mLoading data ...\033[0m")
+    data = mm.io.read_dataset(sub, "T1", mri_dtype="ants")
+    std  = mm.io.read_standards("mni", "thal", "thal_clut")
+
+    if verbose == 1:
+        print(f"\033[96mANTS registration of MNI space ...\033[0m")
+    # registration transform
+    mytx = ants.registration(
+        fixed = std["mni"],
+        moving = data["T1"],
+        type_of_transform = "SyN",
+    )
+
+    # registration 
+    volume = ants.apply_transforms(
+        fixed = data["T1"],
+        moving = std["thal"],
+        transformlist = mytx["invtransforms"],
+        imagetype = 3,
+        interpolator = "linear",
+    )
+
+    volume = mm.utils.ants_to_nibabel(volume)
+    thal   = Parcellation(volume, std["thal_clut"])
+    thal   = thal.prob2dseg(thresh=thresh)
+
+    if verbose == 1:
+        print(f"\033[92mThalamic Parcellation of subject {sub} finished\033[0m]")
+
+    return thal
+
+def parcelate_multiconn(sub: str, margin:float = 2, thresh:float = 0.05, verbose=1):
+    """
+    Generate the multiconn parcellation for subject.
+
+    Parameters:
+    ----------
+    sub: str
+        Subject
+
+    margin: float
+        Margin for Lausanne 2018 atlas
+
+    thresh: float
+        Probability threshold for Thalamic atlas.
+
+    Returns:
+    -------
+    multi_conn: mm.Parcellation
+        Multi conn parcellation in FreeSurfer space.
+    """
+    # ***** Generate Lausanne2018 and Thalamic parcellations *****
+
+    # Lausanne Parcellation
+    laus2018 = parcelate_lausanne2018(sub, margin=margin, verbose=verbose)
+
+    # Thal Parcellation
+    thal = parcelate_thal(sub, thresh=thresh, verbose=verbose)
+
+    # ***** Fuse Lausanne2018 and Thalamic parcellations *****
+
+    # Extract and rename parts of interest from the Lausanne 2018 parcellation.
+    ctx_lh = laus2018.retain([(1001, 1999), (3001, 3999)])
+    ctx_lh.change_labels(prefix="ctx-lh-")
+
+    ctx_rh = laus2018.retain([(2001, 2999), (4001, 4999)])
+    ctx_rh.change_labels(prefix="ctx-rh-")
+
+    subc_lh = laus2018.retain([11, 12, 13, 26, 18, 17])
+    subc_lh.change_labels(replace={"Left-":"", "Accumbens-area":"accumbens_area"}, prefix="subc-lh-", lower=True)
+
+    subc_rh = laus2018.retain([50, 51, 52, 58, 54, 53])
+    subc_rh.change_labels(replace={"Right-":"", "Accumbens-area":"accumbens_area"}, prefix="subc-rh-", lower=True)
+
+    # Extract and rename parts of interest from the thalamic parcellation.
+    thal_lh = thal.retain([(8, 14)])
+
+    thal_rh = thal.retain([(1,7)])
+
+    brain_stem = laus2018.retain([16])
+    brain_stem.change_labels(replace={"-":"_"})
+
+    # join parts of interest
+    multi_conn = mm.utils.Parcellation()
+    multi_conn = multi_conn.join(ctx_rh)
+    multi_conn = multi_conn.join(thal_rh)
+    multi_conn = multi_conn.join(subc_rh)
+    multi_conn = multi_conn.join(ctx_lh)
+    multi_conn = multi_conn.join(thal_lh)
+    multi_conn = multi_conn.join(subc_lh)
+    multi_conn = multi_conn.join(brain_stem)
+
+    if verbose == 1:
+        print(f"\033[92mMultiConn parcellation of subject {sub} finished\033[0m]")
+
+    return multi_conn
 
 
 # -----------------------------------------------------------------------------------

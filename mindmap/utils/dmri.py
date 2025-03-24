@@ -6,6 +6,8 @@ import mne
 import scipy as sp
 import h5py
 import numpy as np
+import mindmap as mm
+import pygsp
 
 
 # ------------------------------------------------------------------------------
@@ -14,6 +16,128 @@ import numpy as np
 # ¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨
 #
 # ------------------------------------------------------------------------------
+
+def create_cst_from_template(sub, consistency_thr:int = 40, length_thr:float = 25, number_thr:float = 20, distance_thr: float = 0.010):
+    """
+    Creates the connectome spectrum transform from a connectome atlas.
+    Steps:
+    1. Prepare the atlas (threshold according to consistency, fiber lengths and number of fibers)
+    2. Project the atlas to subject (extrapolate from ~500 regions to ~5000 regions)
+    3. Add close connections (connect dipoles with distance below threshold)
+    4. Compute the CST
+
+    Parameters
+    ----------
+    sub: str
+        Subject name.
+
+    consistency_thr: float
+        Consistency threshold for atlas.
+
+    length_thr: float
+        Fiber length [cm] threshold for atlas.
+
+    number_thr: int
+        Number of fiber threshold for atlas.
+
+    distance_thr: float
+        Maximum dipole distance [mm] to connect.
+
+    Returns
+    -------
+    cst: ndarray (n_dipoles, n_dipoles)
+        Connectome spectrum transform.
+
+    sc: ndarray (n_dipoles, n_dipoles)
+        Structural connectome.
+    """
+    # Retrieve directories
+    mm_dir = mm.io.readers._retrieve_env("MM_DIR")
+
+    # Data
+    data = mm.io.read_dataset(sub, "src", "parc")
+    std  = mm.io.read_standards("conn")
+
+    # label dipoles
+    pos    = mm.utils.get_src_position(data["src"])
+    pos    = pos*1000                
+    labels = data["parc"].label_points(pos, id=True)   # brain region label for each source.
+
+    # some left/right regions are very close and get mixed up
+    labels = mm.utils.correct_labels(labels, data["src"], data["parc"])
+    
+
+    ###################
+    ## Prepare Atlas ##
+    ###################
+
+    consistency = std["conn"]["matrices"]["consistency"]
+    length      = std["conn"]["matrices"]["length"]
+    number      = std["conn"]["matrices"]["numbStlines"]
+
+    sc_atlas = np.bitwise_and(
+        consistency[:,:] > consistency_thr,
+        length[:,:] > length_thr, 
+        number[:,:] > number_thr,
+    )
+
+    ##################################
+    ## Extrapolate Atlas to Subject ##
+    ##################################
+ 
+    N     = pos.shape[0]
+    sc_wm = np.zeros((N,N))
+
+    for i, l in enumerate(labels):
+        connected_regions = np.argwhere(sc_atlas[l-1]==1)+1
+        connections = np.isin(labels, connected_regions)
+        sc_wm[i] = connections 
+
+    sc_wm = sp.sparse.csc_array(sc_wm>0)
+
+    ############################
+    ## Add Nearby connections ##
+    ############################
+
+    sc_gm = []
+
+    for src in data["src"]:
+        vertices = src["vertno"]
+        dist     = src["dist"][vertices][:,vertices].tolil()
+
+        # binarize distances
+        dist[dist>distance_thr] = 0
+        dist.setdiag(0)
+        dist = dist.tocsc()
+        dist.eliminate_zeros()
+        dist = dist.astype(bool).astype(int)
+
+        sc_gm.append(dist)
+
+    sc_gm = sp.sparse.block_diag(sc_gm)
+
+    #########################################################
+    ## Combine white matter tracks with gray matter tracks ##
+    #########################################################
+
+    sc = sc_wm + sc_gm 
+    sc = sc.astype(bool).astype(int)
+
+    ###############################################
+    ## Compute the Connectome Spectrum Transform ##
+    ###############################################
+
+    coords = [s["rr"][s["vertno"]] for s in data["src"]]
+    G = pygsp.graphs.Graph(sc.todense(), lap_type="normalized", coords=coords)
+    G.compute_fourier_basis()
+    cst = G.U.T
+
+    return cst, sc
+
+
+
+
+
 
 def infer_wm_tracks(
         sources: mne.SourceSpaces,

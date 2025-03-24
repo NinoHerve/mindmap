@@ -411,3 +411,41 @@ def select_sources(subject, spacing="ico1", mask=None, cras=np.zeros(3), n_jobs=
     sources = get_src_position(sources)*1000 + cras
 
     return sources 
+
+
+def files_exists(fnames:list | str | Path, mkdir:bool = False):
+    """
+    Check if file exists.
+
+    Parameters
+    ----------
+    fnames: list(str | Path) | str | Path
+        List of file names.
+
+    mkdir: bool (default to False)
+        Makes directory of parent if True.
+
+    Returns
+    -------
+    exists: list(bool) | bool
+        True when file exists.
+    """
+    # check input type
+    if isinstance(fnames, str):
+        fnames = [Path(fnames)]
+    elif isinstance(fnames, Path):
+        fnames = [fnames]
+    
+    # check existence of files
+    exists = [False]*len(fnames)
+    for i, f in enumerate(fnames):
+        if f.exists():
+            exists[i] = True 
+        else:
+            if not f.parent.exists() and mkdir:
+                f.parent.mkdir(parents=True)
+
+    if len(exists) == 1:
+        exists = exists[0]
+
+    return exists

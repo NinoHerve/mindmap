@@ -172,8 +172,35 @@ def read_talairach(fname: str | Path) -> np.ndarray:
     return trans
 
 
+def read_mri(file, mri_dtype="nib"):
+    if mri_dtype.lower() == "nib":
+        return nib.load(file)
+    elif mri_dtype.lower() == "ants":
+        return ants.image_read(str(file))
+    else:
+        raise ValueError(f"Unknown mri file type")
+    
 
-def read_dataset(subject: str, *args: str, sample: str = None) -> dict:
+def log(data, args):
+    """
+    Print state of retrieving data 
+    """
+    retrieved = list(set(data.keys())-set(["name", "sub"]))
+    
+    print("\033[95mDATA SUMMARY\033[0m")
+    print(f"Dataset: {data["name"]}")
+    print(f"Subject: {data["sub"]}")
+
+    print(f"Retrieved objects:")
+    for r in retrieved:
+        print(f"- \033[92m{r}\033[0m")
+
+    print(f"Missing objects:")
+    for a in args:
+        print(f"- \033[91m{a}\033[0m")
+
+
+def read_dataset(subject: str, *args: str, sample: str = None, mri_dtype: str = "nib", verbosity: int = 1) -> dict:
     """
     Read data according to configuration. To use this function, first read a configuration file with env=True.
 
@@ -185,6 +212,12 @@ def read_dataset(subject: str, *args: str, sample: str = None) -> dict:
     *args: str
         Names of data objects to load.
 
+    sample: str
+        Specify sample if multiple samples.
+
+    mri_file_type: str
+        MRI file type -> ants or nibabel (nib)
+
     Returns
     -------
     data: dict(dataName: dataObject)
@@ -193,26 +226,25 @@ def read_dataset(subject: str, *args: str, sample: str = None) -> dict:
     dataset = _retrieve_env("NAME")
 
     if dataset.lower() == "spike":
-        data = _read_dataset_spike(subject, *args)
+        data, missing = _read_dataset_spike(subject, *args, mri_dtype=mri_dtype)
 
     elif dataset.lower() == "intra":
-        data = _read_dataset_intra(subject, *args)
+        data, missing = _read_dataset_intra(subject, *args)
 
     elif dataset.lower() == "vep":
-        data = _read_dataset_vep(subject, *args)
+        data, missing = _read_dataset_vep(subject, *args)
     
     elif dataset.lower() == "vepcon":
-        data = _read_dataset_vepcon(subject, *args, sample=sample)
+        data, missing = _read_dataset_vepcon(subject, *args, sample=sample)
 
     elif dataset.lower() == "simf":
-        data = _read_dataset_simf(subject, *args, sample=sample)
+        data, missing = _read_dataset_simf(subject, *args, sample=sample)
 
     else: 
         raise ValueError(f"Unknown dataset '{dataset}' for read_dataset()")
-                
 
-    if len(data.keys()) < len(args):
-        print("\033[93mSome arguments did not correpond to the list of available objects to load. Check the list of arguments again.\033[0m")
+    if verbosity == 1:
+        log(data, missing)
 
     return data
 
@@ -266,22 +298,20 @@ def read_standards(*args: str) -> dict:
 # ******* DATASET READER ********
 # -------------------------------
 
-def _read_dataset_spike(subject, *args):
+
+
+def _read_dataset_spike(subject, *args, mri_dtype="nib"):
     
-    env = _retrieve_env("NAME", "DS_DIR", "FS_DIR", "MM_DIR")
+    env  = _retrieve_env("NAME", "DS_DIR", "MM_DIR")
+    data = dict(name=env["NAME"], sub=subject)
 
-    data = dict()
+    # FreeSurfer
+    d    = read_freesurfer(subject, *args, mri_dtype=mri_dtype)     # read freesurfer files
+    data.update(d)                                                  # update data
+    args = list(set(args) - set(data.keys()))                       # update missing arguments
 
+    # Others
     for name in args:
-        if name.lower() == "t1":
-            # T1 MRI
-            file =  env["FS_DIR"]/subject/"mri"/"orig"/"001.mgz"
-            data[name] = nib.load(file)
-
-        if name.lower() == "t1-ants":
-            # T1 MRI loaded with ants
-            file = env["FS_DIR"]/subject/"mri"/"orig"/"001.mgz"
-            data[name] = ants.image_read(str(file))
             
         if name.lower() in ["eeg_raw", "eeg_fwd"]:
             # Initial EEG
@@ -310,12 +340,12 @@ def _read_dataset_spike(subject, *args):
 
         if name.lower() == "bem":
             # Boundary Element Model (contains surfaces)
-            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_hm-bem.fif"
+            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem.fif"
             data[name] = mne.read_bem_surfaces(file, verbose="warning")
 
         if name.lower() == "fwd":
             # Forward solution (a.k.a lead field matrix)
-            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-sim-fwd.fif"
+            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_fwd.fif"
             data[name] = mne.read_forward_solution(file, verbose="warning")
 
         if name.lower() == "parc":
@@ -326,40 +356,23 @@ def _read_dataset_spike(subject, *args):
 
         if name.lower() == "gm":
             # Gray matter mask
-            file = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
-            clut = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
-            parc = mm.utils.Parcellation(file, clut)
-            data[name] = parc.create_mask()
+            tmp, _     = _read_dataset_spike(subject, "parc")
+            data[name] = tmp["parc"].create_mask()
+            del tmp
             
         if name.lower() == "ctx_mask":
             # Cortical mask
-            file = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
-            clut = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
-            parc = mm.utils.Parcellation(file, clut)
-
-            df  = parc.get_clut()
-            ctx = df[df["Label name"].str.startswith("ctx")]
-            data[name] = parc.create_mask(ctx["#No."].values)
+            tmp, _     = _read_dataset_spike(subject, "parc")
+            df         = tmp["parc"].get_clut()
+            ctx        = df[df["Label name"].str.startswith("ctx")]
+            data[name] = tmp["parc"].create_mask(ctx["#No."].values)
+            del tmp
 
         if name.lower() == "src":
             # Brain sources (distributed dipoles)
-            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-sim-fwd.fif"
-            fwd  = mne.read_forward_solution(file, verbose="warning")
-            data[name] = fwd["src"]
-
-        if name.lower() == "white":
-            # White surfaced (boundary between white and gray matter)
-            fileL = env["FS_DIR"]/subject/"surf"/"lh.white"
-            fileR = env["FS_DIR"]/subject/"surf"/"rh.white"
-
-            whiteL = nib.freesurfer.io.read_geometry(fileL)
-            whiteR = nib.freesurfer.io.read_geometry(fileR)
-            data[name] = [whiteL, whiteR]
-
-        if name.lower() == "cras":
-            # Translation part of the Talairach transform
-            file = env["FS_DIR"]/subject/"mri"/"transforms"/"talairach.lta"
-            data[name] = read_talairach(file)[:3,3]
+            tmp, _     = _read_dataset_spike(subject, "fwd")
+            data[name] = tmp["fwd"]["src"]
+            del tmp
 
         if name.lower() == "sloreta":
             # sLORETA source reconstruction
@@ -398,15 +411,17 @@ def _read_dataset_spike(subject, *args):
             file = env["MM_DIR"]/subject/"sc"/f"{subject}_lam-template.npy"
             data[name] = np.load(file)
 
-        if name.lower() == "mri":
+        if name.lower() == "mri_pre":
             file = env["DS_DIR"]/"derivatives"/"cmp-v3.0.0-beta-RC1"/subject/"ses-preop"/"anat"/f"{subject}_ses-preop_res-cmp_desc-brain_T1w.nii.gz"
-            data[name] = nib.load(file)
+            data[name] = read_mri(file, mri_dtype=mri_dtype)
 
         if name.lower() == "mri_post":
             file = env["DS_DIR"]/"derivatives"/"cmp-v3.0.0-beta-RC1"/subject/"ses-postop"/"anat"/f"{subject}_ses-postop_space-individual_desc-brain_T1w.nii.gz"
-            data[name] = nib.load(file)
+            data[name] = read_mri(file, mri_dtype=mri_dtype)
 
-    return data
+    args = list(set(args) - set(data.keys()))    # update missing arguments
+
+    return data, args
 
 
 def _read_dataset_intra(subject, *args):
@@ -764,6 +779,67 @@ def _read_dataset_simf(subject, *args, sample=None):
 
     return data
 
+
+def read_freesurfer(subject, *args, mri_dtype="nib"):
+    """
+    Read data inside FreeSurfer directory.
+
+    Parameters:
+    ----------
+    subject: str
+        Subject name.
+
+    *args:
+        Data ids:
+        - T1: T1.mgz
+        - T1-orig: original image
+        - T1-brain: brain mask
+        - white: white surface (intersection white matter and gray matter)
+        - cras: Translation to go from original space to FreeSurfer space.
+
+    mri_dtype: str
+        Type for the mri dataobject (nibabel (nib) or ants)
+
+    Returns:
+    -------
+    data: dict
+        Dictionnary with data using data ids as keys.
+    """
+    fs_dir = _retrieve_env("FS_DIR")
+
+    data = dict()
+
+    for name in args:
+        if name.lower() == "t1":
+            # T1 FreeSurfer conformed image
+            file = fs_dir/subject/"mri"/"T1.mgz"
+            data[name] = read_mri(file, mri_dtype=mri_dtype)
+
+        if name.lower() == "t1-orig":
+            # T1 original image
+            file =  fs_dir/subject/"mri"/"orig"/"001.mgz"
+            data[name] = read_mri(file, mri_dtype=mri_dtype)
+
+        if name.lower() == "t1-brain":
+            # skull stripped T1 MRI
+            file = fs_dir/subject/"mri"/"brain.mgz"
+            data[name] = read_mri(file, mri_dtype=mri_dtype)
+
+        if name.lower() == "white":
+            # White surfaced (boundary between white and gray matter)
+            fileL = fs_dir/subject/"surf"/"lh.white"
+            fileR = fs_dir/subject/"surf"/"rh.white"
+
+            whiteL = nib.freesurfer.io.read_geometry(fileL)
+            whiteR = nib.freesurfer.io.read_geometry(fileR)
+            data[name] = [whiteL, whiteR]
+
+        if name.lower() == "cras":
+            # Translation part of the Talairach transform
+            file = fs_dir/subject/"mri"/"transforms"/"talairach.lta"
+            data[name] = read_talairach(file)[:3,3]
+
+    return data
 
 
 # -------------------------------
