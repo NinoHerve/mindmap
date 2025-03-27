@@ -6,6 +6,7 @@ import mne
 import nibabel as nib
 import ants
 import pandas as pd
+import mindmap as mm
 from mindmap.utils.sources import get_src_position, mask_sources
 
 
@@ -449,3 +450,96 @@ def files_exists(fnames:list | str | Path, mkdir:bool = False):
         exists = exists[0]
 
     return exists
+
+
+def measure_distance(target_point, target_area, x=1):
+    """
+    Measures distance between a point and an area.
+
+    Parameters
+    ----------
+    target_point: nd.array (3,)
+        Target point
+
+    target_area: nd.array (3,N) | nibabel.Nifti1
+        Cloud point
+
+    x: int
+        Number of points from the cloud point to consider.
+
+    Returns
+    -------
+    distance: float
+        Distance in [m]
+
+    Note: The distance is measured as the length of the average distance vector between the target point and the x closest points of the point cloud. 
+    - x = 1: Distance to closest point of the area.
+    - x = "all": Distance to the center of mass of the area.
+    - x != "all" != 1: Distance to the center of mass of the portion consisting of the x closest points.
+    """
+
+    if isinstance(target_area, nib.Nifti1Image):
+        affine      = target_area.affine
+        target_area = np.argwhere(target_area.get_fdata()>0)
+        target_area = nib.affines.apply_affine(affine, target_area)/1000
+
+
+    distances = target_area-target_point
+
+    if x == "all":
+        mean_distance = np.mean(distances, axis=0)
+        norm          = np.linalg.norm(mean_distance)
+
+    else:
+        norms         = np.linalg.norm(distances, ord=2, axis=1)
+        nearest       = distances[np.argsort(norms)[:x],:]
+        mean_distance = np.mean(nearest, axis=0)
+        norm          = np.linalg.norm(mean_distance)
+
+    return norm
+
+def select_source_estimate(stc, sources, method="max", tp=None, tw=None):
+    """
+    Select the epileptic source according to method.
+
+    Parammeters
+    -----------
+    stc: mne.SourceEstimate
+        Source reconstruction.
+
+    sources: mne.SourceSpace
+        Sources. Includes source locations.
+
+    method: str
+        Method to use.
+        - max: select maximum value. Requires a specific time point (tp).
+        - energy: select source with maximum energy around spike time. Requires time window (tw).
+
+    tp: int100
+        Time point [s] to use.
+
+    tw: list[int,int]
+        Time range [s] to use.
+
+    Returns:
+    -------
+    estimate: np.ndarray (3,)
+        Location of Epileptic spike.
+    """
+
+    if method == "max":
+        if tp is None:
+            raise ValueError("Provide a time point (tp) to search for max.")
+        
+        time_idx = np.argmin(np.abs(stc.times-tp))
+        src_idx  = np.argmax(np.abs(stc.data[:,time_idx]))
+
+    elif method == "energy":
+        raise NotImplementedError
+    
+    else:
+        raise ValueError(f"Unknown method '{method}' for source estimation.")
+
+    source_estimate = mm.utils.get_src_position(sources)[src_idx]
+
+    return source_estimate

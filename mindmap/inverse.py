@@ -12,9 +12,8 @@ def cset(
         fwd: mne.Forward,
         cst: np.ndarray,
         lam: float,
-        dw: float = 1,
+        dw: float = 0.5,
         win_size: float = 0.1,
-        scale: float = 1,
         sub: str = None,
 ):
     """
@@ -37,9 +36,6 @@ def cset(
 
     win_size: float 
         Time window size in [s]
-
-    scale: float
-        Scale to scale value in case values are too small and pyxu always returns 0 due to computer resolution.
 
     Returns
     -------
@@ -94,7 +90,7 @@ def cset(
         solver.fit(x0=s_hat, stop_crit=sc)
 
         s_hat = solver.solution().squeeze()
-        recon[:,t] = (cst.T @ s_hat) * Ynorms[t] / scale
+        recon[:,t] = (cst.T @ s_hat) * Ynorms[t]
 
     # Store in MNE object
     t_peak = pt/sfreq
@@ -111,10 +107,10 @@ def enet(
         fwd: mne.Forward,
         cst: np.ndarray,
         alpha: float,
-        dw: float = 1,
+        dw: float = 0.5,
         win_size: float = 0.1,
-        scale: float = 1,
         sub: str = None,
+        super: bool = False,
 ):
     """
     Solve the inverse problem using a combination of elastic NET (eNET) and Connectome Spectrum Electromagnetic Tomography (CSET). eNET solves an L1 and
@@ -138,8 +134,8 @@ def enet(
     win_size: float 
         Time window size in [s]
 
-    scale: float
-        Scale to scale value in case values are too small and pyxu always returns 0 due to computer resolution.
+    super: bool
+        Use super ENet if True !
 
     Returns
     -------
@@ -160,43 +156,83 @@ def enet(
     Ynorms = np.linalg.norm(Y, axis=0)
     Y      = Y/Ynorms[None,:]
 
-    L      = L - np.mean(L, axis=0)
-    Lnorms = np.linalg.norm(L, axis=0)**dw
-    L      = L / Lnorms[None,:] 
+    if not super: 
+        L      = L - np.mean(L, axis=0)
+        Lnorms = np.linalg.norm(L, axis=0)**dw
+        L      = L / Lnorms[None,:] 
 
-    # component-wise transformation
-    L = L @ cst.T
+        # component-wise transformation
+        L = L @ cst.T
 
-    # define artificial dataset
-    lambda1 = 1-alpha
-    lambda2 = alpha
-    L = (1 + lambda2)**(-1/2) * np.vstack([L, lambda2**(1/2)*np.eye(L.shape[1])])
-    Y = np.vstack([Y, np.zeros((L.shape[1], Y.shape[1]))])
+        # define artificial dataset
+        lambda1 = 1-alpha
+        lambda2 = alpha
+        L = (1 + lambda2)**(-1/2) * np.vstack([L, lambda2**(1/2)*np.eye(L.shape[1])])
+        Y = np.vstack([Y, np.zeros((L.shape[1], Y.shape[1]))])
 
-    # regularization parameter
-    gamma = lambda1 / (1+lambda2)**(1/2)
+        # regularization parameter
+        gamma = lambda1 / (1+lambda2)**(1/2)
 
-    # pyxu components
-    L     = pxa.LinOp.from_array(L)
-    prior = gamma*pxo.L1Norm(dim_shape=cst.shape[0])
-    recon = np.zeros((cst.shape[1], Y.shape[1]))
-    sc    = pxst.MaxIter(1000)
+        # pyxu components
+        L     = pxa.LinOp.from_array(L)
+        prior = gamma*pxo.L1Norm(dim_shape=cst.shape[0])
+        recon = np.zeros((cst.shape[1], Y.shape[1]))
+        sc    = pxst.MaxIter(1000)
 
-    # ----- Optimization solving -----
-    for t in range(Y.shape[1]):
-        y     = Y[:,t]                                   # data time point
-        s_hat = (1+lambda2)**(1/2)*np.random.random(L.dim_shape[0])*10**(-9)    # initial guess
+        # ----- Optimization solving -----
+        for t in range(Y.shape[1]):
+            y     = Y[:,t]                                   # data time point
+            s_hat = (1+lambda2)**(1/2)*np.random.random(L.dim_shape[0])*10**(-9)    # initial guess
 
-        likelihood = pxo.SquaredL2Norm(dim_shape=L.codim_shape).argshift(-y)*L
-        likelihood.diff_lipschitz = likelihood.estimate_diff_lipschitz()
+            likelihood = pxo.SquaredL2Norm(dim_shape=L.codim_shape).argshift(-y)*L
+            likelihood.diff_lipschitz = likelihood.estimate_diff_lipschitz()
 
-        solver = PGD(f=likelihood, g=prior, show_progress=False)
+            solver = PGD(f=likelihood, g=prior, show_progress=False)
 
-        solver.fit(x0=s_hat, stop_crit=sc)
+            solver.fit(x0=s_hat, stop_crit=sc)
 
-        s_hat = solver.solution().squeeze()
-        s_hat = (1+lambda2)**(1/2) * s_hat 
-        recon[:,t] = (cst.T @ s_hat) * Ynorms[t] / scale
+            s_hat = solver.solution().squeeze()
+            s_hat = (1+lambda2)**(1/2) * s_hat 
+            recon[:,t] = (cst.T @ s_hat) * Ynorms[t]
+
+    if super:
+
+        # depth prior
+        W = np.diag(np.linalg.norm(L, axis=0)**dw)
+
+        # define artificial data set
+        lambda1 = 1-alpha
+        lambda2 = alpha
+        L = (1 + lambda2)**(-1/2) * np.vstack([L, lambda2**(1/2)*W])
+        Y = np.vstack([Y, np.zeros((L.shape[1], Y.shape[1]))])
+
+        # regularization parameter
+        gamma = lambda1 / (1+lambda2)**(1/2)
+
+        # component-wise transformation
+        L = L @ cst.T
+
+        # pyxu components
+        L     = pxa.LinOp.from_array(L)
+        prior = gamma*pxo.L1Norm(dim_shape=cst.shape[0])
+        recon = np.zeros((cst.shape[1], Y.shape[1]))
+        sc    = pxst.MaxIter(1000)
+
+        # ---- optimization ----
+        for t in range(Y.shape[1]):
+            y     = Y[:,t]
+            s_hat = np.random.random(L.dim_shape[0])*10**(-9)
+
+            likelihood = pxo.SquaredL2Norm(dim_shape=L.codim_shape).argshift(-y)*L
+            likelihood.diff_lipschitz = likelihood.estimate_diff_lipschitz()
+
+            solver = PGD(f=likelihood, g=prior, show_progress=False)
+
+            solver.fit(x0=s_hat, stop_crit=sc)
+
+            s_hat      = solver.solution().squeeze()
+            s_hat      = (1+lambda2)**(1/2) * s_hat      # enet correction
+            recon[:,t] = (cst.T @ s_hat) * Ynorms[t]
 
     # Store in MNE object
     t_peak = pt/sfreq

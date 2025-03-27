@@ -312,3 +312,19 @@ def plot_spectrum(spectrum):
     ))
 
     return go.Figure(trace, layout=layout)
+
+
+def plot_resection(sources, resection, signal=None, show_estimate=False, color="green", *kwargs):
+    
+    if signal is None:
+        signal = np.zeros(sources[0]["nuse"]+sources[1]["nuse"])
+
+    # resection area
+    voxels = np.argwhere(resection.get_fdata()>0)
+    points = nib.affines.apply_affine(resection.affine, voxels)/1000
+
+     # plotter
+    plotter = mm.viz.plot_brain_signal(sources, signal, cmap="reds", *kwargs)
+    plotter.add_mesh(pv.PolyData(points), style="points_gaussian", point_size=10, emissive=True, color=color, label="Resected Area")
+
+    return plotter

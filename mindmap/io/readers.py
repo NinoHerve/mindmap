@@ -318,7 +318,7 @@ def _read_dataset_spike(subject, *args, mri_dtype="nib"):
             folder = env["DS_DIR"]/"derivatives"/"cartool-v3.80"/subject/"ses-preop"/"eeg"
             data[name] = read_eeg(folder, dataset=env["NAME"])
 
-        if name.lower() in ["eeg_clean", "eeg_inv"]:
+        if name.lower() in ["eeg", "eeg_clean", "eeg_inv"]:
             # EEG after cleaning
             file = env["MM_DIR"]/subject/"eeg"/f"{subject}_clean_ave.fif"
             data[name] = mne.read_evokeds(file, verbose="warning")[0]
@@ -328,14 +328,9 @@ def _read_dataset_spike(subject, *args, mri_dtype="nib"):
             file = env["MM_DIR"]/subject/"eeg"/f"{subject}_coreg_ave.fif"
             data[name] = mne.read_evokeds(file, verbose="warning")[0]
 
-        if name.lower() == "eeg_bad":
-            # EEG without average referencing
-            file = env["MM_DIR"]/subject/"eeg"/f"{subject}_BAD_ave.fif"
-            data[name] = mne.read_evokeds(file, verbose="warning")[0]
-
         if name.lower() == "cst":
             # Connectome Spectrum Transform
-            file = env["MM_DIR"]/subject/"sc"/f"{subject}_cst-hr-template.npy"
+            file = env["MM_DIR"]/subject/"cst"/f"{subject}_cst-template.npy"
             data[name] = np.load(file)
 
         if name.lower() == "bem":
@@ -376,22 +371,20 @@ def _read_dataset_spike(subject, *args, mri_dtype="nib"):
 
         if name.lower() == "sloreta":
             # sLORETA source reconstruction
-            file = env["MM_DIR"]/subject/"stc"/f"{subject}_sample7_sloreta-0.1"
+            file = env["MM_DIR"]/subject/"inv"/f"{subject}_spike_sloreta-0.1"
             data[name] = mne.read_source_estimate(file)
 
-        if name.lower() == "cset":
+        if name.lower().startswith("cset"):
             # CSET source reconstruction
-            file = env["MM_DIR"]/subject/"stc"/f"{subject}_cset-0.1-corrected2"
-            data[name] = mne.read_source_estimate(file)
+            if name.lower() in ["cset", "cset01"]:
+                file = env["MM_DIR"]/subject/"inv"/f"{subject}_spike_cset-0.1"
+            elif name.lower() == "cset1":
+                file = env["MM_DIR"]/subject/"inv"/f"{subject}_spike_cset-1"
+            elif name.lower() == "cset001":
+                file = env["MM_DIR"]/subject/"inv"/f"{subject}_spike_cset-001"
+            else:
+                continue 
 
-        if name.lower() == "cset_error1":
-            # CSET without average referencing
-            file = env["MM_DIR"]/subject/"stc"/f"{subject}_cset-0.1-publication"
-            data[name] = mne.read_source_estimate(file)
-        
-        if name.lower() == "cset_error2":
-            # CSET with wrong depth weighting
-            file = env["MM_DIR"]/subject/"stc"/f"{subject}_cset-0.1-corrected1"
             data[name] = mne.read_source_estimate(file)
         
         if name.lower() == "resec":
@@ -404,7 +397,7 @@ def _read_dataset_spike(subject, *args, mri_dtype="nib"):
             elif auto.exists() == True:
                 data["resec"] = nib.load(auto)
             else:
-                print(f"\033[93mNo resection found for subject {subject}'\033[0m")
+                continue
 
         if name.lower() == "lam":
             # eigenvalues
@@ -558,6 +551,7 @@ def _read_dataset_vepcon(subject, *args):
     env = _retrieve_env("NAME", "DS_DIR", "FS_DIR", "MM_DIR")
 
     data = dict()
+    
 
     for name in args:
         if name.lower() == "fwd":
@@ -608,10 +602,15 @@ def _read_dataset_vepcon(subject, *args):
     return data
 
 
-def _read_dataset_simf(subject, *args, sample=None):
-    env = _retrieve_env("FS_DIR", "MM_DIR", "CMP_DIR", "SIM_DIR", "MONTAGE")
+def _read_dataset_simf(subject, *args, sample=None, mri_dtype="nib"):
 
-    data = dict()
+    env  = _retrieve_env("NAME", "MM_DIR", "CMP_DIR", "SIM_DIR", "MONTAGE")
+    data = dict(name=env["NAME"], sub=subject)
+
+    # FreeSurfer
+    d    = read_freesurfer(subject, *args, mri_dtype=mri_dtype)     # read freesurfer files
+    data.update(d)                                                  # update data
+    args = list(set(args) - set(data.keys()))                       # update missing arguments
 
     for name in args:
         if name.lower() == "fwd":
@@ -671,21 +670,6 @@ def _read_dataset_simf(subject, *args, sample=None):
             file = env["MM_DIR"]/subject/"fwd"/f"{subject}_hm-bem.fif"
             data[name] = mne.read_bem_surfaces(file, verbose="warning")
 
-        if name.lower() == "cras":
-            # Translation part of the Talairach transform
-            file = env["FS_DIR"]/subject/"mri"/"transforms"/"talairach.lta"
-            data[name] = read_talairach(file)[:3,3]
-
-        if name.lower() == "t1":
-            # T1 MRI
-            file =  env["FS_DIR"]/subject/"mri"/"orig"/"001.mgz"
-            data[name] = nib.load(file)
-
-        if name.lower() == "t1-ants":
-            # T1 MRI loaded with ants
-            file = env["FS_DIR"]/subject/"mri"/"orig"/"001.mgz"
-            data[name] = ants.image_read(str(file))
-
         if name.lower() == "ctx_mask":
             # Cortical mask
             file = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
@@ -701,15 +685,6 @@ def _read_dataset_simf(subject, *args, sample=None):
             file = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
             clut = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
             data[name] = mm.utils.Parcellation(file, clut)
-
-        if name.lower() == "white":
-            # White surfaced (boundary between white and gray matter)
-            fileL = env["FS_DIR"]/subject/"surf"/"lh.white"
-            fileR = env["FS_DIR"]/subject/"surf"/"rh.white"
-
-            whiteL = nib.freesurfer.io.read_geometry(fileL)
-            whiteR = nib.freesurfer.io.read_geometry(fileR)
-            data[name] = [whiteL, whiteR]
 
         if name.lower() == "tracto":
             # Tractogram
@@ -747,11 +722,13 @@ def _read_dataset_simf(subject, *args, sample=None):
             file = env["SIM_DIR"]/sample/f"{subject}_{sample}_stc.fif"
             data[name] = mne.read_source_estimate(file)
 
-        if name.lower() == "cset":
+        if name.lower().startswith("cset"):
             # reconstructed source time course using CSET
             if sample is None: raise ValueError("Require sample name to read reconstructed CSET source time course")
             file = env["MM_DIR"]/subject/"inv"/f"{subject}_{sample}_cset-0.1-lh.stc"
             data[name] = mne.read_source_estimate(file)
+
+        
 
         if name.lower() == "sloreta":
             # reconstructed source time course using sloreta
@@ -776,8 +753,9 @@ def _read_dataset_simf(subject, *args, sample=None):
             file = env["MM_DIR"]/subject/"sc"/f"{subject}_lams-template.npy"
             data[name] = np.load(file)
 
+    args = list(set(args) - set(data.keys()))                       # update missing arguments
 
-    return data
+    return data, args
 
 
 def read_freesurfer(subject, *args, mri_dtype="nib"):
