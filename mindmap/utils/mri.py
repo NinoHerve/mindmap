@@ -220,13 +220,13 @@ class Parcellation():
 
         return image
     
-    def label_points(self, points: np.ndarray, id: bool = False) -> List[str]:
+    def label_points(self, points: np.ndarray, id: bool = False, cras: np.ndarray = np.zeros(3)) -> List[str]:
         """
         Get labels of the points given as input.
 
         Parameters
         ----------
-        points: np.ndarray (Nx3)
+        points: np.ndarray | mne.SourceSpaces (Nx3)
             Points of interest.
 
         id: bool
@@ -237,11 +237,20 @@ class Parcellation():
         labels: list[str]
             List of size N indicating for each point the regions it belongs to.
         """
+        if isinstance(points, mne.SourceSpaces):
+            src    = points.copy()
+            points = mm.utils.get_src_position(points)*1000 + cras
+        else:
+            src = None
+
         inv_trans = np.linalg.inv(self.affine)
         voxels    = nib.affines.apply_affine(inv_trans, points)
         voxels    = np.round(voxels).astype(int)
 
         labels = self.volume[voxels[:,0], voxels[:,1], voxels[:,2]].astype(int)
+
+        if src is not None:
+            labels = mm.utils.correct_labels(labels, src, self)
 
         if id == False:
             labels = self.id2name(labels)
@@ -322,7 +331,8 @@ class Parcellation():
         if self.affine is None:
             self.affine = other.affine
         else:
-            assert np.allclose(self.affine, other.affine), "Affines of parcellations don't match, cancel joining of parcellations."
+            
+            assert np.all(np.isclose(self.affine, other.affine, atol=1e-6)), "Affines of parcellations don't match, cancel joining of parcellations."
 
         if self.volume is None:
             self.volume = np.zeros_like(other.volume)

@@ -543,3 +543,6 @@ def select_source_estimate(stc, sources, method="max", tp=None, tw=None):
     source_estimate = mm.utils.get_src_position(sources)[src_idx]
 
     return source_estimate
+
+
+

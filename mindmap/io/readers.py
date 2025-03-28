@@ -238,7 +238,7 @@ def read_dataset(subject: str, *args: str, sample: str = None, mri_dtype: str = 
         data, missing = _read_dataset_vepcon(subject, *args, sample=sample)
 
     elif dataset.lower() == "simf":
-        data, missing = _read_dataset_simf(subject, *args, sample=sample)
+        data, missing = _read_dataset_simf(subject, *args, sample=sample, mri_dtype=mri_dtype)
 
     else: 
         raise ValueError(f"Unknown dataset '{dataset}' for read_dataset()")
@@ -645,20 +645,6 @@ def _read_dataset_simf(subject, *args, sample=None, mri_dtype="nib"):
             eeg.data = np.zeros((eeg.info["nchan"], int(eeg.info["sfreq"]*1)))
 
             data[name] = eeg
-
-        #if name.lower() in ["eeg_dum", "eeg_fwd"]:
-        #    # Dummy eeg (zero signal)
-        #    montage  = mne.channels.make_standard_montage("biosemi256")
-        #    ch_names = montage.ch_names
-        #    ch_types = ["eeg"] * len(ch_names)
-        #    sfreq    = 200 
-
-        #    info = mne.create_info(ch_names, sfreq, ch_types)
-        #    info.set_montage(montage)
-        #    info["bads"] = ...
-
-        #    recordings = np.zeros((len(ch_names), sfreq))
-        #    data[name] = mne.io.RawArray(recordings, info, verbose="warning")
 
         if name.lower() == "eeg_coreg":
             # Coregistered dummy eeg (zero signal)
