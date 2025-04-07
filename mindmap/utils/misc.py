@@ -452,7 +452,7 @@ def files_exists(fnames:list | str | Path, mkdir:bool = False):
     return exists
 
 
-def measure_distance(target_point, target_area, x=1):
+def measure_distance(target_point, target_area, x=1, cras=np.zeros(3)):
     """
     Measures distance between a point and an area.
 
@@ -481,7 +481,7 @@ def measure_distance(target_point, target_area, x=1):
     if isinstance(target_area, nib.Nifti1Image):
         affine      = target_area.affine
         target_area = np.argwhere(target_area.get_fdata()>0)
-        target_area = nib.affines.apply_affine(affine, target_area)/1000
+        target_area = (nib.affines.apply_affine(affine, target_area)-cras)/1000
 
 
     distances = target_area-target_point

@@ -226,24 +226,25 @@ def read_dataset(subject: str, *args: str, sample: str = None, mri_dtype: str = 
     dataset = _retrieve_env("NAME")
 
     if dataset.lower() == "spike":
-        data, missing = _read_dataset_spike(subject, *args, mri_dtype=mri_dtype)
+        data = _read_dataset_spike(subject, *args, mri_dtype=mri_dtype)
 
     elif dataset.lower() == "intra":
-        data, missing = _read_dataset_intra(subject, *args)
+        data = _read_dataset_intra(subject, *args)
 
     elif dataset.lower() == "vep":
-        data, missing = _read_dataset_vep(subject, *args)
+        data = _read_dataset_vep(subject, *args)
     
     elif dataset.lower() == "vepcon":
-        data, missing = _read_dataset_vepcon(subject, *args, sample=sample)
+        data = _read_dataset_vepcon(subject, *args, sample=sample)
 
     elif dataset.lower() == "simf":
-        data, missing = _read_dataset_simf(subject, *args, sample=sample, mri_dtype=mri_dtype)
+        data = _read_dataset_simf(subject, *args, sample=sample, mri_dtype=mri_dtype)
 
     else: 
         raise ValueError(f"Unknown dataset '{dataset}' for read_dataset()")
 
     if verbosity == 1:
+        missing = list(set(args) - set(data.keys()))
         log(data, missing)
 
     return data
@@ -301,91 +302,48 @@ def read_standards(*args: str) -> dict:
 
 
 def _read_dataset_spike(subject, *args, mri_dtype="nib"):
+    """
+    Read data for dataset SPIKE.
+
+    Parameters
+    ----------
+    subject: str
+        Subject name
+
+    *args: list(str)
+        Data ids:
+        - eeg: EEG (looks for eeg_raw if no EEG in mindmap folder).
+        - eeg_raw: EEG from the original dataset.
+        - resec: Resection area
+        - mri_post: Postsurgery T1w MRI.
+        For the rest, see read_freesurfer and read_mindmap
+
+    mri_dtype: str
+        MRI dtype (Nibabel or ANTs) for MRI images.
+
+    Returns:
+    data: dict
+        Dictionnary of data using data ids as keys.
+    """
     
     env  = _retrieve_env("NAME", "DS_DIR", "MM_DIR")
     data = dict(name=env["NAME"], sub=subject)
 
-    # FreeSurfer
-    d    = read_freesurfer(subject, *args, mri_dtype=mri_dtype)     # read freesurfer files
-    data.update(d)                                                  # update data
-    args = list(set(args) - set(data.keys()))                       # update missing arguments
-
     # Others
     for name in args:
             
-        if name.lower() in ["eeg_raw", "eeg_fwd"]:
-            # Initial EEG
+        if name.lower() == "eeg":
+            file = env["MM_DIR"]/subject/"eeg"/f"{subject}-spike_ave.fif"
+            if file.exists():
+                continue    # will read with read_mindmap() 
+            else:
+                print(f"\033[93mPreprocessed EEG not found, reading raw instead.\033[93m")
+                d = _read_dataset_spike(subject, "eeg_raw")
+                data[name] = d["eeg_raw"]
+
+        if name.lower() == "eeg_raw":
             folder = env["DS_DIR"]/"derivatives"/"cartool-v3.80"/subject/"ses-preop"/"eeg"
             data[name] = read_eeg(folder, dataset=env["NAME"])
-
-        if name.lower() in ["eeg", "eeg_clean", "eeg_inv"]:
-            # EEG after cleaning
-            file = env["MM_DIR"]/subject/"eeg"/f"{subject}_clean_ave.fif"
-            data[name] = mne.read_evokeds(file, verbose="warning")[0]
-
-        if name.lower() in ["eeg_coreg", "eeg_proc"]:
-            # EEG after cleaning + coregistered to head
-            file = env["MM_DIR"]/subject/"eeg"/f"{subject}_coreg_ave.fif"
-            data[name] = mne.read_evokeds(file, verbose="warning")[0]
-
-        if name.lower() == "cst":
-            # Connectome Spectrum Transform
-            file = env["MM_DIR"]/subject/"cst"/f"{subject}_cst-template.npy"
-            data[name] = np.load(file)
-
-        if name.lower() == "bem":
-            # Boundary Element Model (contains surfaces)
-            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem.fif"
-            data[name] = mne.read_bem_surfaces(file, verbose="warning")
-
-        if name.lower() == "fwd":
-            # Forward solution (a.k.a lead field matrix)
-            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_fwd.fif"
-            data[name] = mne.read_forward_solution(file, verbose="warning")
-
-        if name.lower() == "parc":
-            # Brain parcellation (MultiConn Atlas)
-            file = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
-            clut = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
-            data[name] = mm.utils.Parcellation(file, clut)
-
-        if name.lower() == "gm":
-            # Gray matter mask
-            tmp, _     = _read_dataset_spike(subject, "parc")
-            data[name] = tmp["parc"].create_mask()
-            del tmp
-            
-        if name.lower() == "ctx_mask":
-            # Cortical mask
-            tmp, _     = _read_dataset_spike(subject, "parc")
-            df         = tmp["parc"].get_clut()
-            ctx        = df[df["Label name"].str.startswith("ctx")]
-            data[name] = tmp["parc"].create_mask(ctx["#No."].values)
-            del tmp
-
-        if name.lower() == "src":
-            # Brain sources (distributed dipoles)
-            tmp, _     = _read_dataset_spike(subject, "fwd")
-            data[name] = tmp["fwd"]["src"]
-            del tmp
-
-        if name.lower() == "sloreta":
-            # sLORETA source reconstruction
-            file = env["MM_DIR"]/subject/"inv"/f"{subject}_spike_sloreta-0.1"
-            data[name] = mne.read_source_estimate(file)
-
-        if name.lower().startswith("cset"):
-            # CSET source reconstruction
-            if name.lower() in ["cset", "cset01"]:
-                file = env["MM_DIR"]/subject/"inv"/f"{subject}_spike_cset-0.1"
-            elif name.lower() == "cset1":
-                file = env["MM_DIR"]/subject/"inv"/f"{subject}_spike_cset-1"
-            elif name.lower() == "cset001":
-                file = env["MM_DIR"]/subject/"inv"/f"{subject}_spike_cset-001"
-            else:
-                continue 
-
-            data[name] = mne.read_source_estimate(file)
         
         if name.lower() == "resec":
             # mask of resected area
@@ -399,22 +357,23 @@ def _read_dataset_spike(subject, *args, mri_dtype="nib"):
             else:
                 continue
 
-        if name.lower() == "lam":
-            # eigenvalues
-            file = env["MM_DIR"]/subject/"sc"/f"{subject}_lam-template.npy"
-            data[name] = np.load(file)
-
-        if name.lower() == "mri_pre":
-            file = env["DS_DIR"]/"derivatives"/"cmp-v3.0.0-beta-RC1"/subject/"ses-preop"/"anat"/f"{subject}_ses-preop_res-cmp_desc-brain_T1w.nii.gz"
-            data[name] = read_mri(file, mri_dtype=mri_dtype)
-
         if name.lower() == "mri_post":
             file = env["DS_DIR"]/"derivatives"/"cmp-v3.0.0-beta-RC1"/subject/"ses-postop"/"anat"/f"{subject}_ses-postop_space-individual_desc-brain_T1w.nii.gz"
             data[name] = read_mri(file, mri_dtype=mri_dtype)
 
     args = list(set(args) - set(data.keys()))    # update missing arguments
 
-    return data, args
+    # FreeSurfer
+    d    = read_freesurfer(subject, *args, mri_dtype=mri_dtype) 
+    data.update(d)                                                 
+    args = list(set(args) - set(data.keys()))                       
+
+    # Mindmap
+    d   = read_mindmap(subject, *args, sample="spike")
+    data.update(d)
+    args = list(set(args) - set(data.keys()))
+
+    return data
 
 
 def _read_dataset_intra(subject, *args):
@@ -603,74 +562,83 @@ def _read_dataset_vepcon(subject, *args):
 
 
 def _read_dataset_simf(subject, *args, sample=None, mri_dtype="nib"):
+    """
+    Read data for dataset SIMF.
 
-    env  = _retrieve_env("NAME", "MM_DIR", "CMP_DIR", "SIM_DIR", "MONTAGE")
+    Parameters
+    ----------
+    subject: str
+        Subject name
+
+    *args: list(str)
+        Data ids:
+        - eeg: EEG (looks for eeg_raw if sample is None)
+        - eeg_raw: Coregistered EEG with zeros if exists, else not coregistered EEG with zeros
+        - trans: Identity transformation to coregister EEG
+        - tracto: Tractography
+        - t12diff: Transformation from T1 to diffusion space
+        - gt: Ground truth
+        For the rest, see read_freesurfer and read_mindmap
+
+    sample: str
+        Sample name for EEG.
+
+    mri_dtype: str
+        MRI dtype (Nibabel or ANTs) for MRI images.
+
+    Returns:
+    data: dict
+        Dictionnary of data using data ids as keys.
+    """
+    env  = _retrieve_env("NAME", "MM_DIR", "CMP_DIR", "SIM_DIR")
+
     data = dict(name=env["NAME"], sub=subject)
 
-    # FreeSurfer
-    d    = read_freesurfer(subject, *args, mri_dtype=mri_dtype)     # read freesurfer files
-    data.update(d)                                                  # update data
-    args = list(set(args) - set(data.keys()))                       # update missing arguments
+    if isinstance(sample, int):
+        sample = f"sample{sample:03}"
 
+    # dataset specifics (use this section to also overwrite freesurfer and mindmap)
     for name in args:
-        if name.lower() == "fwd":
-            # forward solution for source reconstruction
-            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-sim-fwd.fif"
-            data[name] = mne.read_forward_solution(file, verbose="warning")
+        if name.lower() == "eeg":
+            if sample is None:
+                # look for raw EEG
+                d = _read_dataset_simf(subject, "eeg_raw")
+                data[name] = d["eeg_raw"]
+            else:
+                file = env["SIM_DIR"]/"eeg"/f"{subject}-{sample}_ave.fif"
+                data[name] = mne.Evoked(file, verbose="warning")
 
-        if name.lower() == "fwd_sim":
-            # forward solution for simulations
-            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-sim-fwd.fif"
-            data[name] = mne.read_forward_solution(file, verbose="warning")
+        if name.lower() == "eeg_raw":
+            file = env["MM_DIR"]/subject/"eeg"/f"{subject}_coreg-ave.fif"
 
-        if name.lower() == "src":
-            # source space 
-            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_bem-sim-fwd.fif"
-            fwd  = mne.read_forward_solution(file, verbose="warning")
-            data[name] = fwd["src"]
+            if file.exists():
+                print("\033[93mCoregistered EEG found\033[0m")
+                data[name] = mne.Evoked(file, verbose="warning")
 
-        if name.lower() == "sc":
-            # Structural connectome
-            file = env["MM_DIR"]/subject/"sc"/f"{subject}_sc-tracto.npy"
-            data[name] = np.load(file) 
+            else:
+                print("\033[93mNo coregistered EEG found, making EEG from scratch\033[0m")
+                # null EEG
+                # load builtin montage
+                montage = mne.channels.make_standard_montage("EGI_256")
+        
+                # create info
+                info    = mne.create_info(ch_names=montage.ch_names, ch_types="eeg", sfreq=250)
+                info.set_montage(montage)
 
-        if name.lower() == "cst":
-            file = env["MM_DIR"]/subject/"sc"/f"{subject}_cst-tracto.npy"
-            data[name] = np.load(file, allow_pickle=True)
+                info["description"] = "Simulation EEG"
+                info["bads"] = ["E31", "E67", "E73", "E82", "E91", "E92", "E102", "E111", "E120", "E133", "E145", "E165", "E174", "E187", "E199", "E208", "E209", "E216", "E217", "E218", "E219"] + [f"E{i}" for i in range(225,257)]
 
-        if name.lower() in ["eeg_dum", "eeg_fwd"]:
-            # Initial EEG
-            folder   = env["MONTAGE"]
-            eeg      = mm.io.read_eeg(folder, dataset="spike")
-            eeg.data = np.zeros((eeg.info["nchan"], int(eeg.info["sfreq"]*1)))
+                # create null data
+                eeg = np.zeros((info["nchan"], int(info["sfreq"])))
 
-            data[name] = eeg
+                # create eeg
+                eeg = mne.EvokedArray(eeg, info, verbose="warning")
+                eeg.drop_channels(info["bads"])
 
-        if name.lower() == "eeg_coreg":
-            # Coregistered dummy eeg (zero signal)
-            file = env["MM_DIR"]/subject/"eeg"/f"{subject}_coreg_null-ave.fif"
-            data[name] = mne.read_evokeds(file, verbose="warning")[0]
+                data[name] = eeg
 
-        if name.lower() == "bem":
-            # Boundary Element Surfaces
-            file = env["MM_DIR"]/subject/"fwd"/f"{subject}_hm-bem.fif"
-            data[name] = mne.read_bem_surfaces(file, verbose="warning")
-
-        if name.lower() == "ctx_mask":
-            # Cortical mask
-            file = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
-            clut = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
-            parc = mm.utils.Parcellation(file, clut)
-
-            df  = parc.get_clut()
-            ctx = df[df["Label name"].str.startswith("ctx")]
-            data[name] = parc.create_mask(ctx["#No."].values)
-
-        if name.lower() == "parc":
-            # parcellation
-            file = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_dparc.nii.gz"
-            clut = env["MM_DIR"]/subject/"parc"/f"{subject}_multiConn4-2-0.05_clut.txt"
-            data[name] = mm.utils.Parcellation(file, clut)
+        if name.lower() == "trans":
+            data[name] = mne.transforms.Transform("head", "mri")    # identity transformation
 
         if name.lower() == "tracto":
             # Tractogram
@@ -696,52 +664,31 @@ def _read_dataset_simf(subject, *args, sample=None, mri_dtype="nib"):
             affine = sp.io.loadmat(str(file))["AffineTransform_double_3_3"].reshape(3, 4, order="F")
             data[name] = np.concatenate((affine, np.array([[0, 0, 0, 1]])))
 
-        if name.lower() in ["eeg", "eeg_inv"]:
-            # simulation data
-            if sample is None: raise ValueError("Require sample name to read data 'eeg'.")
-            file = env["SIM_DIR"]/sample/f"{subject}_{sample}_ave.fif"
-            data[name] = mne.read_evokeds(file, verbose="warning")[0]
-
         if name.lower() == "gt":
             # ground truth 
             if sample is None: raise ValueError("Require sample name to read data 'gt'.")
-            file = env["SIM_DIR"]/sample/f"{subject}_{sample}_stc.fif"
-            data[name] = mne.read_source_estimate(file)
-
-        if name.lower().startswith("cset"):
-            # reconstructed source time course using CSET
-            if sample is None: raise ValueError("Require sample name to read reconstructed CSET source time course")
-            file = env["MM_DIR"]/subject/"inv"/f"{subject}_{sample}_cset-0.1-lh.stc"
-            data[name] = mne.read_source_estimate(file)
-
-        
-
-        if name.lower() == "sloreta":
-            # reconstructed source time course using sloreta
-            if sample is None: raise ValueError("Require sample name to read reconstructed sLORETA source time course")
-            file = env["MM_DIR"]/subject/"inv"/f"{subject}_{sample}_sloreta-0.001-lh.stc"
-            data[name] = mne.read_source_estimate(file)
-
-        if name.lower() == "wcset":
-            # source reconstruction using wCSET
-            if sample is None: raise ValueError("Require sample name to find wCSET")
-            file = env["MM_DIR"]/subject/"inv"/f"{subject}_{sample}_wcset-0.1-lh.stc"
-            data[name] = mne.read_source_estimate(file)
-
-        if name.lower() == "enet":
-            # source reconstruction using wCSET
-            if sample is None: raise ValueError("Require sample name to find enet")
-            file = env["MM_DIR"]/subject/"inv"/f"{subject}_{sample}_enet-0.99-lh.stc"
-            data[name] = mne.read_source_estimate(file)
+            file = env["SIM_DIR"]/"stc"/f"{subject}-{sample}_stc.fif"
+            data[name] = mne.read_source_estimate(file) 
 
         if name.lower() == "lam":
             # eigenvalues
             file = env["MM_DIR"]/subject/"sc"/f"{subject}_lams-template.npy"
             data[name] = np.load(file)
 
-    args = list(set(args) - set(data.keys()))                       # update missing arguments
 
-    return data, args
+    args = list(set(args) - set(data.keys()))   # update list of missing arguments
+
+    # FreeSurfer
+    d    = read_freesurfer(subject, *args, mri_dtype=mri_dtype)     
+    data.update(d)                                                 
+    args = list(set(args) - set(data.keys()))                   
+
+    # mindmap
+    d    = read_mindmap(subject, *args, sample=sample)
+    data.update(d)
+    args = list(set(args) - set(data.keys()))
+
+    return data
 
 
 def read_freesurfer(subject, *args, mri_dtype="nib"):
@@ -767,7 +714,7 @@ def read_freesurfer(subject, *args, mri_dtype="nib"):
     Returns:
     -------
     data: dict
-        Dictionnary with data using data ids as keys.
+        Dictionnary of data using data ids as keys.
     """
     fs_dir = _retrieve_env("FS_DIR")
 
@@ -805,6 +752,123 @@ def read_freesurfer(subject, *args, mri_dtype="nib"):
 
     return data
 
+def read_mindmap(subject, *args, sample=None):
+    """
+    Read data inside Mindmap directory.
+
+    Parameters
+    ----------
+    subject: str
+        Subjecte name.
+
+    *args:
+        Data ids:
+        - parc    : Parcellation
+        - ctx     : Cortical mask
+        - sc      : Structural Connectome
+        - cst     : Connectome Spectrum Transform
+        - eeg     : Preprocessed EEG
+        - trans   : Transformation for coregistering EEG
+        - src     : Source space (after forward solution)
+        - src_raw : Source space (before forward solution)
+        - bem     : Head conductor model
+        - fwd     : Forward operator
+        - cset*   : CSET solutions
+        - sloreta*: sLORETA solutions
+        - wCSET*  : Weighted CSET solutions
+        - eNET*   : Elastic Net solutions
+        The * indicates the lambda parameter applied.
+
+    Returns
+    -------
+    data: dict
+        Dictionnary pf data using data ids as keys.
+    """
+    mm_dir = _retrieve_env("MM_DIR")
+
+    data = dict()
+    
+    for name in args:
+        if name.lower() == "parc":
+            file = mm_dir/subject/"parc"/f"{subject}_multiConn4-dseg.nii.gz"
+            clut = mm_dir/subject/"parc"/f"{subject}_multiConn4-dseg.txt"
+            data[name] = mm.utils.Parcellation(file, clut)
+
+        if name.lower() == "ctx":
+            d    = read_mindmap(subject, "parc")
+            clut = d["parc"].get_clut()
+            ctx  = clut[clut["Label name"].str.startswith("ctx")]
+            data[name] = d["parc"].create_mask(ctx["#No."].values)
+
+        if name.lower() == "sc":
+            file1 = mm_dir/subject/"sc"/f"{subject}_sc-tracto.npy"
+            file2 = mm_dir/subject/"sc"/f"{subject}_sc-template.npy"
+
+            if file1.exists():
+                data[name] = np.load(file1)
+            else:
+                data[name] = np.load(file2)
+
+        if name.lower() == "cst":
+            file = mm_dir/subject/"sc"/f"{subject}_cst.npy"
+            data[name] = np.load(file, allow_pickle=True)
+
+        if name.lower() == "eeg":
+            if sample is None: raise ValueError("Require sample name to read EEG.")
+            file = mm_dir/subject/"eeg"/f"{subject}-{sample}_ave.fif"
+            data[name] = mne.Evoked(file, verbose="warning")
+
+        if name.lower() == "trans":
+            file = mm_dir/subject/"eeg"/f"{subject}_eeg-trans.fif"
+            data[name] = mne.read_trans(file)
+
+        if name.lower() == "src":
+            file = mm_dir/subject/"fwd"/f"{subject}_fwd.fif"
+            if file.exists():
+                fwd = mne.read_forward_solution(file, verbose="warning")
+                data[name] = fwd["src"]
+            else:
+                print("\033[93mCould not find forward solution, reading src_raw instead.\033[0m")  # src can change when generating forward solution 
+                d = read_mindmap(subject, "src_raw")
+                data[name] = d["src_raw"]
+
+        if name.lower() == "src_raw":
+            file = mm_dir/subject/"src"/f"{subject}_src.fif"
+            data[name] = mne.read_source_spaces(file, verbose="warning")
+
+        if name.lower() == "hmodel":
+            file = mm_dir/subject/"fwd"/f"{subject}_bem.fif"
+
+            if file.exists():
+                d = read_mindmap(subject, "bem")
+                data[name] = d["bem"]
+            else:
+                d = read_mindmap(subject, "fem")
+                data[name] = d["fem"]
+
+        if name.lower() == "bem":
+            file = mm_dir/subject/"fwd"/f"{subject}_bem.fif"
+            data[name] = mne.read_bem_solution(file, verbose="warning")
+
+        if name.lower() == "fem":
+            raise NotImplementedError("FEM models not available yet")
+
+        if name.lower() == "fwd":
+            file = mm_dir/subject/"fwd"/f"{subject}_fwd.fif"
+            data[name] = mne.read_forward_solution(file, verbose="warning")
+         
+        if name.lower().startswith("cset"):
+            pass 
+        if name.lower().startswith("sloreta"):
+            file = mm_dir/subject/"inv"/f"{subject}-{sample}_{name}"
+            data[name] = mne.read_source_estimate(file)
+
+        if name.lower().startswith("wcset"):
+            pass 
+        if name.lower().startswith("eNET"):
+            pass 
+        
+    return data
 
 # -------------------------------
 # ****** STANDARDS READER *******

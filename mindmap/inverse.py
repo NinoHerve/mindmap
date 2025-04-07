@@ -15,7 +15,7 @@ def cset(
         dw: float = 0.5,
         win_size: float = 0.1,
         sub: str = None,
-):
+)-> mne.SourceEstimate:
     """
     Solve the inverse problem using Connectome Spectrum Electromagnetic Tomography (CSET).
 
@@ -111,7 +111,7 @@ def enet(
         win_size: float = 0.1,
         sub: str = None,
         super: bool = False,
-):
+) -> mne.SourceEstimate:
     """
     Solve the inverse problem using a combination of elastic NET (eNET) and Connectome Spectrum Electromagnetic Tomography (CSET). eNET solves an L1 and
     L2 problem at the same time, forcing sparsity and smoothness at the same time.

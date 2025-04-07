@@ -197,3 +197,63 @@ def forward_problem(
         raise Exception(f"Volume conduction error -> {e}") from e
     
     return eeg, bem, forward
+
+
+
+def solve_volume_conduction(sub, method="bem", min_skull_thick=2, conductivities=[0.3, 0.006, 0.3]):
+    """
+    Solve the volume conduction problem.
+
+    Parameters
+    ----------
+    sub: subject
+        Subject name.
+
+    method: str
+        Type of conduction model:
+        - bem: Boundary Element Model
+        - fem: Finite Element Model
+
+    min_skull_thick: str
+        Minimum skull thickness in [cm]. Used to correct BEM.
+
+    Returns
+    -------
+    cm: mne.ConductorModel | ??FEM??
+    """
+
+    if method.lower() == "bem":
+        fs_dir = mm.io.readers._retrieve_env("FS_DIR")
+
+        mne.bem.make_watershed_bem(
+            subject = sub,
+            subjects_dir = fs_dir,
+            volume = "T1",
+            overwrite = True,
+            verbose = "warning",
+        )
+
+        correct_skull(
+            subject     = sub,
+            offset      = min_skull_thick,
+            fs_dir      = fs_dir,
+            save_arrows = True,
+        )
+
+        model = mne.make_bem_model(
+            subject=sub,
+            subjects_dir=fs_dir,
+            conductivity=conductivities,
+            #ico=None,
+            verbose="warning",
+        )
+
+        bem  = mne.make_bem_solution(model, verbose="warning")
+
+    elif method.lower() == "fem":
+        raise NotImplementedError("FEM not implemented yet.")
+    
+    else: 
+        raise ValueError(f"Unknown method '{method}' for volume conduction problem.")
+
+    return bem

@@ -314,17 +314,71 @@ def plot_spectrum(spectrum):
     return go.Figure(trace, layout=layout)
 
 
-def plot_resection(sources, resection, signal=None, show_estimate=False, color="green", *kwargs):
+def plot_resection(
+        sources, 
+        resection, 
+        cras=np.zeros(3), 
+        signal=None, 
+        show_max=False, 
+        cmap="reds", 
+        style="vox", 
+        color="green"
+):
+    """
+    Plot resection area. 
+
+    Parameters
+    ----------
+    sources: mne.SourceSpaces
+        Source space.
+
+    resection: nib.Nifti1Image
+        Resection mask.
+
+    cras: np.ndarray (3,)
+        Translation (FreeSurfer -> MRI)
+
+    signal: np.ndarray (N,)
+        Brain activity.
+
+    show_max: bool
+        Show maximum of brain acitivity.
+
+    cmap: str
+        Color map for brain activity.
+
+    style: str
+        Style of resection area:
+        - cloud: looks like a cloud
+        - vox: see individual voxels
+
+    color: str
+        Color of resection area. 
+    """
     
     if signal is None:
         signal = np.zeros(sources[0]["nuse"]+sources[1]["nuse"])
 
+    if style == "cloud":
+        style = dict(
+            emissive = True,
+            style = "points_gaussian",
+            point_size = 10,
+        )
+    elif style == "vox":
+        style = dict(
+            point_size=0.1,
+            opacity=0.3,
+        )
+    else:
+        raise ValueError(f"Unknown style '{style}' for resection plot.")
+
     # resection area
     voxels = np.argwhere(resection.get_fdata()>0)
-    points = nib.affines.apply_affine(resection.affine, voxels)/1000
+    points = (nib.affines.apply_affine(resection.affine, voxels)-cras)/1000
 
      # plotter
-    plotter = mm.viz.plot_brain_signal(sources, signal, cmap="reds", *kwargs)
-    plotter.add_mesh(pv.PolyData(points), style="points_gaussian", point_size=10, emissive=True, color=color, label="Resected Area")
+    plotter = mm.viz.plot_brain_signal(sources, signal, cmap=cmap, show_max=show_max)
+    plotter.add_mesh(pv.PolyData(points), color=color, label="Resected Area", **style)
 
     return plotter
