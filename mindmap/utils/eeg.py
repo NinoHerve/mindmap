@@ -31,55 +31,60 @@ def get_ch_positions(eeg: mne.io.Raw | mne.Epochs | mne.Evoked) -> np.ndarray:
 
 
 def eeg_rising_phase(
-        eeg: mne.Evoked, 
-        ratio: float = 1,
-) -> np.ndarray:
+    eeg    : mne.Evoked,
+    ratio  : float = 0.5,
+    tmin   : float = None,
+    tmax   : float = None,
+    as_idx : bool  = False,
+): 
     """
-    Returns time point containing x% rising phase of EEG where x is the ratio.
+    Finds rising phase of spike.
 
     Parameters
     ----------
-    eeg: mne.Evoked
-        EEG.
-
+    eeg: mne.Evoked 
+        EEG. 
+    
     ratio: float in [0-1]
         Ratio of the rising phase. A ratio of 1 corresponds to the peak.
 
-    Returns:
+    tmin: float
+        Minimum point in time to consider for peak (in [s])
+
+    tmax: float
+        Maximum point in time to consider for peak (in [s])
+
+    as_idx: bool
+        Whether to return the time index.
+
+    Returns
     -------
-    np.ndarray
-        (c,1) array where c is the number of channels.
+    out: float
+        Time of peak or idx of peak if `as_idx` is True. 
     """
+    data = eeg.copy() 
 
-    data = np.abs(eeg.data) 
+    # get peak
+    channel, peak_time, peak_value = data.get_peak(tmin=tmin, tmax=tmax, return_amplitude=True)
 
-    # find time point of maximum.
-    t_max = np.argmax(data, axis=1)
-    ch_max = np.argmax(data[range(data.shape[0]), t_max])
-    t_max = t_max[ch_max]   
+    # set threshold
+    threshold = ratio * np.abs(peak_value)
 
-    # find rising phase
-    ts = data[ch_max, :]    # time serie of channel containing maximum
-    max = ts[t_max]         # maximum value
+    # slice signal up to peak
+    data.crop(tmin, peak_time)
+    pre_peak = np.abs(data.get_data(channel).squeeze())
 
-    t_ratio = None 
-    t1 = t_max 
-    t2 = t_max-1
+    # find last index before peak where it crossed threshold
+    above_thresh_indices = np.where(pre_peak >= threshold)[0]
+    rising_phase_idx     = above_thresh_indices[0] if above_thresh_indices.size > 0 else None 
 
-    while t_ratio is None:
-        if ts[t2] <= ratio*max:
-            a = abs(ts[t1]-ratio*max)
-            b = abs(ts[t2]-ratio*max)
-            if a < b: 
-                t_ratio = t1 
-            else:
-                t_ratio = t2 
+    # find time from idx
+    out = data.times[rising_phase_idx]
 
-        else: 
-            t1 = t2 
-            t2 = t2-1
+    if as_idx:
+        out = eeg.time_as_index(out)
 
-    return eeg.data[:,t_ratio], t_ratio
+    return out
 
 
 

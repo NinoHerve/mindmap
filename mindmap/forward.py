@@ -86,7 +86,7 @@ def forward_problem(
             subject=subject,
             spacing=spacing,
             surface="white",
-            add_dist=True,      # geodesic distances between sources
+            add_dist=True,    # geodesic distances between sources
             subjects_dir=fs_dir,
             n_jobs=n_jobs,
             verbose="warning",
@@ -98,9 +98,9 @@ def forward_problem(
         if verbose == 1:
             print("\033[92mSource space summary\033[0m")
             for src in sources:
-                print(f"Source space id: {src["id"]}")
-                print(f"Type: {src["type"]}")
-                print(f"Number of sources: {src["nuse"]}\n")
+                print(f"Source space id: {src['id']}")
+                print(f"Type: {src['type']}")
+                print(f"Number of sources: {src['nuse']}\n")
 
     except Exception as e:
         raise Exception(f"Source space error -> {e}") from e 

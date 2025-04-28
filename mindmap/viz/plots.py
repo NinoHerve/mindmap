@@ -5,6 +5,7 @@ import pyvista as pv
 import mindmap as mm
 import mne
 import plotly.graph_objs as go
+import plotly.express as px
 
 
 def show_slices(
@@ -116,96 +117,209 @@ def plot_sources(
 
 
 def plot_brain_signal(sources, signal=None, n_points=2, name="signal", cmap="bwr", clim=None, show_max=False):
-    # sources
-    src_lh = sources[0]["rr"][sources[0]["vertno"]]
-    src_rh = sources[1]["rr"][sources[1]["vertno"]]
 
-    pointslh = pv.PolyData(src_lh)
-    pointsrh = pv.PolyData(src_rh)
-
-    # signal
-    split = sources[0]["nuse"]
-    pointslh[name] = signal[:split]
-    pointsrh[name] = signal[split:]
-
-    # surfaces
-    vertices, faces = sources[0]["rr"], sources[0]["tris"]
-    surflh = mm.utils.surf_to_polydata(vertices, faces)
-
-    vertices, faces = sources[1]["rr"], sources[1]["tris"]
-    surfrh = mm.utils.surf_to_polydata(vertices, faces)
-
-    # interpolate signal on surface
-    surflh = surflh.interpolate(pointslh, strategy="closest_point", n_points=n_points)
-    surfrh = surfrh.interpolate(pointsrh, strategy="closest_point", n_points=n_points)
+    hemiL, hemiR = mm.utils.mne_to_polydata(sources, signal)
 
     plotter = pv.Plotter()
-    plotter.add_mesh(surflh, cmap=cmap, smooth_shading=True, clim=clim, name="lh")
-    plotter.add_mesh(surfrh, cmap=cmap, smooth_shading=True, clim=clim, name="rh")
+    plotter.add_mesh(hemiL, cmap=cmap, smooth_shading=True, clim=clim, name="lh")
+    plotter.add_mesh(hemiR, cmap=cmap, smooth_shading=True, clim=clim, name="rh")
 
     if show_max == True:
+        split = sources[0]["nuse"]
         idx_max = np.argmax(np.abs(signal))
         if idx_max < split:
-            map_max = src_lh[idx_max]
+            map_max = sources[0]["rr"][sources[0]["vertno"]][idx_max]
         else:
-            map_max = src_rh[idx_max-split]
+            map_max = sources[1]["rr"][sources[1]["vertno"]][idx_max-split]
         
         plotter.add_mesh(map_max, render_points_as_spheres=True, color="violet", point_size=10)
 
+
+    return plotter
+
+
+
+def plot_brain(
+    sources         : mne.SourceSpaces, 
+    signal          : np.ndarray | mne.SourceEstimate = None,
+    time            : float = None, 
+    overlay         : np.ndarray | nib.Nifti1Image    = None,
+    cras            : np.ndarray = np.zeros(3),
+    show_max        : bool  = False,
+    clim            : list  = None,
+    cmap            : str   = None,
+    absolute        : bool  = False,
+    smooth_shading  : bool  = False,
+    title           : str   = None,
+    signal_label    : str   = None,
+    overlay_color   : str   = "green",
+    overlay_label   : str   = None,
+    overlay_size    : float = 1,
+    overlay_opacity : float = 1, 
+):
+    """
+    Plot the brain !
+
+    Parameters
+    ----------
+    sources: mne.SourceSpaces 
+        Source space.
+
+    signal: mne.SourceEstimate | np.ndarray (N,)
+        Source values.
+
+    time: float 
+        Point in time (in [s]) to plot. If None, plot time serie (not compatible with show_max or overlay)
+
+    overlay: np.ndarray (M,3) | nib.Nifti1Image
+        Overlay defined as point cloud.
+
+    cras: np.ndarray
+        Translation subject -> FreeSurfer. Necessary to align MRI images with meshes.
+
+    show_max: bool
+        Show maximum of signal if True.
+
+    clim: list(float)
+        Color limit.
+
+    cmap: str
+        Color map.
+
+    absolute: bool
+        Whether to plot absolute values.
+
+    smooth_shading: str
+        Smoothen mesh if True.
+
+    title: str
+        Plot title
+
+    sname: str
+        Signal name.
+
+    overlay_color: str
+        Overlay color
+
+    overlay_label: str
+        Overlay label
+
+    overlay_size: float
+        Overlay point size
+
+    overlay_opacity: float
+        Overlay opacity
+    """
+    
+    if signal is not None:
+        if isinstance(signal, mne.SourceEstimate):
+            # single time point
+            if time:
+                idx    = signal.time_as_index(time)
+                signal = signal.data[:,idx]
+            # multiple time points
+            else:
+                return TimeMesh(sources, signal, cmap, absolute, smooth_shading)
+
+        # default cmap / clim
+        if np.all(signal>0) or absolute:
+            signal = np.abs(signal)
+            cmap   = "Reds" if cmap is None else cmap
+            clim   = [0, np.max(signal)] if clim is None else clim
+        else:
+            cmap     = "bwr" if cmap is None else cmap
+            extremum = np.max(np.abs(signal))
+            clim     = [-extremum, extremum] if clim is None else clim
+
+    # brain mesh
+    hemiL, hemiR = mm.utils.mne_to_polydata(sources, signal)
+
+    plotter = pv.Plotter()
+    plotter.add_mesh(hemiL, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="lh")
+    plotter.add_mesh(hemiR, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="rh")       
+
+    # maximum value
+    if show_max:
+        split   = sources[0]["nuse"]
+        idx_max = np.argmax(np.abs(signal))
+        if idx_max < split:
+            map_max = sources[0]["rr"][sources[0]["vertno"]][idx_max]
+        else:
+            map_max = sources[1]["rr"][sources[1]["vertno"]][idx_max-split]
+        
+        plotter.add_mesh(map_max, color="yellow", point_size=10)
+
+    # overlay
+    if overlay is not None:
+        if isinstance(overlay, nib.Nifti1Image):
+            overlay = mm.utils.nib_to_polydata(overlay, trans=cras)
+
+        plotter.add_mesh(overlay, color=overlay_color, label=overlay_label, point_size=overlay_size, opacity=overlay_opacity)
 
     return plotter
     
 
 
 class TimeMesh:
-    def __init__(self, sources, t_start, time_series, sfreq, cmap="RdBu"):
-        self.sources = sources
-        self.time_series = time_series
-        self.sfreq = sfreq
-        self.t_start = t_start
+    def __init__(self, sources, stc, cmap="bwr", absolute=False, smooth_shading=False):
+        """
+        Init
 
-        if np.all(time_series>-1e-20):
-            clim = [0, time_series.max()]
+        Parameters
+        ----------
+        sources: mne.SourceSpace 
+            Source space.
+
+        stc: mne.SourceEstimate 
+            Source values over time (data with size N,T)
+
+        cmap: Color map 
+
+        absolute: bool
+            Whether to take absolute values.
+        """
+        # instanciate objects
+        self.stc     = stc.copy()
+        self.sources = sources 
+
+        if absolute:
+            self.stc.data = np.abs(stc.data)
+            cmap          = "Reds"
+            clim          = [0, np.max(self.stc.data)]
         else:
-            max_abs = max(abs(time_series.min()), abs(time_series.max()))
-            clim    = [-max_abs, max_abs]
+            extremum = np.max(np.abs(self.stc.data))
+            clim     = [-extremum, extremum]
 
-        half = int(time_series.shape[1]/2)
-        self.plotter = mm.viz.plot_brain_signal(
-            sources, 
-            time_series[:,half], 
-            clim = clim, 
-            cmap = cmap
+        # instanciate first plot
+        signal                 = self.stc.data[:, int(self.stc.data.shape[1]/2)]
+        self.hemiL, self.hemiR = mm.utils.mne_to_polydata(sources, signal)
+
+        self.plotter = pv.Plotter()
+        self.plotter.add_mesh(self.hemiL, cmap=cmap, clim=clim, smooth_shading=smooth_shading)
+        self.plotter.add_mesh(self.hemiR, cmap=cmap, clim=clim, smooth_shading=smooth_shading)
+
+        self.plotter.add_slider_widget(
+            callback = self.__call__,
+            rng      = [stc.tmin, stc.times[-1]],
+            value    = stc.times[int(stc.times.shape[0]/2)],
+            title    = "Time [s]",
+            style    = "modern",
         )
 
+    def show(self):
+        self.plotter.show()
 
     def __call__(self, time_point):
-        # convert time_point to indices
-        i = int((time_point-self.t_start)*self.sfreq)
+        """
+        Change point of time. 
+        """
+        idx    = self.stc.time_as_index(time_point)
+        signal = self.stc.data[:,idx]
 
-        # generate new images
-        new_plotter = mm.viz.plot_brain_signal(
-            self.sources,
-            self.time_series[:, i],
-        )
-
-        # instanciate new images
-        self.plotter.meshes[0].copy_from(new_plotter.meshes[0])
-        self.plotter.meshes[1].copy_from(new_plotter.meshes[1])
-
-
-def plot_brain_time_series(sources, time_series, t_start=0.0, sfreq=200, cmap="bwr"):
-    time_mesh = TimeMesh(sources, t_start, time_series, sfreq, cmap=cmap)
- 
-    time_mesh.plotter.add_slider_widget(
-        callback = lambda value: time_mesh(value),
-        rng      = [t_start, t_start + time_series.shape[1]/sfreq],
-        value    =  t_start + time_series.shape[1]/sfreq/2,
-        title    = "Time [s]",
-        style    = "modern",
-    )
-
-    time_mesh.plotter.show()
+        # update values (plot update automatically like magic)
+        hemiL, hemiR = mm.utils.mne_to_polydata(self.sources, signal)
+        self.hemiL["signal"] = hemiL["signal"]
+        self.hemiR["signal"] = hemiR["signal"]
 
 
 def plot_leadfield(eeg, forward):
@@ -374,11 +488,81 @@ def plot_resection(
         raise ValueError(f"Unknown style '{style}' for resection plot.")
 
     # resection area
-    voxels = np.argwhere(resection.get_fdata()>0)
-    points = (nib.affines.apply_affine(resection.affine, voxels)-cras)/1000
+    #voxels = np.argwhere(resection.get_fdata()>0)
+    #points = (nib.affines.apply_affine(resection.affine, voxels)-cras)/1000
+    points = mm.utils.nib_to_polydata(resection, trans=cras)
 
      # plotter
     plotter = mm.viz.plot_brain_signal(sources, signal, cmap=cmap, show_max=show_max)
-    plotter.add_mesh(pv.PolyData(points), color=color, label="Resected Area", **style)
+    plotter.add_mesh(points, color=color, label="Resected Area", **style)
 
     return plotter
+
+
+
+def plot_eeg(eeg: mne.Evoked, colorscale="Turbo", title="EEG"):
+    """
+    Plot EEGs using plotly (for dashboard)
+    
+    Parameters
+    ----------
+    eeg: mne.Evoked 
+        EEG 
+    
+    colorscale: str
+        Plotly colorscale to use.
+
+    Returns
+    -------
+    plotly lineplot
+    """
+    # data
+    data = eeg.data
+    data = {ch:data[i,:] for i,ch in enumerate(eeg.ch_names)}
+
+    times = eeg.times
+
+    n_colors = len(eeg.ch_names)
+    colors   = px.colors.sample_colorscale(colorscale, [n/(n_colors-1) for n in range(n_colors)])
+
+    # figure
+    fig = go.Figure()
+    for ch_name, time_serie in data.items():
+        fig.add_trace(go.Scatter(
+            x    = times,
+            y    = time_serie,
+            name = ch_name,
+            line = {
+                "color": colors.pop(),
+                "width": 1,
+            } 
+        ))
+
+    # layout
+    fig.update_layout(
+        plot_bgcolor = "rgb(34, 34, 34)",
+        paper_bgcolor="rgb(34, 34, 34)",
+        showlegend   = False,
+        title        = {"text":title, "font":{"size": 20, "color":"white"}},
+        xaxis        = {
+            "linecolor":"green",
+            "linewidth": 2,
+            "mirror": True,
+            "gridcolor": "green",
+            "gridwidth": 1,
+            "griddash":"dash",
+            "tickfont": {"color":"green"}
+        },
+        yaxis        = {
+            "linecolor":"green",
+            "linewidth": 2,
+            "mirror": True,
+            "gridcolor": "green",
+            "gridwidth": 1,
+            "type": "-",
+            "griddash":"dash",
+            "tickfont": {"color":"green"},        
+        },
+    )
+
+    return fig

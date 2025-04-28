@@ -48,23 +48,6 @@ def get_folders(
         return folders
 
 
-def surf_to_polydata(
-        vertices: np.ndarray, 
-        faces: np.ndarray,
-) -> pv.PolyData:
-    """
-    Converts a list of vertices and faces to a PolyData structure.
-    """
-    
-    # The faces for the pv.PolyData object needs to be a list of [..., n,v1,v2,v3, ...] 
-    # where n indicates the number of vertices of the face and v1-vn indicate the 
-    # vertices belonging to that face.
-    pv_faces = np.empty_like(faces, shape=(faces.shape[0], faces.shape[1]+1))
-    pv_faces[:,1:] = faces 
-    pv_faces[:,0] = faces.shape[1]
-    pv_faces = np.hstack(pv_faces)
-
-    return pv.PolyData(vertices, pv_faces)
 
 
 def compute_transformation(
@@ -151,6 +134,19 @@ def ants_to_nibabel(
     tmp.unlink()
 
     return nib_img
+
+def nibabel_to_ants(
+    nib_img: nib.Nifti1Image,
+) -> ants.core.ants_image.ANTsImage:
+
+    tmp = Path("./tmp.nii.gz")
+
+    nib.save(nib_img, tmp)
+    ants_img = ants.image_read(str(tmp))
+    
+    tmp.unlink()
+
+    return ants_img
 
 
 def _retrieve_env(*args):
@@ -280,50 +276,6 @@ def avg_power(signal):
     return pow
 
 
-def find_neighbor_regions(surface, parcellation, cras):
-    """
-    Defines neighboring regions. 
-
-    Parameters:
-    ----------
-    surface: [np.ndarray, np.ndarray]
-        Cortical surface (or white surface). First element indicate vertices.
-        Second element indicate triangles.
-
-    parcellation: Parcellation
-        Volumetric parcellation with N regions.
-
-    cras: np.ndarray
-        Shift of the Talaraich transform.
-
-    Returns:
-    -------
-    neighbors: (N,N)
-        Neighborhood matrix. Like an adjacency matrix where a connection 
-        means that two regions are neighbors.
-    """
-    labels    = parcellation.label_points(surface[0]+cras, id=True)
-    regions   = parcellation.get_clut()["#No."].values
-    neighbors = np.zeros((len(regions), len(regions)))
-
-    # find triangles having vertices in different regions
-    tri_regions = labels[surface[1]]                             # triangles where vertex id is replaced by region id
-    tri_regions = tri_regions[np.sum(tri_regions==0, axis=1)==0] # delete triangles having vertex with id 0 (unknown)  
-    info1 = np.abs(tri_regions[:,0] - tri_regions[:,1]) > 0      # True if vertex 1 is not in the same region as vertex 2
-    info2 = np.abs(tri_regions[:,0] - tri_regions[:,2]) > 0      # True if vertex 1 is not in the same region as vertex 3
-
-    # mark neighbors based on info1
-    idx1 = np.searchsorted(regions, tri_regions[info1][:,0])
-    idx2 = np.searchsorted(regions, tri_regions[info1][:,1])
-    neighbors[idx1, idx2]= 1
-
-    # mark neighbors based on info2
-    idx1 = np.searchsorted(regions, tri_regions[info2][:,0])
-    idx2 = np.searchsorted(regions, tri_regions[info2][:,2])
-    neighbors[idx1, idx2]= 1
-
-    return neighbors
-
 
 def correct_labels(labels, sources, parcel):
     """
@@ -346,50 +298,6 @@ def correct_labels(labels, sources, parcel):
     new_labels = [list(map.keys())[list(map.values()).index(n)] for n in label_names]
 
     return new_labels
-
-
-def compute_distance(pos, area, m=1):
-    """
-    Compute distance between points and area.
-    The algorithm computes the average vector distance to the m closest voxels of the area. If m=1, it's the distance to
-    the closest point in the area, if m='all' it's the distance to the center of mass.
-
-    Parameters
-    ----------
-    pos: np.ndarray (N,3)
-        Position of points.
-
-    area: nib.Nifti1Image
-        Area as a nibabel image.
-
-    m: int or 'all' 
-        Number of voxels to take into account.
-
-    Returns
-    -------
-    distances: np.ndarray (N,)
-        Distances to area as norm of average distance vector.
-    """
-    if len(pos.shape) < 2:
-        pos = pos.reshape(1,-1)
-
-    voxels = np.argwhere(area.get_fdata()>0)
-    voxels = mne.transforms.apply_trans(area.affine, voxels)
-    
-    if m == "all":
-        m = voxels.shape[0]
-
-    # compute vector distances
-    vectors = voxels[:,None,:] - pos
-    norms   = np.linalg.norm(vectors, ord=2, axis=-1)
-    norms_i = np.argsort(norms, axis=0)
-    ord_vec = np.take_along_axis(vectors, norms_i[:,:,None], axis=0)        # ordered from smallest to highest
-
-    # compute norm of average of m closest distances
-    avg  = np.mean(ord_vec[:m,:,:], axis=0)
-    dist = np.linalg.norm(avg, axis=1)
-
-    return dist
 
 
 
@@ -452,51 +360,7 @@ def files_exists(fnames:list | str | Path, mkdir:bool = False):
     return exists
 
 
-def measure_distance(target_point, target_area, x=1, cras=np.zeros(3)):
-    """
-    Measures distance between a point and an area.
 
-    Parameters
-    ----------
-    target_point: nd.array (3,)
-        Target point
-
-    target_area: nd.array (3,N) | nibabel.Nifti1
-        Cloud point
-
-    x: int
-        Number of points from the cloud point to consider.
-
-    Returns
-    -------
-    distance: float
-        Distance in [m]
-
-    Note: The distance is measured as the length of the average distance vector between the target point and the x closest points of the point cloud. 
-    - x = 1: Distance to closest point of the area.
-    - x = "all": Distance to the center of mass of the area.
-    - x != "all" != 1: Distance to the center of mass of the portion consisting of the x closest points.
-    """
-
-    if isinstance(target_area, nib.Nifti1Image):
-        affine      = target_area.affine
-        target_area = np.argwhere(target_area.get_fdata()>0)
-        target_area = (nib.affines.apply_affine(affine, target_area)-cras)/1000
-
-
-    distances = target_area-target_point
-
-    if x == "all":
-        mean_distance = np.mean(distances, axis=0)
-        norm          = np.linalg.norm(mean_distance)
-
-    else:
-        norms         = np.linalg.norm(distances, ord=2, axis=1)
-        nearest       = distances[np.argsort(norms)[:x],:]
-        mean_distance = np.mean(nearest, axis=0)
-        norm          = np.linalg.norm(mean_distance)
-
-    return norm
 
 def select_source_estimate(stc, sources, method="max", tp=None, tw=None):
     """
@@ -545,4 +409,128 @@ def select_source_estimate(stc, sources, method="max", tp=None, tw=None):
     return source_estimate
 
 
+
+def evaluate(
+    reference      :mne.SourceEstimate, 
+    reconstruction :mne.SourceEstimate, 
+    classifier     :float=0.5, 
+    times          :list=None, 
+    time_range     :float=None,
+) -> dict:
+    """
+    Measures precision, recall, sensitivity and accuracy.
+
+    Parameters
+    ----------
+    reference: mne.SourceEstimate
+        Reference image.
+
+    reconstruction: mne.SourceEstimate
+        Reconstructed image.
+
+    classifier: float
+        Percentage at which to classify.
+
+    times: list
+        Times to use in the evaluation. If None, and time_range is None, evaluate over whole time serie.
+    
+    time_range: [tmin:float, tmax:float]
+        Time range in which to evaluate. If None and times is None, evaluate over whole time serie.
+
+    Returns
+    -------
+    metrics: dict
+        Classification metrics.
+    """
+    # select times
+    if times:
+        ref_idx = reference.time_as_index(times)
+        rec_idx = reference.time_as_index(times)
+        idx     = np.intersect1d(ref_idx, rec_idx)
+
+        if len(idx) < 1:
+            raise ValueError("Times are not compatible with reference or reconstruction in evaluate.")
+
+        ref = reference.data[:,idx]
+        rec = reconstruction.data[:,idx]
+
+    if time_range:
+        tmin, tmax     = time_range
+        reference      = reference.crop(tmin, tmax)
+        reconstruction = reconstruction.crop(tmin, tmax)
+
+        ref = reference.data
+        rec = reconstruction.data
+
+    else:
+        times      = np.intersect1d(reference.times, reconstruction.times)
+        tmin, tmax = times[0], times[-1]
+
+        reference      = reference.crop(tmin, tmax)
+        reconstruction = reconstruction.crop(tmin, tmax)
+
+        ref = reference.data 
+        rec = reconstruction.data
+
+    # process (normalize + classify)
+    ref = np.abs(ref) / np.max(np.abs(ref))      
+    ref = ref > classifier                   
+
+    rec = np.abs(rec) / np.max(np.abs(rec))
+    rec = rec > classifier
+
+    # compute True/False Positives/Negatives
+    TP = np.sum(ref & rec)
+    TN = np.sum(~ref & ~rec)
+    FP = np.sum(~ref & rec)
+    FN = np.sum(ref & ~rec)
+
+    metrics = classification_metrics(TP, TN, FP, FN)
+
+    return metrics
+
+
+def classification_metrics(TP, TN, FP, FN):
+    """
+    Computes classification metrics.
+
+    Parameters
+    ----------
+    - TP: int
+        True positives.
+
+    - TN: int
+        True negatives.
+
+    - FP: int
+        False positives.
+
+    - FN: int
+        False negatives.
+
+    Returns
+    -------
+    - metrics: dict
+        - precision   : TP / (TP + FP)
+        - recall      : TP / (TP + FN)
+        - specificity : TN / (TN + FP)
+        - accuracy    : (TP + TN) / (TP + TN + FP + FN)
+        - F1 score    : 2 * precision * recall / (precision + recall) 
+    """
+    print(TP+TN/(TP+FP+TN+FN))
+    precision   = TP / (TP + FP) if (TP + FP) > 0 else 0
+    sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
+    specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
+    accuracy    = (TP + TN) / (TP + TN + FP + FN) if (TP + TN + FP + FN) > 0 else 0
+    f1_score    = 2 * precision * sensitivity / (precision + sensitivity) if (precision + sensitivity) > 0 else 0
+    
+    metrics = dict(
+        precision   = precision, 
+        sensitivity = sensitivity, 
+        specificity = specificity, 
+        accuracy    = accuracy, 
+        f1_score    = f1_score,   
+    )
+    
+    return metrics
 

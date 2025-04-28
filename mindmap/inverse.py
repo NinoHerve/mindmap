@@ -8,13 +8,13 @@ import pyxu.opt.stop as pxst
 from pyxu.opt.solver import PGD
 
 def cset(
-        eeg: mne.Evoked,
-        fwd: mne.Forward,
-        cst: np.ndarray,
-        lam: float,
-        dw: float = 0.5,
-        win_size: float = 0.1,
-        sub: str = None,
+        eeg      : mne.Evoked,
+        fwd      : mne.Forward,
+        cst      : np.ndarray,
+        lam      : float,
+        dw       : float = 0.5,
+        times    : list = None,
+        sub      : str = None,
 )-> mne.SourceEstimate:
     """
     Solve the inverse problem using Connectome Spectrum Electromagnetic Tomography (CSET).
@@ -34,8 +34,8 @@ def cset(
     dw: float
         Depth weighting scale 
 
-    win_size: float 
-        Time window size in [s]
+    times: list(float) 
+        Reconstruct specific time points (in [ms]) only.
 
     Returns
     -------
@@ -44,17 +44,14 @@ def cset(
     """
 
     sfreq = eeg.info["sfreq"]
-    _, pt = mm.utils.eeg_rising_phase(eeg, ratio=1)
-
-    # select time window
-    if win_size is None:
-        _, ht = mm.utils.eeg_rising_phase(eeg, ratio=0.5)
-        win_size = ht/sfreq * 2
-        Y = eeg.data[:, [ht,pt]]
-    
-    else:     
-        dt = int(win_size*sfreq/2)
-        Y  = eeg.data[:, pt-dt:pt+dt]
+    if times is not None:
+        idx   = eeg.time_as_index(times)
+        Y     = eeg.data[:, idx]
+        tstep = (times[1]-times[0]) if len(times)>1 else 0
+    else:
+        Y     = eeg.data
+        times = eeg.times
+        tstep = 1/sfreq
 
     # extract lead field matrix
     fwd = mne.convert_forward_solution(fwd, force_fixed=True, verbose="warning")
@@ -93,13 +90,10 @@ def cset(
         recon[:,t] = (cst.T @ s_hat) * Ynorms[t]
 
     # Store in MNE object
-    t_peak = pt/sfreq
-    t_start  = t_peak-(win_size/2)
     vertices = [fwd["src"][0]["vertno"], fwd["src"][1]["vertno"]]
-    stc      = mne.SourceEstimate(recon, vertices, tmin=t_start, tstep=1/sfreq, subject=sub)
+    stc      = mne.SourceEstimate(recon, vertices, tmin=times[0], tstep=tstep, subject=sub)
 
     return stc
-
 
 
 def enet(
@@ -352,10 +346,9 @@ def wcset(
 
 
 
-
-def sloreta(eeg, fwd, lam=0.1, win_size=None):
+def sloreta(eeg, fwd, noise_cov=None, lam=0.1, times=None):
     """
-    Source reconstruction using standardized low resolution electromagnetic tomography.
+    Source reconstruction using standardized low resolution electromagnetic tomography (sLORETA).
 
     Parameters
     ----------
@@ -368,17 +361,20 @@ def sloreta(eeg, fwd, lam=0.1, win_size=None):
     lam: float
         L2 regularizer parameter.
 
-    
     win_size: float
-        Time window size to reconstruct around peak.
+        Time window size to reconstruct around peak. If None, and time_points is None, reconstruct whole time series.
+    
+    times: list(float)
+        Times to reconstruct.
 
     Returns
     -------
     recon: mne.SourceEstimate
         Source reconstruction.
     """
-
-    noise_cov = mne.make_ad_hoc_cov(eeg.info, std={"eeg":1})
+    
+    if noise_cov is None:
+        noise_cov = mne.make_ad_hoc_cov(eeg.info, std={"eeg":1})    # identity matrix
     
     # prepare eeg
     eeg.set_eeg_reference(projection=True)
@@ -402,20 +398,14 @@ def sloreta(eeg, fwd, lam=0.1, win_size=None):
     )
 
     # crop time window
-    if win_size is None:
-        _, ht = mm.utils.eeg_rising_phase(eeg, ratio=0.5)       # 50% rising phase
-        _, pt = mm.utils.eeg_rising_phase(eeg, ratio=1)         # peak phase
-        
-        stc.data = stc.data[:, [ht, pt]]
+    if times is not None: 
+        idx      = stc.time_as_index(times)
+        data     = stc.data[:,idx]
+        vertices = [fwd["src"][0]["vertno"], fwd["src"][1]["vertno"]]
+
+        tstep = (times[1]-times[0]) if len(times)>1 else 0
+
+        return mne.SourceEstimate(data, vertices, tmin=times[0], tstep=tstep, subject=stc.subject)
+
     else:
-        _, pt  = mm.utils.eeg_rising_phase(eeg, ratio=1)
-        t_peak = pt/eeg.info["sfreq"]
-
-        dt      = int(win_size * eeg.info["sfreq"] /2)
-        t_start = t_peak-(win_size/2)
-
-        stc.data = stc.data[:, pt-dt:pt+dt]
-        stc.tmin = t_start
-
-    return stc
-    
+        return stc
