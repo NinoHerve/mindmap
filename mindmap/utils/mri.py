@@ -115,6 +115,12 @@ class Parcellation():
         else:
             self.clut = clut.to_dict(orient="list")
 
+        self.info = pd.DataFrame({
+            "Region ID":self.clut["#No."], 
+            "Region name": self.clut["Label name"],
+            "RGBA": [(self.clut["R"][i], self.clut["G"][i], self.clut["B"][i], self.clut["A"][i]) for i in range(len(self.clut["R"]))],
+            })
+
     # load & save
     # -----------
             
@@ -137,7 +143,7 @@ class Parcellation():
 
         if volume_fname is not None:
             img = nib.load(volume_fname)
-            self.volume = img.get_fdata()
+            self.volume = img.get_fdata().astype(int)
             self.affine = img.affine
             self.n_regions = len(np.unique(self.volume)) -1     # -1 to not count 0
 
@@ -179,15 +185,13 @@ class Parcellation():
             with open(clut_fname, "w") as colorLUT_f:
                 colorLUT_f.write("\n".join(lines))
 
-    def id2name(self, rois):
-        map_  = dict(zip(self.clut["#No."], self.clut["Label name"]))
-        names = [map_[r] for r in rois]
-        return names 
+    def id2name(self, id_labels):
+        id_to_name = self.info.set_index("Region ID")["Region name"].to_dict()
+        return np.array([id_to_name.get(i, "Unknown") for i in id_labels])
     
-    def name2id(self, rois):
-        map_ = dict(zip(self.clut["Label name"], self.clut["#No."]))
-        ids  = [map_[r] for r in rois]
-        return ids
+    def name2id(self, name_labels):
+        name_to_id = self.info.set_index("Region name")["Region ID"].to_dict()
+        return np.array([name_to_id.get(name, 0) for name in name_labels])
 
     # get
     # ---
@@ -239,14 +243,19 @@ class Parcellation():
         """
         if isinstance(points, mne.SourceSpaces):
             src    = points.copy()
-            points = mm.utils.get_src_position(points)*1000 + cras
+            points = mm.utils.get_src_position(points)*1000
         else:
             src = None
 
+        # apply cras
+        points += cras
+
+        # convert points [mm] into voxel coordinates using affine
         inv_trans = np.linalg.inv(self.affine)
         voxels    = nib.affines.apply_affine(inv_trans, points)
         voxels    = np.round(voxels).astype(int)
 
+        # retrieve labels at voxel coordinates
         labels = self.volume[voxels[:,0], voxels[:,1], voxels[:,2]].astype(int)
 
         if src is not None:
@@ -255,7 +264,7 @@ class Parcellation():
         if id == False:
             labels = self.id2name(labels)
 
-        return labels
+        return np.array(labels)
     
     def get_colors(self, labels):
         color_table = np.array([self.clut["R"], self.clut["G"], self.clut["B"]]).T
@@ -292,7 +301,34 @@ class Parcellation():
             positions.append(pos)
 
         return np.vstack(positions)
-    
+
+    def get_volumes(self, labels: list[str] | list[int] = None) -> list[float]:
+        """
+        Retrieve volumes per brain region.
+
+        Parameters
+        ---------
+        labels: list[str] | list[int]
+            Label names or ids to retrieve. If None, retrieve all volumes.
+
+        Returns
+        -------
+        volumes: list[float]
+            Volumes in mm³.
+        """ 
+        # set labels as index for fast lookup
+        if labels is not None:
+            if isinstance(labels[0], str):
+                volume_map = self.info.set_index("Region name")["Volume"]
+            else:
+                volume_map = self.info.set_index("Region ID")["Volume"]
+            volumes = np.array([volume_map.get(l, np.nan) for l in labels])
+        
+        else:
+            volumes = self.info["Volume"].values
+
+        return volumes
+        
     
     def create_mask(self, regions: List[int] = None) -> nib.Nifti1Image:
         """
@@ -527,6 +563,18 @@ class Parcellation():
         parcellation = Parcellation(image, self.get_clut())
 
         return parcellation
+
+    def compute_volumes(self):
+        """
+        Compute volume in [mm³] of each brain region.
+        """
+        # compute volume per region
+        voxels_per_region = np.bincount(self.volume.ravel())
+        voxel_volume      = extract_voxel_volume(self.affine)
+        volume_per_region = voxel_volume * voxels_per_region
+
+        # keep only existing regions
+        self.info["Volume"] = volume_per_region[self.info["Region ID"]]
 
 
 def correct_labels(labels, sources, parcel):
@@ -1062,6 +1110,96 @@ def correct_skull(
     nib.freesurfer.io.write_geometry(fname, vertices, faces, volume_info=metadata)
 
 
+def run_charm(subID:str, T1: str | Path, T2: str | Path=None, overwrite=False):
+    """
+    Run the charm command line. The charm comand line generates a head segmentation from a T1 image (optional T2
+    for better reconstruction)
+
+    Parameters
+    ----------
+    folder: Path | str
+        Folder in which to generate the output.
+
+    subID: str
+        Subject ID.
+
+    T1: Path | str
+        Path to T1 image.
+
+    T2: Path | str
+        Path to T2 image.
+
+    Files
+    ------
+    m2m_subID: folder
+        Folder containing charm segmentation.
+        - m2m_subId/segmentation/labeling.nii.gz: Segemented image.
+        - m2m_subId/segmentation/labeling_LUT.txt: CLUT of image.
+        - ...
+    """
+    cleanT1 = False 
+    cleanT2 = False
+
+    # check T1
+    if isinstance(T1, str):
+        T1 = Path(T1)
+
+    if not T1.exists():
+        raise FileNotFoundError("T1 not found")
+
+    output = T1.parent/f"m2m_{subID}"/"segmentation"/"labeling.nii.gz"
+    if output.exists() and not overwrite:
+        raise FileExistsError(f"\033[93mSubject {subID} already has a segmentation.\033[0m")
+
+    folder = T1.parent
+    if T1.suffix == ".mgz":
+        cleanT1  = True
+        T1_input = T1.name.replace(".mgz", ".nii.gz")
+        out      = subprocess.run(["mri_convert", T1.name, T1_input], cwd=str(folder))
+        out.check_returncode()
+        
+    else:
+        T1_input = T1.name
+
+    # check T2
+    if T2:
+        if isinstance(T2, str):
+            T2 = Path(T2)
+
+        if not T2.exists():
+            raise FileNotFoundError("T2 not found")
+
+        folderT2 = T2.parent
+        if folderT2 != folder:
+            raise ValueError("Parent folder of T1 and T2 must be the same to run charm.")
+
+        if T2.suffix == ".mgz":
+            cleanT2  = True
+            T2_input = T2.name.replace(".mgz", ".nii.gz")
+            out      = subprocess.run(["mri_convert", T2.name, T2_input], cwd=str(folder)) 
+            out.check_returncode()
+        else:
+            T2_input = T2.name
+
+        cml = ["charm", subID, T1_input, T2_input, "--segment", "--initatlas"]  # command line with T2
+    else:
+        cml = ["charm", subID, T1_input, "--segment", "--initatlas"]            # command line without T2
+
+    # run charm
+    out = subprocess.run(cml, cwd=str(folder))
+
+    # clean nii files if original files were mgz
+    if cleanT1:
+        T1_input = folder/T1_input 
+        T1_input.unlink()
+
+    if cleanT2:
+        T2_input = folder/T2_input
+        T2_input.unlink()
+
+    return
+
+
 def surf_correction(
         in_skull: pv.PolyData, 
         out_skull: pv.PolyData,
@@ -1134,3 +1272,85 @@ def surf_correction(
         return in_skull_fixed, arrows
     
     return in_skull_fixed
+
+
+
+def make_bem_volumetric_masks(segmentation, closing_radius=20, return_skull=False):
+    """
+    Generate volumetric masks for BEM layers.
+
+    Parameters
+    ----------
+    segmentation: mm.Parcellation
+        Charm head segmentations.
+
+    closing_radius: int
+        Size of closing disk (number of voxels).
+
+    return_skull: bool
+        Whether to return skull mask.
+
+    Returns
+    -------
+    skin: nib.Nifti1Image 
+        Skin mask.
+
+    oskull: nib.Nifti1Image 
+        Outer skull mask.
+
+    iskull: nib.Nifti1Image 
+        Inner skull mask.
+
+    skull: nib.Nifti1Image (optional)
+        Skull mask.
+    """
+    # skin 
+    skin = data["seg"].create_mask([511])
+    skin = mm.utils.nibabel_to_ants(skin)
+    skin = skin.morphology("close", radius=closing_radius)
+    skin[:,-10:,:] = 0
+    skin[:,skin.shape[1]-11,:] = ndimage.binary_fill_holes(skin[:,skin.shape[1]-11,:].numpy())      # close bottom
+
+    # skull
+    skull = data["seg"].create_mask([515])
+    skull = mm.utils.nibabel_to_ants(skull)
+    skull = skull.morphology("close", radius=5)
+
+    # trim (used to trim inner skull for easy mesh)
+    trim = data["seg"].create_mask([501, 507, 509]) # other tissues/air/mucosa
+    trim = mm.utils.nibabel_to_ants(trim)
+    trim2 = skull.morphology("close", radius=100)
+
+    # outer skull envelope
+    oskull = skull.morphology("close", radius=30) 
+    oskull[:,-20:,:] = 0
+
+    # inner skull envelope
+    iskull = trim2 * (1-skull) * (1-trim)
+    iskull = iskull.get_mask()
+    iskull = iskull.morphology("close", radius=20)
+    iskull[:,-30:,:] = 0
+
+    if return_skull:
+        return skin, oskull, iskull, skull 
+    else:
+        return skin, oskull, iskull
+
+
+# MRI specific utilities
+
+def extract_voxel_volume(affine):
+    """
+    Computes voxel volume in [mm³] from the affine.
+    """
+    # defines borders of voxel (parallelepiped)
+    v1 = affine[:3, 0]
+    v2 = affine[:3, 1]
+    v3 = affine[:3, 2]
+
+    # volume of a parallelepiped
+    volume = np.abs(np.cross(v1, v2) @ v3)
+    
+    return volume
+
+

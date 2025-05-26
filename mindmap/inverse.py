@@ -14,7 +14,6 @@ def cset(
         lam      : float,
         dw       : float = 0.5,
         times    : list = None,
-        sub      : str = None,
 )-> mne.SourceEstimate:
     """
     Solve the inverse problem using Connectome Spectrum Electromagnetic Tomography (CSET).
@@ -91,7 +90,7 @@ def cset(
 
     # Store in MNE object
     vertices = [fwd["src"][0]["vertno"], fwd["src"][1]["vertno"]]
-    stc      = mne.SourceEstimate(recon, vertices, tmin=times[0], tstep=tstep, subject=sub)
+    stc      = mne.SourceEstimate(recon, vertices, tmin=times[0], tstep=tstep)
 
     return stc
 

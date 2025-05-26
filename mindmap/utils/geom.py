@@ -4,8 +4,9 @@ import nibabel as nib
 import mindmap as mm
 import mne
 import skimage
-import trimesh
 from scipy.spatial import cKDTree
+import ants
+import nibabel as nib 
 
 
 ###########################################
@@ -173,13 +174,13 @@ def find_neighbor_regions(surface, parcellation, cras):
 
 
 
-def vol_to_surf(volume, remesh=True, subdivision=4):
+def vol_to_surf(volume, remesh=True, subdivision=4, compute_normals=True, apply_affine=True):
     """
     Generate mesh from volumetric mask.
 
     Parameters
     ----------
-    volume: np.ndarray
+    volume: np.ndarray, ants, nibabel
         Volume mask.
 
     remesh: bool
@@ -188,42 +189,74 @@ def vol_to_surf(volume, remesh=True, subdivision=4):
     subdivision: int = 4
         Icosahedral subdivision for template sphere. 
 
+    compute_normals: bool = True
+        Compute normals.
+
+    apply_affine: bool = True
+        If volume is an ants or nibabel object, apply affine to be in [mm] space.
+
     Returns
     -------
     mesh: pv.Polydata
         Surface mesh.
     """
-    # 1. Extract surface with marching cubes
+    def get_affine(image: ants.ANTsImage):
+        """
+        Return the image affine from an ANTsImage object. 
+        """
+        spacing = image.spacing
+        origin  = image.origin
+        direction = image.direction
+
+        affine = np.eye(4)
+        affine[:3, :3] = np.diag(spacing) @ direction
+        affine[:3, 3] = origin 
+
+        affine[:2, :] *= -1    # flip y and z axis to be in nibabel convention
+
+        return affine
+
+    affine = None
+    if isinstance(volume, ants.ANTsImage):
+        affine = get_affine(volume)
+        volume = volume.numpy()
+    elif isinstance(volume, nib.Nifti1Image):
+        affine = volume.affine
+        volume = volume.get_fdata()
+
+    # 1. -- Extract surface with marching cubes --
     verts, faces, _, _ = skimage.measure.marching_cubes(volume, level=0.5)
-    if not remesh:
-        mesh = mm.utils.surf_to_polydata(verts, faces)
+    mesh               = mm.utils.surf_to_polydata(verts, faces)
+    mesh               = mesh.extract_largest()
+    
+    if remesh: 
+        # 2. -- Create an icosphere mesh --
+        center          = mesh.points.mean(axis=0)
+        centered_mesh = mesh.points - center 
+        radius          = np.linalg.norm(centered_mesh, axis=1).max()
+
+        icosphere = pv.Icosphere(radius, center, nsub=4)
+
+        # 3. -- Project icosphere vertices onto the original surface --
+        # build direction vector from the center
+        directions = icosphere.points - center 
+        norms      = np.linalg.norm(directions, axis=1, keepdims=True)
+        directions /= norms  
+
+        # perform ray tracing
+        points, rays, cells = mesh.multi_ray_trace(icosphere.points, -directions, first_point=True)
+        idx                 = rays.argsort()    # order may be lost with GPU interaction
+        new_points          = points[idx]
+
+        # 4. -- Remesh surface --
+        mesh = pv.PolyData(new_points, icosphere.faces)
+    
+    if apply_affine:
+        if affine is not None:
+            mesh.points = nib.affines.apply_affine(affine, mesh.points)
+
+    if compute_normals:
         mesh = mesh.compute_normals(auto_orient_normals=True)
-        return mesh
-
-    source_mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=True)
-
-    # 3. Create an icosahedral mesh 
-    ico_mesh     = trimesh.creation.icosphere(subdivisions=subdivision)
-    ico_vertices = ico_mesh.vertices 
-    ico_faces    = ico_mesh.faces 
-
-    # 2. Normalize unit sphere to source mesh
-    center                 = source_mesh.centroid 
-    normalized_source      = source_mesh.vertices - center 
-    norm                   = np.linalg.norm(normalized_source, axis=1).max()
-
-    ico_vertices *= norm
-    ico_vertices += center
-
-
-    # 4. Project each icosphere vertex onto the original surface
-    tree               = cKDTree(source_mesh.vertices) 
-    _, closest_idx     = tree.query(ico_vertices)
-    projected_vertices = source_mesh.vertices[closest_idx]
-
-    # 5. Create new remeshed surface using icosahedral topology
-    mesh = mm.utils.surf_to_polydata(projected_vertices, ico_faces)
-    mesh = mesh.compute_normals(auto_orient_normals=True, flip_normals=True)
 
     return mesh
 
@@ -262,7 +295,7 @@ def nib_to_polydata(image, trans=np.eye(4)):
 
 
 
-def mne_to_polydata(src: mne.SourceSpaces, signal:np.ndarray, n_points=2):
+def mne_to_polydata(src: mne.SourceSpaces, signal:np.ndarray=None, n_points=2):
     """
     Convert MNE object to pyvista polydata.
 
@@ -286,10 +319,6 @@ def mne_to_polydata(src: mne.SourceSpaces, signal:np.ndarray, n_points=2):
     dipolesL = pv.PolyData(src[0]["rr"][src[0]["vertno"]])
     dipolesR = pv.PolyData(src[1]["rr"][src[1]["vertno"]])
 
-    split = src[0]["nuse"]
-    dipolesL["signal"] = signal[:split]
-    dipolesR["signal"] = signal[split:]
-
     # hemispheres
     vertices, faces = src[0]["rr"], src[0]["tris"]
     hemiL = mm.utils.surf_to_polydata(vertices, faces)
@@ -297,9 +326,14 @@ def mne_to_polydata(src: mne.SourceSpaces, signal:np.ndarray, n_points=2):
     vertices, faces = src[1]["rr"], src[1]["tris"]
     hemiR = mm.utils.surf_to_polydata(vertices, faces)
 
-    # interpolate dipoles -> hemisphere vertices
-    hemiL = hemiL.interpolate(dipolesL, strategy="closest_point", n_points=n_points)
-    hemiR = hemiR.interpolate(dipolesR, strategy="closest_point", n_points=n_points)
+    if signal is not None:
+        split = src[0]["nuse"]
+        dipolesL["signal"] = signal[:split]
+        dipolesR["signal"] = signal[split:]
+
+        # interpolate dipoles -> hemisphere vertices
+        hemiL = hemiL.interpolate(dipolesL, strategy="closest_point", n_points=n_points)
+        hemiR = hemiR.interpolate(dipolesR, strategy="closest_point", n_points=n_points)
 
     return hemiL, hemiR
 

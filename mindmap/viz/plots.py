@@ -1,11 +1,14 @@
 import nibabel as nib
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import cm
+from matplotlib.colors import ListedColormap
 import pyvista as pv
 import mindmap as mm
 import mne
 import plotly.graph_objs as go
 import plotly.express as px
+from scipy.fft import ifftn
 
 
 def show_slices(
@@ -140,17 +143,17 @@ def plot_brain_signal(sources, signal=None, n_points=2, name="signal", cmap="bwr
 
 
 def plot_brain(
-    sources         : mne.SourceSpaces, 
-    signal          : np.ndarray | mne.SourceEstimate = None,
-    time            : float = None, 
-    overlay         : np.ndarray | nib.Nifti1Image    = None,
-    cras            : np.ndarray = np.zeros(3),
+    sources         : mne.SourceSpaces | list[mne.SourceSpaces], 
+    signal          : np.ndarray | mne.SourceEstimate | list[np.ndarray] | list[mne.SourceSpaces] = None,
+    overlay         : np.ndarray | nib.Nifti1Image | list[np.ndarray] | list[nib.Nifti1Image]     = None,
+    cras            : np.ndarray | list[np.ndarray] = np.zeros(3),
     show_max        : bool  = False,
+    show_src        : bool  = False,
     clim            : list  = None,
     cmap            : str   = None,
     absolute        : bool  = False,
     smooth_shading  : bool  = False,
-    title           : str   = None,
+    title           : str   = "",
     signal_label    : str   = None,
     overlay_color   : str   = "green",
     overlay_label   : str   = None,
@@ -168,9 +171,6 @@ def plot_brain(
     signal: mne.SourceEstimate | np.ndarray (N,)
         Source values.
 
-    time: float 
-        Point in time (in [s]) to plot. If None, plot time serie (not compatible with show_max or overlay)
-
     overlay: np.ndarray (M,3) | nib.Nifti1Image
         Overlay defined as point cloud.
 
@@ -179,6 +179,9 @@ def plot_brain(
 
     show_max: bool
         Show maximum of signal if True.
+
+    show_src: bool
+        Show sources.
 
     clim: list(float)
         Color limit.
@@ -210,58 +213,143 @@ def plot_brain(
     overlay_opacity: float
         Overlay opacity
     """
-    
+    # find longest list
+    size = 1
+    if not isinstance(sources, mne.SourceSpaces):
+        if len(sources) > size:
+            size = len(sources)
+    for obj in [signal, overlay, cras]:
+        if isinstance(obj, list):
+            if len(obj) > size: 
+                size = len(obj)
+
+    # check every entry
+    if isinstance(sources, mne.SourceSpaces):
+        sources = [sources]*size
+
+    if overlay is not None:
+        if not isinstance(overlay, list):
+            overlay = [overlay]*size
+
+    if not isinstance(cras, list):
+        cras = [cras]*size
+
     if signal is not None:
-        if isinstance(signal, mne.SourceEstimate):
-            # single time point
-            if time:
-                idx    = signal.time_as_index(time)
-                signal = signal.data[:,idx]
-            # multiple time points
-            else:
-                return TimeMesh(sources, signal, cmap, absolute, smooth_shading)
+        if isinstance(signal, mne.SourceEstimate) or isinstance(signal, np.ndarray):
+            signal = [signal]*size
 
-        # default cmap / clim
-        if np.all(signal>0) or absolute:
-            signal = np.abs(signal)
-            cmap   = "Reds" if cmap is None else cmap
-            clim   = [0, np.max(signal)] if clim is None else clim
+    if not isinstance(title, list):
+        title = [title]*size
+
+    # if Time Series plot TimeMesh
+    if signal is not None and isinstance(signal[0], mne.SourceEstimate):
+        return TimeMesh(sources, signal, overlay=overlay, titles=title, cmap=cmap, absolute=absolute, smooth_shading=smooth_shading,
+                        overlay_color=overlay_color, overlay_label=overlay_label, overlay_size=overlay_size, overlay_opacity=overlay_opacity)
+
+    # else plot single time point
+    plotter = pv.Plotter(shape=(1,size))
+
+    # brain plot
+    if signal is not None:
+        maxi = -np.inf 
+        mini = np.inf
+
+        # find max and min amongst all data
+        for i in range(size):
+            
+            if absolute:
+                signal[i] = np.abs(signal[i])
+
+            s_max = np.max(signal[i])
+            s_min = np.min(signal[i])
+        
+            if maxi < s_max:
+                maxi = s_max
+            if mini > s_min:
+                mini = s_min
+    
+        # clim/cmap when positive values
+        if mini > 0:
+            clim = [0, maxi]
+            if cmap is None:
+                cmap = "Reds"
+        # clim/cmap when pos/neg values
         else:
-            cmap     = "bwr" if cmap is None else cmap
-            extremum = np.max(np.abs(signal))
-            clim     = [-extremum, extremum] if clim is None else clim
+            extremum = np.max([np.abs(mini), np.abs(maxi)])
+            clim     = [-extremum, extremum]
+            if cmap is None:
+                cmap = "bwr"
 
-    # brain mesh
-    hemiL, hemiR = mm.utils.mne_to_polydata(sources, signal)
+        for i in range(size):
+            # brain meshes
+            hemiL, hemiR = mm.utils.mne_to_polydata(sources[i], signal[i])
 
-    plotter = pv.Plotter()
-    plotter.add_mesh(hemiL, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="lh")
-    plotter.add_mesh(hemiR, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="rh")       
+            plotter.subplot(0,i)
+            plotter.add_mesh(hemiL, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="lh")
+            plotter.add_mesh(hemiR, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="rh")
+            plotter.add_title(title[i])
+
+    else:
+        for i in range(size):
+            # brain meshes
+            hemiL, hemiR = mm.utils.mne_to_polydata(sources[i], None)
+
+            plotter.subplot(0,i)
+            plotter.add_mesh(hemiL, color="white", smooth_shading=smooth_shading, name="lh")
+            plotter.add_mesh(hemiR, color="white", smooth_shading=smooth_shading, name="rh")
+            plotter.add_title(title[i])
 
     # maximum value
     if show_max:
-        split   = sources[0]["nuse"]
-        idx_max = np.argmax(np.abs(signal))
-        if idx_max < split:
-            map_max = sources[0]["rr"][sources[0]["vertno"]][idx_max]
-        else:
-            map_max = sources[1]["rr"][sources[1]["vertno"]][idx_max-split]
+        for i in range(size):
+            split   = sources[i][0]["nuse"]
+            idx_max = np.argmax(np.abs(signal[i]))
+            if idx_max < split:
+                map_max = sources[i][0]["rr"][sources[i][0]["vertno"]][idx_max]
+            else:
+                map_max = sources[i][1]["rr"][sources[i][1]["vertno"]][idx_max-split]
         
-        plotter.add_mesh(map_max, color="yellow", point_size=10)
+            plotter.subplot(0,i)
+            plotter.add_mesh(map_max, color="yellow", point_size=10)
 
     # overlay
     if overlay is not None:
-        if isinstance(overlay, nib.Nifti1Image):
-            overlay = mm.utils.nib_to_polydata(overlay, trans=cras)
+        for i in range(size):
+            if isinstance(overlay[i], nib.Nifti1Image):
+                over = mm.utils.nib_to_polydata(overlay[i], trans=cras[i])
+            else:
+                over = overlay[i]
 
-        plotter.add_mesh(overlay, color=overlay_color, label=overlay_label, point_size=overlay_size, opacity=overlay_opacity)
+            plotter.subplot(0,i)
+            plotter.add_mesh(over, color=overlay_color, label=overlay_label, point_size=overlay_size, opacity=overlay_opacity)
+
+    if show_src:
+        for i in range(size):
+            pos = pv.PolyData(mm.utils.get_src_position(sources[i]))
+
+            plotter.subplot(0,i)
+            plotter.add_mesh(pos, color="green", point_size=5, render_points_as_spheres=True)
+
 
     return plotter
-    
 
 
 class TimeMesh:
-    def __init__(self, sources, stc, cmap="bwr", absolute=False, smooth_shading=False):
+    def __init__(
+        self, 
+        sources         : mne.SourceSpaces | list[mne.SourceSpaces], 
+        stc             : mne.SourceEstimate | list[mne.SourceEstimate],
+        overlay         : np.ndarray | nib.Nifti1Image | list[np.ndarray] | list[nib.Nifti1Image]     = None,
+        cras            : np.ndarray | list[np.ndarray] = np.zeros(3),
+        titles          : str | list[str] = "", 
+        cmap            : str = None, 
+        absolute        : bool = False, 
+        smooth_shading  : bool = False,
+        overlay_color   : str   = "green",
+        overlay_label   : str   = None,
+        overlay_size    : float = 1,
+        overlay_opacity : float = 1, 
+    ):
         """
         Init
 
@@ -279,29 +367,44 @@ class TimeMesh:
             Whether to take absolute values.
         """
         # instanciate objects
-        self.stc     = stc.copy()
-        self.sources = sources 
+        self.to_self(sources, stc, overlay, cras)
+        self.select_cmap(cmap, absolute)
 
-        if absolute:
-            self.stc.data = np.abs(stc.data)
-            cmap          = "Reds"
-            clim          = [0, np.max(self.stc.data)]
-        else:
-            extremum = np.max(np.abs(self.stc.data))
-            clim     = [-extremum, extremum]
-
+        size = len(self.sources)
+        
         # instanciate first plot
-        signal                 = self.stc.data[:, int(self.stc.data.shape[1]/2)]
-        self.hemiL, self.hemiR = mm.utils.mne_to_polydata(sources, signal)
+        start      = int(self.stc[0].data.shape[1]/2)
+        signals    = [s.data[:, start] for s in self.stc]
+        self.hemis = [mm.utils.mne_to_polydata(self.sources[i], signals[i]) for i in range(size)]
 
-        self.plotter = pv.Plotter()
-        self.plotter.add_mesh(self.hemiL, cmap=cmap, clim=clim, smooth_shading=smooth_shading)
-        self.plotter.add_mesh(self.hemiR, cmap=cmap, clim=clim, smooth_shading=smooth_shading)
+        self.plotter = pv.Plotter(shape=(1,size))
 
+        for i in range(size):
+            self.plotter.subplot(0,i)
+            self.plotter.add_mesh(self.hemis[i][0], cmap=self.cmap, clim=self.clim, smooth_shading=smooth_shading)
+            self.plotter.add_mesh(self.hemis[i][1], cmap=self.cmap, clim=self.clim, smooth_shading=smooth_shading)
+
+            if isinstance(titles, list):
+                self.plotter.add_title(titles[i])
+            else:
+                self.plotter.add_title(titles)
+
+        # overlay
+        if overlay is not None:
+            for i in range(size):
+                if isinstance(self.overlay[i], nib.Nifti1Image):
+                    over = mm.utils.nib_to_polydata(self.overlay[i], trans=self.cras[i])
+                else:
+                    over = self.overlay[i]
+
+                self.plotter.subplot(0,i)
+                self.plotter.add_mesh(over, color=overlay_color, label=overlay_label, point_size=overlay_size, opacity=overlay_opacity)
+
+        # add time slider
         self.plotter.add_slider_widget(
             callback = self.__call__,
-            rng      = [stc.tmin, stc.times[-1]],
-            value    = stc.times[int(stc.times.shape[0]/2)],
+            rng      = [self.stc[0].tmin, self.stc[0].times[-1]],
+            value    = self.stc[0].times[start],
             title    = "Time [s]",
             style    = "modern",
         )
@@ -313,13 +416,91 @@ class TimeMesh:
         """
         Change point of time. 
         """
-        idx    = self.stc.time_as_index(time_point)
-        signal = self.stc.data[:,idx]
+        idx    = self.stc[0].time_as_index(time_point)
+        signal = [s.data[:,idx] for s in self.stc]
+        size   = len(signal)
 
         # update values (plot update automatically like magic)
-        hemiL, hemiR = mm.utils.mne_to_polydata(self.sources, signal)
-        self.hemiL["signal"] = hemiL["signal"]
-        self.hemiR["signal"] = hemiR["signal"]
+        for i in range(size):
+            hemiL, hemiR = mm.utils.mne_to_polydata(self.sources[i], signal[i])
+            self.hemis[i][0]["signal"] = hemiL["signal"]
+            self.hemis[i][1]["signal"] = hemiR["signal"]
+
+    def to_self(self, sources, stc, overlay, cras):
+
+        # Find longest list
+        longest_list = 1
+        if not isinstance(sources, mne.SourceSpaces):
+            if longest_list < len(sources):
+                longest_list = len(sources)
+        for obj in [stc, overlay, cras]:
+            if isinstance(obj, list):
+                if longest_list < len(obj):
+                    longest_list = len(obj)
+
+        # Check data and convert to list
+        if isinstance(sources, mne.SourceSpaces):    # sources are list so investigate if element inside is SourceSpace or list
+            sources = [sources]*longest_list
+
+        if isinstance(stc, list):
+            times = stc[0].times
+            for s in stc:
+                assert len(times) == len(s.times), "Source estimates must have the same time span in TimeMesh"
+        else:
+            stc = [stc]*longest_list
+        
+        if overlay is not None:
+            if not isinstance(overlay, list):
+                overlay = [overlay]*longest_list
+        
+        if not isinstance(cras, list):
+            cras = [cras]*longest_list
+
+        assert len(sources) == len(stc), "List length of sources and stc must match in TimeMesh"
+
+        self.sources = sources
+        self.stc     = stc
+        self.overlay = overlay
+        self.cras    = cras
+
+
+    def select_cmap(self, cmap=None, absolute=False):
+
+        maxi = -np.inf 
+        mini = np.inf
+
+        # find max and min amongst all data
+        for stc in self.stc:
+            
+            if absolute:
+                stc.data = np.abs(stc.data)
+
+            stc_max = np.max(stc.data)
+            stc_min = np.min(stc.data)
+
+            if maxi < stc_max:
+                maxi = stc_max
+
+            if mini > stc_min:
+                mini = stc_min
+
+        # clim/cmap when positive values
+        if mini > 0:
+            clim = [0, maxi]
+
+            if cmap is None:
+                cmap = "Reds"
+
+        # clim/cmap when pos/neg values
+        else:
+            extremum = np.max([np.abs(mini), np.abs(maxi)])
+            clim     = [-extremum, extremum]
+
+            if cmap is None:
+                cmap = "bwr"
+
+        self.clim = clim 
+        self.cmap = cmap
 
 
 def plot_leadfield(eeg, forward):
@@ -371,7 +552,9 @@ def plot_connectome(connectome, name="Connectome", nonzero=False, figsize=(12,5)
 
     fig, axs = plt.subplots(1,2, figsize=figsize)
 
-    axs[0].matshow(connectome, cmap="Blues")
+    cmap = cm_frrim()
+
+    axs[0].matshow(connectome, cmap=cmap)
     axs[0].set_title(name)
     axs[0].set_xlabel("Dipoles")
     axs[0].set_ylabel("Dipoles")
@@ -389,43 +572,96 @@ def plot_connectome(connectome, name="Connectome", nonzero=False, figsize=(12,5)
 
 
 
-def plot_spectrum(spectrum):
+def plot_spectrum(spectrum, times=None):
     """
     Plot the connectome spectrum.
 
     Parameters
     ----------
-        spectrum: nd.array (nb_nodes,)
+        spectrum: nd.array (modes, time)
             Connectome spectrum.
+
+        times: np.ndarray (time,)
+            Times.
 
     Returns
     -------
         fig: plotly.graph_objs
     """
-    trace = go.Bar(
-        y=spectrum,
-        marker=dict(
-            color="darkblue",
-            line=dict(color="darkblue"),
+    def new_trace(values):
+        trace = go.Bar(
+            y       = values,
+            marker  = dict(
+                color = "darkblue",
+                line  = dict(color="darkblue"),
+            ),
+            visible = False,
+        )
+
+        return trace
+
+    border = np.max(np.abs(spectrum))
+    border = [-border, border]
+
+    if len(spectrum.shape)>1:
+        if times is None: 
+            print("\033[93mNo times provided\033[0m")
+            times = np.arange(spectrum.shape[1])
+        
+        fig   = go.Figure()
+        steps = []
+
+        for i, t in enumerate(times):
+            fig.add_trace(new_trace(spectrum[:,i]))
+
+            step = dict(
+                method = "update", 
+                args   = [
+                    {"visible": [False] * len(times)},
+                    {"title": f"Connectum Spectrum: t = {t:.3f}[s]"},
+                ],
+            )
+            step["args"][0]["visible"][i] = True 
+            steps.append(step)
+
+        fig.data[int(len(times)/2)].visible = True 
+
+        sliders = [dict(
+            active       = int(len(times)/2),
+            currentvalue = {"visible":False},
+            pad          = {"t":50},
+            steps        = steps,
+        )]
+
+        fig.update_layout(sliders = sliders)
+    
+    else:
+        trace = new_trace(spectrum)
+
+        layout = go.Layout(dict(
+            title="Connectome Spectrum",
+            showlegend=False, 
+        ))
+
+        fig = go.Figure(trace, layout)
+        fig.data[0].visible = True
+
+
+    fig.update_layout(
+        plot_bgcolor = "white",
+        xaxis        = dict(
+            title     = "frequency indices",
+            linecolor = "black",
+        ),
+        yaxis        = dict(
+            title     = "amplitude",
+            linecolor = "black",
+            gridcolor = "black",
+            range     = border,
         ),
     )
-
-    layout = go.Layout(dict(
-        title="Fourier graph coefficients",
-        showlegend=False, 
-        plot_bgcolor="white",
-        xaxis=dict(
-            title="frequency indices",
-            linecolor="black",
-        ),
-        yaxis=dict(
-            title="amplitude",
-            linecolor="black",
-            gridcolor="black",
-        ),
-    ))
-
-    return go.Figure(trace, layout=layout)
+    
+    return fig
 
 
 def plot_resection(
@@ -566,3 +802,168 @@ def plot_eeg(eeg: mne.Evoked, colorscale="Turbo", title="EEG"):
     )
 
     return fig
+
+
+#################################################
+########### Special plot publication ############
+#################################################
+
+
+def brain_gif(
+    sources         : mne.SourceSpaces, 
+    signals         : np.ndarray,
+    fname           : str,
+    head            : dict = None, 
+    camera_position : str = "yz", 
+    azimuth         : int = 0,
+    roll            : int = 0,
+    zoom            : float = 1,
+    fps             : int = 10,
+):
+    """
+    Create gif of brain. 
+
+    sources: mne.SourceSpaces 
+        Source space.
+
+    signals: np.ndarray (N,T)
+        Brain signals (signals should be max 15 frames).
+
+    fname: str
+        File name
+
+    head: dict (mne surface)
+        Head mesh
+
+    camera_position: str
+        Sets camera position.
+    
+    azimuth: int
+        Sets azimuth angle.
+    
+    zoom: float
+        Camera zoom.
+    """
+    plotter = pv.Plotter(notebook=False, off_screen=True)
+
+    # brain hemispheres
+    hemiL, hemiR = mm.utils.mne_to_polydata(sources, signals[:,0])
+    plotter.add_mesh(hemiL, smooth_shading=True, cmap="Reds", clim=[0, np.max(signals)])
+    plotter.add_mesh(hemiR, smooth_shading=True, cmap="Reds", clim=[0, np.max(signals)])
+    plotter.remove_scalar_bar()
+
+    # head
+    if head is not None:
+        head = mm.utils.surf_to_polydata(head["rr"], head["tris"])
+        plotter.add_mesh(head, show_edges=True, color="white", opacity=0.2, edge_opacity=0.8, edge_color="black")
+
+    # camera position
+    plotter.camera_position = camera_position
+    plotter.camera.azimuth += azimuth
+    plotter.camera.roll += roll
+    plotter.camera.zoom(zoom)
+
+    # generate gif
+    plotter.open_gif(fname, fps=fps)
+    nframe = signals.shape[1]
+    for frame in np.arange(nframe):
+        new_hemiL, new_hemiR = mm.utils.mne_to_polydata(sources, signals[:,frame])
+        hemiL["signal"] = new_hemiL["signal"]
+        hemiR["signal"] = new_hemiR["signal"]
+        plotter.write_frame()
+
+    plotter.close()
+
+
+def plot_hops(sim, n_hops=3):
+
+    signals = np.zeros((n_hops+1, sim.act.data.shape[1]))
+
+    # select source
+    idx          = np.random.choice(sim.loc_ids)
+    signals[0,:] = sim.act.data[idx,:] + sim.bnoise[idx,:]
+
+    # select hop neighbors
+    starting_roi = np.zeros(sim.sc.shape[0], dtype=bool)
+    starting_roi[sim.loc_ids] = True
+
+    rois = starting_roi
+    for i in range(n_hops):
+        # compute nex hop roi
+        roi = (sim.sc @ rois > 0) & (~rois)
+
+        # check if roi is empty or wrong
+        assert np.all((roi==0) | (roi==1))
+        if np.all(roi==0):
+            print("\033[93mNo more neighbors\033[0m")
+            break 
+        roi = roi.astype(bool)
+
+        idx          = np.random.choice(np.argwhere(roi).squeeze())
+        signals[i+1,:] = sim.act.data[idx,:] + sim.bnoise[idx,:]
+
+        rois = rois | roi 
+
+    fig, axes = plt.subplots(nrows=1, ncols=n_hops+1, sharex=True, sharey=True, figsize=(15,3))
+    coloors   = ["#EE6C4D", "#FFB627", "#3D5A80", "#98C1D9", "#293241"]
+
+    for i in range(n_hops+1):
+        for j in range(i+1):
+            axes[i].plot(signals[j,:], color=coloors[j], linewidth=2)
+        axes[i].set_xlabel("Time [s]")
+    
+    axes[0].set_ylabel("Amplitude [V]")
+
+    plt.show()
+
+def plot_fourier_image_example():
+    N = 30
+    f, ((ax1, ax2, ax3, ax4, ax5)) = plt.subplots(1, 5, sharex="col", sharey="row", figsize=(15,3))
+
+    # first image
+    xf = np.zeros((N,N))
+    xf[0, 1] = 1
+    Z = ifftn(xf)
+    ax1.imshow(np.real(Z), cmap=cm.gray)
+
+    # second image
+    xf = np.zeros((N,N))
+    xf[2, 0] = 1
+    Z = ifftn(xf)
+    ax2.imshow(np.real(Z), cmap=cm.gray)
+
+    # third image
+    xf = np.zeros((N,N)) 
+    xf[3, 5] = 1
+    Z = ifftn(xf)
+    ax3.imshow(np.real(Z), cmap=cm.gray)
+
+    # fourth image
+    xf = np.zeros((N,N))
+    xf[12, 5] = 1
+    Z = ifftn(xf)
+    ax4.imshow(np.real(Z), cmap=cm.gray)
+
+    # fith image
+    xf = np.zeros((N,N))
+    xf[14, 14] = 1
+    Z = ifftn(xf)
+    ax5.imshow(np.real(Z), cmap=cm.gray)
+
+    plt.show()
+
+
+
+###############################
+########## Color Maps #########
+###############################
+
+def cm_frrim():
+    """
+    Color map used for FRRIM. 
+    """
+    newcolors          = cm.Blues(np.linspace(0,1,256))
+    newcolors[250:, :] = np.array([61/256, 90/256, 128/256, 1])
+    newcmp             = ListedColormap(newcolors)
+
+    return newcmp

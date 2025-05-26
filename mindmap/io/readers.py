@@ -439,6 +439,41 @@ class DatasetReader():
         cmp_dir = self.config["CMP_DIR"]
         pass
 
+    def standards(self, *args, mri_dtype="nib", verbose=1):
+        """
+        Read standard (atlas/templates/...) files.
+        """
+        data = dict(name=self.config["NAME"], sub="Standards")
+
+        for name in args:
+            if name.lower() == "conn":
+                # Connectome atlas (h5 format)
+                file = self.config["CONN"]
+                data[name] = h5py.File(file)
+
+            if name.lower() == "ctx":
+                # Cortical atlas (lausanne 2018 file paths)
+                data[name] = {"LAUSL":str(self.config["LAUSL"]), "LAUSR":str(self.config["LAUSR"])}
+
+            if name.lower() == "thal":
+                # Thalamus Nuclei atlas (ants)
+                file = self.config["THAL"]
+                data[name] = read_mri(file, mri_dtype)
+
+            if name.lower() == "thal_clut":
+                # Thalamus Nuclei color look up table (file path)
+                data[name] = self.config["THAL_CLUT"]
+
+            if name.lower() == "mni":
+                # MNI template (MNI152 NLIN 2009)
+                file = self.config["MNI"]
+                data[name] = read_mri(file, mri_dtype)
+
+        if verbose == 1:
+            self.log(data, args)
+
+        return data
+
 
 
     def log(self, data, args):
@@ -446,7 +481,7 @@ class DatasetReader():
         Print state of retrieved data 
         """
         missing   = list(set(args) - set(data.keys()))
-        retrieved = list(set(data.keys())-set(["name", "sub"]))
+        retrieved = list(set(data.keys())-set(["name", "sub", "samp"]))
         
         print("\033[95mDATA SUMMARY\033[0m")
         print(f"Dataset: {data['name']}")
@@ -457,8 +492,8 @@ class DatasetReader():
             print(f"- \033[92m{r}\033[0m")
 
         print(f"Missing objects:")
-        for a in args:
-            print(f"- \033[91m{a}\033[0m")
+        for m in missing:
+            print(f"- \033[91m{m}\033[0m")
 
 
 

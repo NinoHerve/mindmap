@@ -410,12 +410,10 @@ def select_source_estimate(stc, sources, method="max", tp=None, tw=None):
 
 
 
-def evaluate(
-    reference      :mne.SourceEstimate, 
-    reconstruction :mne.SourceEstimate, 
-    classifier     :float=0.5, 
-    times          :list=None, 
-    time_range     :float=None,
+def binary_classification(
+    reference  :mne.SourceEstimate, 
+    estimation :mne.SourceEstimate, 
+    classifier :float=0.5,
 ) -> dict:
     """
     Measures precision, recall, sensitivity and accuracy.
@@ -425,72 +423,41 @@ def evaluate(
     reference: mne.SourceEstimate
         Reference image.
 
-    reconstruction: mne.SourceEstimate
+    estimation: mne.SourceEstimate
         Reconstructed image.
 
     classifier: float
         Percentage at which to classify.
-
-    times: list
-        Times to use in the evaluation. If None, and time_range is None, evaluate over whole time serie.
-    
-    time_range: [tmin:float, tmax:float]
-        Time range in which to evaluate. If None and times is None, evaluate over whole time serie.
 
     Returns
     -------
     metrics: dict
         Classification metrics.
     """
-    # select times
-    if times:
-        ref_idx = reference.time_as_index(times)
-        rec_idx = reference.time_as_index(times)
-        idx     = np.intersect1d(ref_idx, rec_idx)
-
-        if len(idx) < 1:
-            raise ValueError("Times are not compatible with reference or reconstruction in evaluate.")
-
-        ref = reference.data[:,idx]
-        rec = reconstruction.data[:,idx]
-
-    if time_range:
-        tmin, tmax     = time_range
-        reference      = reference.crop(tmin, tmax)
-        reconstruction = reconstruction.crop(tmin, tmax)
-
-        ref = reference.data
-        rec = reconstruction.data
-
-    else:
-        times      = np.intersect1d(reference.times, reconstruction.times)
-        tmin, tmax = times[0], times[-1]
-
-        reference      = reference.crop(tmin, tmax)
-        reconstruction = reconstruction.crop(tmin, tmax)
-
-        ref = reference.data 
-        rec = reconstruction.data
+    if isinstance(reference, mne.SourceEstimate):
+        reference = reference.data
+    if isinstance(estimation, mne.SourceEstimate):
+        estimation = estimation.data
 
     # process (normalize + classify)
-    ref = np.abs(ref) / np.max(np.abs(ref))      
-    ref = ref > classifier                   
+    ref = np.abs(reference) / np.max(np.abs(reference))      
+    ref = ref > classifier            
 
-    rec = np.abs(rec) / np.max(np.abs(rec))
-    rec = rec > classifier
+    est = np.abs(estimation) / np.max(np.abs(estimation))
+    est = est > classifier
 
     # compute True/False Positives/Negatives
-    TP = np.sum(ref & rec)
-    TN = np.sum(~ref & ~rec)
-    FP = np.sum(~ref & rec)
-    FN = np.sum(ref & ~rec)
+    TP = np.sum(ref & est,   axis=0)
+    TN = np.sum(~ref & ~est, axis=0)
+    FP = np.sum(~ref & est,  axis=0)
+    FN = np.sum(ref & ~est,  axis=0)
 
-    metrics = classification_metrics(TP, TN, FP, FN)
+    metrics = binary_classification_metrics(TP, TN, FP, FN)
 
     return metrics
 
 
-def classification_metrics(TP, TN, FP, FN):
+def binary_classification_metrics(TP, TN, FP, FN):
     """
     Computes classification metrics.
 
@@ -517,20 +484,38 @@ def classification_metrics(TP, TN, FP, FN):
         - accuracy    : (TP + TN) / (TP + TN + FP + FN)
         - F1 score    : 2 * precision * recall / (precision + recall) 
     """
-    print(TP+TN/(TP+FP+TN+FN))
-    precision   = TP / (TP + FP) if (TP + FP) > 0 else 0
-    sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
-    specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
-    accuracy    = (TP + TN) / (TP + TN + FP + FN) if (TP + TN + FP + FN) > 0 else 0
-    f1_score    = 2 * precision * sensitivity / (precision + sensitivity) if (precision + sensitivity) > 0 else 0
-    
+    if isinstance(TP, list):
+        assert (len(TP) == len(TN) == len(FP) == len(FN)), "Lists of TP,TN,FP and FN must have the same lengths."
+    if isinstance(TP, (int, np.integer)):
+        TP = [TP]
+        TN = [TN]
+        FP = [FP]
+        FN = [FN]
+
     metrics = dict(
-        precision   = precision, 
-        sensitivity = sensitivity, 
-        specificity = specificity, 
-        accuracy    = accuracy, 
-        f1_score    = f1_score,   
+        precision   = [],
+        sensitivity = [],
+        specificity = [],
+        accuracy    = [],
+        f1_score    = [],
     )
+
+    for tp, tn, fp, fn in zip(TP, TN, FP, FN):
+        precision   = tp / (tp + fp) if (tp + fp) > 0 else 0
+        sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+        accuracy    = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0
+        f1_score    = 2 * precision * sensitivity / (precision + sensitivity) if (precision + sensitivity) > 0 else 0
+
+        metrics["precision"].append(precision)
+        metrics["sensitivity"].append(sensitivity)
+        metrics["specificity"].append(specificity)
+        metrics["accuracy"].append(accuracy)
+        metrics["f1_score"].append(f1_score)
     
     return metrics
 
+
+
+# others
+# ------

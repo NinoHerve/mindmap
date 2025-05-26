@@ -90,3 +90,66 @@ def get_geodist(sources):
         geodist.append(src["dist"][vertno][:, vertno])
 
     return sp.sparse.block_diag(geodist, format="csr")
+
+
+
+
+def add_subcortical_dipoles(sources: mne.SourceSpaces, parcellation, cras: np.ndarray=np.zeros(3)):
+    """
+    Add subcortical dipoles to source space.
+
+    Parameters
+    ----------
+    source: mne.SourceSpaces
+        Source space (FreeSurfer space).
+
+    parcellation: mm.Parcellation 
+        Parcellation (RAS space).
+
+    cras: 
+        Translation FreeSurfer -> RAS.
+
+    Returns
+    -------
+        source: mne.SourceSpaces
+            Source space with subcortical dipoles. 
+    """
+    if np.all(cras == np.zeros(3)):
+        print("\033[93mNo cras applied.\033[0m")
+
+    # transpose dipole position to RAS space
+    pos = mm.utils.get_src_position(sources) * 1000 + cras
+
+    # label dipoles by brain region
+    labels = parcellation.label_points(pos, id=False)
+
+    # compute dipole density per brain region
+    regions, dip_per_region = np.unique(labels, return_counts=True)
+    parcellation.compute_volumes()
+    vol_per_region          = parcellation.get_volumes(regions)
+    density_per_region      = dip_per_region / vol_per_region
+    density                 = density_per_region.mean()
+
+    # labels of none-cortical regions
+    mask   = ~parcellation.info["Region name"].str.contains("ctx", case=False, regex=True)
+    subctx = parcellation.info.loc[mask, "Region ID"].values
+
+    # add dipoles in every missing region. Place them using k-means
+    volume         = parcellation.volume
+    vol_per_region = parcellation.get_volumes(subctx)
+    points = []
+    for i, region in enumerate(subctx):
+        voxels       = np.argwhere(volume == region)
+        voxel_coords = (nib.affines.apply_affine(parcellation.affine, voxels) - cras)/1000
+        k            = max(int(density*vol_per_region[i]), 1)
+        kmeans       = sklearn.cluster.KMeans(n_clusters=k, random_state=0).fit(voxel_coords)
+        points.append(kmeans.cluster_centers_)
+
+    pos = {
+        "rr": np.concat(points),
+        "nn": np.ones((len(points), 3)),
+    }
+
+    subctx_src = mne.setup_volume_source_space(pos=pos, verbose="warning")
+
+    return sources + subctx_src

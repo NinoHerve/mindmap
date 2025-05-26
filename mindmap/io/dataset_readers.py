@@ -1,4 +1,8 @@
 from .readers import DatasetReader, read_config, read_eeg, read_mri
+import mne
+import numpy as np
+import nibabel as nib
+import scipy as sp
 
 def dataset_reader(config):
     """
@@ -70,7 +74,7 @@ class SpikeReader(DatasetReader):
         ds_dir = self.config["DS_DIR"]
         mm_dir = self.config["MM_DIR"]
 
-        data = dict(name=name, sub=subject)
+        data = dict(name=name, sub=subject, samp="spike")
 
         # Others
         for key in args:
@@ -165,6 +169,8 @@ class SimfReader(DatasetReader):
         """
         if isinstance(subject, int):
             subject = self.config["SUBS"][subject-1]
+        if isinstance(sample, int):
+            sample = self.config["SAMP"][sample-1]
 
         name    = self.config["NAME"]
         mm_dir  = self.config["MM_DIR"]
@@ -172,6 +178,7 @@ class SimfReader(DatasetReader):
         sim_dir = self.config["SIM_DIR"]
 
         data = dict(name=name, sub=subject)
+        if sample is not None: data["samp"] = sample
 
         if isinstance(sample, int):
             sample = f"sample{sample:03}"
@@ -181,7 +188,7 @@ class SimfReader(DatasetReader):
             if key.lower() == "eeg":
                 if sample is None:
                     # look for raw EEG
-                    d = self.__call__(subject, "eeg-raw")
+                    d = self.__call__(subject, "eeg-raw", verbose=0)
                     data[key] = d["eeg-raw"]
                 else:
                     file = sim_dir/"eeg"/f"{subject}-{sample}_ave.fif"
