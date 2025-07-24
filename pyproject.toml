@@ -1,7 +1,7 @@
 [project]
 name = "mindmap"
 version = "0.0.1"
-requires-python = "== 3.11.11"
+requires-python = "== 3.10.16"
 description = "Python package to do EEG source reconstruction."
 authors = [
     {name = "Nino Herve", email = "herve.nino@gmail.com"},
@@ -24,6 +24,7 @@ dependencies = [
     "embreex>=0.0.1",
     "seaborn[stats]>=0.0.1",
     "scikit-learn>=0.0.1",
+    "scikit-image>=0.0.1",
 ]
 
 [project.optional-dependencies]

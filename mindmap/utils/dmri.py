@@ -1,13 +1,13 @@
 
-
-from ..utils import Parcellation
+import random
 from pathlib import Path
-import mne 
+import mne
 import scipy as sp
 import h5py
 import numpy as np
-import mindmap as mm
 import pygsp
+import mindmap as mm
+from ..utils import Parcellation
 
 
 # ------------------------------------------------------------------------------
@@ -243,3 +243,113 @@ def interpol_gm_tracks(
     return sc
     
 
+def sabotage_connectome(connectome:np.ndarray, deletions:int = 0, additions:int=0, mask=None):
+    """
+    Sabotage connectome.
+
+    Parameters
+    ----------
+    connectome: np.ndarray (N,N)
+        Connectome.
+    
+    deletions: int
+        Number of connections to delete.
+    
+    additions: int
+        Number of connections to add.
+    
+    mask: np.ndarray
+        Masks edges that should not be changed.
+
+    Returns
+    -------
+    connectome: np.ndarray
+        Sabotaged connectome.
+    """
+    conn = connectome.astype(bool)
+
+    if mask is None:
+        mask = np.zeros_like(conn, dtype=bool)
+    else:
+        mask = mask.astype(bool)
+
+    # delete edges
+    removable_edges = conn * (~mask)                    # adjacency matrix without edges from mask
+    removable_edges = np.triu(removable_edges, k=1)     # only upper triangle
+    removable_edges = np.argwhere(removable_edges)      # indices
+
+    edges_to_remove = random.sample(removable_edges.tolist(), deletions)
+    rows            = [pair[0] for pair in edges_to_remove]
+    cols            = [pair[1] for pair in edges_to_remove]
+
+    conn[rows, cols] = 0
+    conn[cols, rows] = 0
+
+    # add edges
+    addable_edges = ~conn                   # adjacency matrix of no-connections
+    np.fill_diagonal(addable_edges, False)              # avoid self-loop    
+    addable_edges = np.triu(addable_edges, k=1)
+    addable_edges = np.argwhere(addable_edges)
+    
+    edges_to_add = random.sample(addable_edges.tolist(), additions)
+    rows         = [pair[0] for pair in edges_to_add]
+    cols         = [pair[1] for pair in edges_to_add]
+
+    conn[rows, cols] = 1
+    conn[cols, rows] = 1
+
+    return conn.astype(bool)
+
+
+def build_geometry(src, dmax=10, conn_hemis=False):
+    """
+    Build adjacency matrix from brain geometry.
+
+    Parameters
+    ----------
+    src: mne.SourceSpace
+        Sources.
+
+    dmax: float
+        Maximal distance in [mm] at which to connect neighbors.
+
+    conn_hemis: bool
+        Whether to add connections in order to connect both hemispheres.
+    
+    Returns
+    -------
+    geometry: sp.sparce.csc_matrix
+        Brain geometry at source level.
+    """
+    dmax = dmax/1000   # in [m]
+
+    # left hemisphere
+    vertices = src[0]["vertno"]
+    lh_dist  = src[0]["dist"][vertices][:,vertices].todense()
+    lh_dist  = lh_dist < dmax
+
+    # right hemisphere
+    vertices = src[1]["vertno"]
+    rh_dist  = src[1]["dist"][vertices][:,vertices].todense()
+    rh_dist  = rh_dist < dmax
+
+    # connect hemispheres
+    n, m = src[0]["nuse"], src[1]["nuse"]
+    if conn_hemis:
+        pos    = mm.utils.get_src_position(src)
+        lh_src = pos[:n]
+        rh_src = pos[n:]
+
+        inter_dist = np.linalg.norm(lh_src[:, np.newaxis, :]-rh_src[np.newaxis, :, :], axis=2)
+        inter_dist = inter_dist < dmax
+    else: 
+        inter_dist = np.zeros((n,m), dtype=bool)
+
+    # geometry
+    geometry = np.block([
+        [lh_dist,      inter_dist],
+        [inter_dist.T, rh_dist             ]
+    ])
+    np.fill_diagonal(geometry, 0)     # avoid self-loop
+
+    return geometry

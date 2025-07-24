@@ -191,7 +191,7 @@ class SimfReader(DatasetReader):
                     d = self.__call__(subject, "eeg-raw", verbose=0)
                     data[key] = d["eeg-raw"]
                 else:
-                    file = sim_dir/"eeg"/f"{subject}-{sample}_ave.fif"
+                    file = sim_dir/subject/sample/f"eeg_ave.fif"
                     data[key] = mne.Evoked(file, verbose="warning")
 
             if key.lower() == "eeg-raw":
@@ -252,14 +252,27 @@ class SimfReader(DatasetReader):
 
             if key.lower() == "gt":
                 # ground truth 
-                if sample is None: raise ValueError("Require sample name to read data 'gt'.")
-                file = sim_dir/"stc"/f"{subject}-{sample}_stc.fif"
-                data[key] = mne.read_source_estimate(file) 
+                if sample is None: 
+                    raise ValueError("Require sample name to read data 'gt'.")
+                file = sim_dir/subject/sample/"ground-truth-noisefree"
+                data[key] = mne.read_source_estimate(file)
 
-            if key.lower() == "lam":
-                # eigenvalues
-                file = mm_dir/subject/"sc"/f"{subject}_lams-template.npy"
+            if key.lower() == "gt_noise":
+                # ground truth with noise
+                if sample is None:
+                    raise ValueError("Require sample name to read data 'gt'.")
+                file = sim_dir/subject/sample/"ground-truth-noise"
+                data[key] = mne.read_source_estimate(file)
+
+            
+            if key.lower() == "sc_tmp":
+                file      = mm_dir/subject/"sc"/f"{subject}_sc-template.npy"
                 data[key] = np.load(file)
+
+            if key.lower() == "cst_tmp":
+                file      = mm_dir/subject/"sc"/f"{subject}_cst-template.npy"
+                data[key] = np.load(file, allow_pickle=True)
+
 
         args = list(set(args) - set(data.keys()))   # update list of missing arguments
 

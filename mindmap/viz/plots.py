@@ -967,3 +967,28 @@ def cm_frrim():
     newcmp             = ListedColormap(newcolors)
 
     return newcmp
+
+
+def plot_harmonics(src, harmonics, frequencies=[0,1,2,3,4,5]):
+    """
+    Plot brain harmonics.
+
+    Parameters
+    ----------
+    src: mne.SourceSpace
+        Source Space.
+
+    harmonics: np.ndarray 
+        Harmonics
+
+    frequencies: list[int]
+        Frequencies to plot.
+
+    Returns
+    -------
+    plot: pv.Plotter
+    """
+    harmonics = [harmonics[freq,:] for freq in frequencies]
+    titles    = [f"harm {i}" for i in frequencies]
+    plotter   = mm.viz.plot_brain(src, harmonics, title = titles)
+    return plotter

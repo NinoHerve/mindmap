@@ -236,108 +236,70 @@ def enet(
     return stc
 
 
+
 def wcset(
-        eeg: mne.Evoked,
-        fwd: mne.Forward,
-        cst: np.ndarray,
-        gap: np.ndarray,
-        lam: float,
-        dw: float = 1/2,
-        hw: float = 1/3,
-        win_size: float = 0.1,
-        scale: float = 1,
-        sub: str = None,
-):
+        eeg:mne.Evoked,
+        fwd:mne.Forward,
+        cst:np.ndarray,
+        weights:np.ndarray = None, 
+        lam:float          = 0.1
+) -> mne.SourceEstimate:
     """
-    Solve the inverse problem using weighted Connectome Spectrum Electromagnetic Tomography (wCSET). This technique applies unbalanced weights on the harmonics 
-    according to frequency gaps.
+    Solve the inverse problem using weighted Connectome Spectrum Electromagnetic Tomography (wCSET)
 
-    eeg: mne.Evoked
-        Electroencephalograms. 
+    eeg: mne.Evoke (M,T)
+        EEG
 
-    fwd: mne.Forward 
-        Forward solution (contains lead field matrix)
+    fwd: mne.Forward (M,N)
+        Forward solution.
 
     cst: np.ndarray (N,N)
-        Connectome Spectrum Transform 
+        Connectome Spectrum Transform.
 
-    gap: np.ndarray (N,)
-        Frequency gap between harmonics
-
-    lam: float
-        Regularizer parameter
-
-    dw: float
-        Depth weighting scale 
-
-    hw: float
-        Harmonic weighting
-
-    win_size: float 
-        Time window size in [s]
-
-    scale: float
-        Scale to scale value in case values are too small and pyxu always returns 0 due to computer resolution.
+    weights: np.ndarray (N,)
+        Harmonic (cst components) weights.
 
     Returns
     -------
     stc: mne.SourceEstimate 
-        Source Time Currents
+        Source Time Currents.
+    
     """
-    # select time window 
-    sfreq = eeg.info["sfreq"]
-    _, pt = mm.utils.eeg_rising_phase(eeg, ratio=1)
-    dt = int(win_size*sfreq/2)
-    Y  = eeg.data[:, pt-dt:pt+dt]
+    # extract data
+    Y = eeg.data
 
-    # extract lead field matrix
+    # extract lead field matrix with fixed source orientation
     fwd = mne.convert_forward_solution(fwd, force_fixed=True, verbose="warning")
-    L   = fwd["sol"]["data"].astype("float64")
+    L   = fwd["sol"]["data"].astype("float64")      # Lead field matrix
 
-    # standardize
+    # standardize   !!! I'm a bit scepticle about these standardizations !!!
     Ynorms = np.linalg.norm(Y, axis=0)
-    Y      = Y/Ynorms[None,:]
+    Y      = Y/Ynorms
 
-    L      = L - np.mean(L, axis=0)
-    Lnorms = np.linalg.norm(L, axis=0)**dw
-    L      = L / Lnorms[None,:] 
-
-    # harmonic weights
-    arr1 = np.abs(gap - np.roll(gap, 1))
-    arr2 = np.abs(gap - np.roll(gap, -1))
-    D    = np.minimum(arr1, arr2)**hw
-    D    = D/np.linalg.norm(D)
-    D    = np.diag(D)
+    #L      = L - np.mean(L, axis=0)
+    #Lnorms = np.linalg.norm(L, axis=0)
+    #L      = L/Lnorms[None,:]
 
     # component-wise transformation
-    L = L @ cst.T @ D
+    L = L @ cst.T
 
-    # pyxu components
-    L     = pxa.LinOp.from_array(L)
-    prior = lam * pxo.SquaredL2Norm(dim_shape=cst.shape[0])
-    recon = np.zeros((cst.shape[1], Y.shape[1]))
-    sc    = pxst.MaxIter(1000)
+    # weight matrix
+    D = np.diag(1/weights)**2
 
-    # ----- Optimization solving -----
-    for t in range(Y.shape[1]):
-        y     = Y[:,t]                                   # data time point
-        s_hat = np.random.random(L.dim_shape[0])*10**(-9)    # initial guess
+    # inverse operator
+    T = np.linalg.inv(L.T@L + lam*D)@L.T
 
-        likelihood = pxo.SquaredL2Norm(dim_shape=L.codim_shape).argshift(-y)*L + prior
-        likelihood.diff_lipschitz = likelihood.estimate_diff_lipschitz()
+    # compute inverse
+    recon = T@Y
 
-        solver = PGD(f=likelihood, g=prior, show_progress=False)
-
-        solver.fit(x0=s_hat, stop_crit=sc)
-
-        s_hat = solver.solution().squeeze()
-        recon[:,t] = (cst.T @ s_hat) * Ynorms[t] / scale
+    # revert to dipole space
+    recon = cst.T@recon
 
     # Store in MNE object
-    t_peak = pt/sfreq
-    t_start  = t_peak-(win_size/2)
     vertices = [fwd["src"][0]["vertno"], fwd["src"][1]["vertno"]]
-    stc      = mne.SourceEstimate(recon, vertices, tmin=t_start, tstep=1/sfreq, subject=sub)
+    tmin     = eeg.tmin
+    tstep    = 1/eeg.info["sfreq"]
+    stc      = mne.SourceEstimate(recon, vertices, tmin=tmin, tstep=tstep)
 
     return stc
 

@@ -1,9 +1,8 @@
+from pathlib import Path
 import numpy as np 
 import nibabel as nib 
 import pyvista as pv
-from pathlib import Path
-import mindmap as mm
-import pandas as pd
+import yaml
  
 
 
@@ -39,3 +38,13 @@ def write_surface(fname: Path|str, surf: pv.PolyData|tuple[np.ndarray], meta=Non
     nib.freesurfer.io.write_geometry(fname, vertices, faces, volume_info=meta)   
 
 
+def write_config(fname, config):
+    """
+    Write configuration file.
+    """
+    for key in config.keys():
+        if isinstance(config[key], Path):
+            config[key] = str(config[key])
+
+    with open(fname, 'w') as outfile:
+        yaml.dump(config, outfile, default_flow_style=False)

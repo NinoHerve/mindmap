@@ -262,6 +262,42 @@ def compute_eeg_snr(brain_signal: mne.SourceEstimate, fwd: mne.Forward, roi_mask
 
     return snr
 
+def estimate_snr(eeg:mne.Evoked, baseline:list[float] = None, signal:list[float] = None):
+    """
+    Estimate SNR from EEG. 
+
+    Parameters
+    ----------
+    eeg: mne.Evoked
+        EEG
+
+    baseline: list[float]
+        tmin and tmax of baseline. If `[]` then first 30% of time serie will be considered as baseline.
+
+    signal: list[float]
+        tmin and tmax of signal. If `[]` then only the max of recordings will be taken.
+
+    Returns
+    -------
+        Estimated SNR at each electrode. 
+    """
+    if baseline is None:
+        tmax     = int(0.3*len(eeg.times))
+        baseline = [eeg.times[0], eeg.times[tmax]]
+
+    eeg_      = eeg.copy()
+    baseline  = eeg_.crop(tmin=baseline[0], tmax=baseline[1])
+    pow_noise = avg_power(baseline.data)
+
+    if signal is None:
+        pow_sig = eeg.data.max(axis=1)**2
+
+    else:
+        eeg_    = eeg.copy()
+        signal  = eeg_.crop(tmin=signal[0], tmax=signal[1])
+        pow_sig = avg_power(signal.data)
+
+    return 10*np.log10(pow_sig/pow_noise)
 
 def avg_power(signal):
     """
@@ -270,10 +306,10 @@ def avg_power(signal):
     if len(signal.shape) == 1:
         signal = signal.reshape(1,-1)
 
-    pow = signal - np.mean(signal, axis=1)[:,None]
-    pow = np.sum(pow**2, axis=1)/signal.shape[-1]
+    avg_pow = signal - np.mean(signal, axis=1)[:,None]
+    avg_pow = np.sum(avg_pow**2, axis=1)/signal.shape[-1]
 
-    return pow
+    return avg_pow
 
 
 
@@ -519,3 +555,135 @@ def binary_classification_metrics(TP, TN, FP, FN):
 
 # others
 # ------
+
+def standardize_stc(stc, timepoint_wise=False):
+    """
+    Standardize image for visualization.
+
+    Parameters
+    ----------
+    stc: mne.SourceEstimate
+        Source estimation.
+
+    timepoint_wise: bool
+        Whether each time point should be standardized individually.
+
+    Returns
+    -------
+    Standardized source estimate. 
+    """
+
+    stc = stc.copy()
+
+    data = stc.data 
+    if timepoint_wise:
+        data = data / np.max(np.abs(data), axis=1)[:,None]
+    else:
+        data = data / np.max(np.abs(data))
+
+    stc.data = data 
+
+    return stc
+
+
+
+def compute_correlation(array1, array2):
+    """
+    Compute correlation between two arrays
+    """
+    # return no correlation (0) if one of the standard deviations is 0
+    if (np.std(array1)==0) or (np.std(array2)==0):
+        return 0
+
+    # standardize
+    array1 = (np.array(array1) - np.mean(array1))/np.std(array1)
+    array2 = (np.array(array2) - np.mean(array2))/np.std(array2)
+
+    # correlation
+    corr = np.sum(array1*array2)/array1.shape[0]
+
+    return corr
+
+def compute_stc_correlation(stc1, stc2, axis="space"):
+    """
+    Compute the correlation between two source estimates.
+
+    Parameter
+    ---------
+    stc1: mne.SourceEstimate
+        First source estimation.
+
+    stc2: mne.SourceEstimate
+        Second source estimation.
+
+    axis: str ['space', 'time']
+        Axis to compute correlation. Can be over space (spacial correlation) or over time (temporal correlation).
+    """
+    correlations = []
+    nsource      = stc1.vertices[0].size + stc1.vertices[1].size
+
+    assert np.all(stc1.times == stc2.times), "Source estimates do not have the same temporal axis."
+    assert np.all(nsource == stc2.vertices[0].size+stc2.vertices[1].size), "Source estimates do not have the same number of sources."
+
+    if axis == "space":
+        for t in stc1.times:
+            idx  = stc1.time_as_index(t)
+            img1 = stc1.data[:,idx]         # absolute value ?
+            img2 = stc2.data[:,idx]
+
+            corr = compute_correlation(img1, img2)
+            correlations.append(corr)
+
+    else:
+        for n in range(nsource):
+            ts1 = stc1.data[n,:]
+            ts2 = stc2.data[n,:]
+
+            corr = compute_correlation(ts1, ts2)
+            correlations.append(corr)
+
+    return np.array(correlations)
+
+
+
+def abs_stc(stc):
+    """
+    Returns source estimate with absolute values.
+    """
+    stc = stc.copy()
+    stc.data = np.abs(stc.data)
+    return stc
+
+def squared_stc(stc):
+    """
+    Returns source estimate with squared values.
+    """
+    stc = stc.copy()
+    stc.data = stc.data**2
+    return stc
+
+
+# generate weights
+def harmonic_weights(eigvals, relaxation=1):
+    """
+    Generate harmonic weights from eigenvalues.
+
+    Parameters
+    ----------
+    eigvals: np.ndarry (N,)
+        Eigenvalues of harmonics.
+    
+    relaxation: float [0-1]
+        Relaxes the small weights. The weight will give the probability of a harmonic to be chosen during reconstruction. If taking the raw weights, this can be pretty
+        tough on middle harmonics. The relaxation allows middle harmonics to have more weigths. When relaxation = 0, all harmonics have a weigth of 1.
+    """
+    arr1 = np.abs(eigvals - np.roll(eigvals, -1))
+    arr2 = np.abs(eigvals - np.roll(eigvals, 1))
+
+    weights = (arr1 + arr2)/2
+
+    # correct extremities
+    weights[0]  = arr1[0]
+    weights[-1] = arr2[-1]
+
+    return weights**relaxation
