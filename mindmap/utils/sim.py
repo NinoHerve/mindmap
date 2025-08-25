@@ -221,6 +221,7 @@ class Simulation:
         if delay is not None:
             self.dt = delay
 
+
     def set_noise_attr(
             self,
             snr:float         = None,
@@ -303,47 +304,56 @@ class Simulation:
 
         return spike
     
+    # def propagate_spike(self, spike):
+    #     """
+    #     Propagate spike.
+    #     """
+    #     sfreq = self.i["sfreq"]
+    #     shift = int(self.dt/1000 * sfreq)
+
+    #     starting_roi = np.zeros(self.n, dtype=bool)
+    #     starting_roi[self.loc_ids] = True
+    #     self.visit.append(starting_roi)
+
+    #     activity = np.zeros((self.n, self.t))
+    #     activity[starting_roi] = spike
+
+    #     i = 1
+    #     rois = starting_roi
+
+    #     while True:
+    #         # compute next hop roi
+    #         roi = (self.sc @ rois > 0) & (~rois)
+    #         self.visit.append(roi)
+
+    #         # check if roi is empty or wrong
+    #         assert np.all((roi==0) | (roi==1))
+    #         if np.all(roi==0):
+    #             break 
+    #         roi = roi.astype(bool)
+
+    #         # update activity
+    #         activity[roi] = self.cond**i * np.roll(spike, i*shift)
+
+    #         # update iteration
+    #         rois = rois | roi
+    #         i += 1
+
+    #         if i > 20:
+    #             raise RuntimeError("Spike still hasn't finish propagating after 20 repetitions")
+
+    #     vertices = [self.fwd["src"][0]["vertno"], self.fwd["src"][1]["vertno"]]
+
+    #     return mne.SourceEstimate(activity, vertices, tmin=0, tstep=1/sfreq)
+
+    
+
     def propagate_spike(self, spike):
         """
         Propagate spike.
         """
         sfreq = self.i["sfreq"]
         shift = int(self.dt/1000 * sfreq)
-
-        starting_roi = np.zeros(self.n, dtype=bool)
-        starting_roi[self.loc_ids] = True
-        self.visit.append(starting_roi)
-
-        activity = np.zeros((self.n, self.t))
-        activity[starting_roi] = spike
-
-        i = 1
-        rois = starting_roi
-
-        while True:
-            # compute next hop roi
-            roi = (self.sc @ rois > 0) & (~rois)
-            self.visit.append(roi)
-
-            # check if roi is empty or wrong
-            assert np.all((roi==0) | (roi==1))
-            if np.all(roi==0):
-                break 
-            roi = roi.astype(bool)
-
-            # update activity
-            activity[roi] = self.cond**i * np.roll(spike, i*shift)
-
-            # update iteration
-            rois = rois | roi
-            i += 1
-
-            if i > 20:
-                raise RuntimeError("Spike still hasn't finish propagating after 20 repetitions")
-
-        vertices = [self.fwd["src"][0]["vertno"], self.fwd["src"][1]["vertno"]]
-
-        return mne.SourceEstimate(activity, vertices, tmin=0, tstep=1/sfreq)
 
     def generate_eeg(self):
         """

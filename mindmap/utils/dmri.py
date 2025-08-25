@@ -1,6 +1,8 @@
 
 import random
 from pathlib import Path
+from collections import defaultdict
+import sklearn
 import mne
 import scipy as sp
 import h5py
@@ -301,7 +303,7 @@ def sabotage_connectome(connectome:np.ndarray, deletions:int = 0, additions:int=
     return conn.astype(bool)
 
 
-def build_geometry(src, dmax=10, conn_hemis=False):
+def build_geometry(src, dmax=10, conn_hemis=False, weights=True):
     """
     Build adjacency matrix from brain geometry.
 
@@ -315,23 +317,24 @@ def build_geometry(src, dmax=10, conn_hemis=False):
 
     conn_hemis: bool
         Whether to add connections in order to connect both hemispheres.
+
+    weights: bool
+        Whether to put weights as geodesic distances (in [mm]) or binarize.
     
     Returns
     -------
     geometry: sp.sparce.csc_matrix
-        Brain geometry at source level.
+        Brain geometry at source level. 
     """
-    dmax = dmax/1000   # in [m]
-
     # left hemisphere
     vertices = src[0]["vertno"]
-    lh_dist  = src[0]["dist"][vertices][:,vertices].todense()
-    lh_dist  = lh_dist < dmax
+    lh_dist  = src[0]["dist"][vertices][:,vertices].todense() * 1000 # in [mm]
+    lh_dist[lh_dist > dmax] = 0
 
     # right hemisphere
     vertices = src[1]["vertno"]
-    rh_dist  = src[1]["dist"][vertices][:,vertices].todense()
-    rh_dist  = rh_dist < dmax
+    rh_dist  = src[1]["dist"][vertices][:,vertices].todense() * 1000 # in [mm]
+    rh_dist[rh_dist > dmax]  = 0
 
     # connect hemispheres
     n, m = src[0]["nuse"], src[1]["nuse"]
@@ -341,7 +344,7 @@ def build_geometry(src, dmax=10, conn_hemis=False):
         rh_src = pos[n:]
 
         inter_dist = np.linalg.norm(lh_src[:, np.newaxis, :]-rh_src[np.newaxis, :, :], axis=2)
-        inter_dist = inter_dist < dmax
+        inter_dist[inter_dist > dmax] = 0
     else: 
         inter_dist = np.zeros((n,m), dtype=bool)
 
@@ -352,4 +355,159 @@ def build_geometry(src, dmax=10, conn_hemis=False):
     ])
     np.fill_diagonal(geometry, 0)     # avoid self-loop
 
+    if not weights:
+        return (geometry > 0).astype(int)
+
     return geometry
+
+
+def compute_streamline_length(streamline):
+    """Compute streamline length"""
+    diffs = np.diff(streamline, axis=0)
+    segment_lengths = np.linalg.norm(diffs, axis=1)
+
+    return np.sum(segment_lengths)
+
+
+def build_connectivity_matrix(i, j, num_dipoles, w=None):
+    """
+    Build dipole-based connectivity matrix.
+
+    Parameters
+    ----------
+    i: list[int]
+        Dipole indices of starting points. Size (num_streams,).
+    j: list[int]
+        Dipole indices of end points. Size (num_streams,).
+    w: list[int]
+        Weights to apply for each streamline. Size (num_streams,).
+        If `w` is none, apply number of streamlines as weight.
+    num_dipoles: int
+        Number of dipoles.
+
+    Returns
+    -------
+    sc: np.ndarray
+        Structural connectivity matrix. Size (num_dipoles x num_dipoles)
+    """
+    # Initialize empty matrix
+    sc = np.zeros((num_dipoles, num_dipoles))
+
+    # if w is none, apply number of fiber as weights
+    if w is None:
+        for start, end in zip(i,j):
+            if start == end:
+                continue
+
+            # ensure directed pairs are treated the same
+            sc[start, end] += 1
+            sc[end, start] += 1
+
+        return sc
+
+    # dictionay to accumulate weigths for each unique (i,j) pair
+    sc_dict = defaultdict(list)
+
+    for start, end, weight in zip(i,j,w):
+        # skip self-loops
+        if start == end:
+            continue
+
+        # ensure directed pairs are treated the same
+        key = tuple(sorted((start, end)))
+        sc_dict[key].append(weight)
+
+    for (start, end), weights in sc_dict.items():
+        avg_weight = np.mean(weights)
+        sc[start, end] = avg_weight
+        sc[end, start] = avg_weight
+
+    return sc
+
+
+# generate weights
+def harmonic_weights(eigvals, relaxation=1):
+    """
+    Generate harmonic weights from eigenvalues.
+
+    Parameters
+    ----------
+    eigvals: np.ndarry (N,)
+        Eigenvalues of harmonics.
+    
+    relaxation: float [0-1]
+        Relaxes the small weights. The weight will give the probability of a harmonic to be chosen during reconstruction. If taking the raw weights, this can be pretty
+        tough on middle harmonics. The relaxation allows middle harmonics to have more weigths. When relaxation = 0, all harmonics have a weigth of 1.
+    """
+    arr1 = np.abs(eigvals - np.roll(eigvals, -1))
+    arr2 = np.abs(eigvals - np.roll(eigvals, 1))
+
+    weights = (arr1 + arr2)/2
+
+    # correct extremities
+    weights[0]  = arr1[0]
+    weights[-1] = arr2[-1]
+
+    return weights**relaxation
+
+
+def smooth_connectome(conn, geodist, fwhm = 12, epsilon = 2, dim=2):
+    """
+    Smoothen connectome according to Sina Mansour et. al (2020)
+
+    Parameters
+    ----------
+    conn: np.ndarray (N,N)
+        Connectome.
+
+    geodist: sp.sparse.csr (N, N)
+        Geodesic distances between nodes.
+
+    dmax: float
+        Maximum neigborhood distance.
+
+    fwhm: float
+        Full width half maximum. 
+
+    epsilon: float
+        Smoothing radius parameter.
+
+    dim:
+        Smoothing dimensionality (surface is 2D)
+    """
+
+    # gaussian variance
+    sigma = fwhm / np.sqrt(8*np.log(2))
+
+    # maximum smoothing distance
+    #max_smoothing_distance = sigma * (-sp.stats.norm.ppf((1-(1-epsilon)**(1/dim)) /1))
+    max_smoothing_distance = sigma * (-2 * np.log(epsilon)) ** (1/dim)
+    geodist[geodist>max_smoothing_distance] = 0
+    geodist.eliminate_zeros()
+
+    # Smoothing kernel for each node
+    gaussian = -(geodist**2/(2*sigma**2))
+    np.exp(gaussian.data, out=gaussian.data)
+    gaussian += sp.sparse.eye(gaussian.shape[0], dtype=gaussian.dtype, format="csr")
+    gaussian /= sp.sparse.linalg.norm(gaussian, ord=1, axis=1)[:, None]
+    gaussian = sklearn.preprocessing.normalize(gaussian, norm="l1")     # sums to 1
+
+    # define incidence matrices
+    indices = np.argwhere(conn>0)
+    n, s    = len(conn), len(indices)
+    M1, M2  = np.zeros((n,s)), np.zeros((n,s))
+
+    for i, j in enumerate(indices):
+        M1[j[0], i] = conn[j[0],j[1]]
+        M2[j[1], i] = conn[j[1],j[0]]
+
+    # smooth incidence
+    M1s = (gaussian.T @ M1)
+    M2s = (gaussian.T @ M2)
+
+    # compute smoothed structural connectome
+    sc = (M1s @ M2s.T) + (M2s @ M1s.T)
+    sc = (sc + sc.T)/2
+    np.fill_diagonal(sc, 0)
+
+    return sc

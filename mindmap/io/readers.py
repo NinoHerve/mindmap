@@ -336,6 +336,32 @@ class DatasetReader():
                 else:
                     data[key] = np.load(file2)
 
+            if key.lower() == "sc-lengths":
+                file1 = mm_dir/subject/"sc"/f"{subject}_sc-lengths-tracto.npy"
+                file2 = mm_dir/subject/"sc"/f"{subject}_sc-lengths-template.npy"
+            
+                if file1.exists():
+                    data[key] = np.load(file1)
+                else:
+                    data[key] = np.load(file2)
+
+            if key.lower() == "sc-weights":
+                file1 = mm_dir/subject/"sc"/f"{subject}_sc-weights-tracto.npy"
+                file2 = mm_dir/subject/"sc"/f"{subject}_sc-weights-template.npy"
+
+                if file1.exists():
+                    data[key] = np.load(file1)
+                else:
+                    data[key] = np.load(file2)
+
+            if key.lower() == "sc-parc-lengths":
+                file = mm_dir/subject/"sc"/f"{subject}_sc-parc-lengths.npy"
+                data[key] = np.load(file)
+
+            if key.lower() == "sc-parc-weights":
+                file = mm_dir/subject/"sc"/f"{subject}_sc-parc-weights.npy"
+                data[key] = np.load(file)
+
             if key.lower() == "cst":
                 file = mm_dir/subject/"sc"/f"{subject}_cst.npy"
                 data[key] = np.load(file, allow_pickle=True)
@@ -350,7 +376,7 @@ class DatasetReader():
                 data[key] = mne.read_trans(file)
 
             if key.lower() == "src":
-                file = mm_dir/subject/"fwd"/f"{subject}_fwd.fif"
+                file = mm_dir/subject/"fwd"/f"{subject}_fwd.fif" 
                 if file.exists():
                     fwd = mne.read_forward_solution(file, verbose="warning")
                     data[key] = fwd["src"]
@@ -360,7 +386,7 @@ class DatasetReader():
                     data[key] = d["src-raw"]
 
             if key.lower() == "src-raw":
-                file = mm_dir/subject/"src"/f"{subject}_src.fif"
+                file = mm_dir/subject/"src"/f"{subject}_src.fif"           
                 data[key] = mne.read_source_spaces(file, verbose="warning")
 
             if key.lower() == "hmodel":
@@ -395,7 +421,7 @@ class DatasetReader():
                 raise NotImplementedError("FEM models not available yet")
 
             if key.lower() == "fwd":
-                file = mm_dir/subject/"fwd"/f"{subject}_fwd.fif"
+                file = mm_dir/subject/"fwd"/f"{subject}_fwd.fif"   
                 data[key] = mne.read_forward_solution(file, verbose="warning")
 
             if key.lower() == "fwd-sim":
@@ -1138,6 +1164,9 @@ def read_mindmap(subject, *args, sample=None):
                 data[name] = np.load(file1)
             else:
                 data[name] = np.load(file2)
+
+        
+
 
         if name.lower() == "cst":
             file = mm_dir/subject/"sc"/f"{subject}_cst.npy"

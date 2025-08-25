@@ -447,8 +447,8 @@ def select_source_estimate(stc, sources, method="max", tp=None, tw=None):
 
 
 def binary_classification(
-    reference  :mne.SourceEstimate, 
-    estimation :mne.SourceEstimate, 
+    reference  :mne.SourceEstimate,
+    estimation :mne.SourceEstimate,
     classifier :float=0.5,
 ) -> dict:
     """
@@ -663,27 +663,36 @@ def squared_stc(stc):
     return stc
 
 
-# generate weights
-def harmonic_weights(eigvals, relaxation=1):
+def make_stc(src, activity, tmin, dt):
     """
-    Generate harmonic weights from eigenvalues.
+    Make mne.SourceEstimate object
 
-    Parameters
-    ----------
-    eigvals: np.ndarry (N,)
-        Eigenvalues of harmonics.
+    Parameter
+    ---------
+    activity: np.ndarray (N,T)
+        Brain activity. N -> number of sources, T -> number of time points
+
+    src: mne.SourceSpaces
+        Source space.
+
+    tmin: float
+        Starting time in [s]
+
+    dt: float
+        Time step in [s]
+
+    Return
+    ------
+    stc: mne.SourceEstimate
+        Brain activity in MNE format.
+    """
+    vertices   = [src[0]["vertno"], src[1]["vertno"]]
     
-    relaxation: float [0-1]
-        Relaxes the small weights. The weight will give the probability of a harmonic to be chosen during reconstruction. If taking the raw weights, this can be pretty
-        tough on middle harmonics. The relaxation allows middle harmonics to have more weigths. When relaxation = 0, all harmonics have a weigth of 1.
-    """
-    arr1 = np.abs(eigvals - np.roll(eigvals, -1))
-    arr2 = np.abs(eigvals - np.roll(eigvals, 1))
+    stc = mne.SourceEstimate(
+        activity, 
+        vertices, 
+        tmin=tmin, 
+        tstep=dt,
+    )
 
-    weights = (arr1 + arr2)/2
-
-    # correct extremities
-    weights[0]  = arr1[0]
-    weights[-1] = arr2[-1]
-
-    return weights**relaxation
+    return stc

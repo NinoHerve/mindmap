@@ -547,25 +547,71 @@ def plot_leadfield(eeg, forward):
 
 
 
-def plot_connectome(connectome, name="Connectome", nonzero=False, figsize=(12,5)):
-    degree = np.sum(connectome, axis=1)
+def plot_connectome(connectome, name="Connectome", show_adj=True, show_degree=True, show_weights=True, nonzero=False, figsize=(12,5),):
+    """
+    Plot various measures of the connectome.
 
-    fig, axs = plt.subplots(1,2, figsize=figsize)
+    Parameters:
+    ----------
+    connectome: np.ndarray (N,N)
+        Connectome
 
-    cmap = cm_frrim()
+    name: str (default Connectome)
+        Name given to connectome
 
-    axs[0].matshow(connectome, cmap=cmap)
-    axs[0].set_title(name)
-    axs[0].set_xlabel("Dipoles")
-    axs[0].set_ylabel("Dipoles")
+    nonzero: bool
+        Whether to show the zero-weights in the distributions
 
-    if nonzero == True:
-        degree = degree[degree>0]
+    show_adj: bool
+        Whether to show the adjacency matrix or not
 
-    axs[1].hist(degree, bins=100, color="skyblue")
-    axs[1].set_title("Degree Distribution")
-    axs[1].set_xlabel("Degree")
-    axs[1].set_ylabel("Frequency")
+    show_degree: bool
+        Whether to show the degree distribution or not
+
+    show_weights: bool
+        Whether to show the weight distribution or not
+    
+    figsize: tuple(width, height)
+        Figure size
+    """
+    n_plots  = np.sum([show_adj, show_degree, show_weights])
+    fig, axs = plt.subplots(1, n_plots, figsize=figsize)
+    fig.suptitle(name)
+
+    i = 0
+    if show_adj:
+        cmap = cm_frrim()
+
+        axs[i].matshow(connectome, cmap=cmap)
+        axs[i].set_title("Adjacency Matrix")
+        axs[i].set_xlabel("Dipoles")
+        axs[i].set_ylabel("Dipoles")
+
+        i += 1
+
+    if show_degree:
+        degree = np.sum(connectome, axis=1)
+
+        if nonzero:
+            degree = degree[degree>0]
+
+        axs[i].hist(degree, bins=100, color="skyblue")
+        axs[i].set_title("Degree Distribution")
+        axs[i].set_xlabel("Degree")
+        axs[i].set_ylabel("Frequency")
+
+        i += 1
+
+    if show_weights:
+        weights = connectome.flatten().astype(float)
+
+        if nonzero:
+            weights = weights[weights > 0]
+
+        axs[i].hist(weights, bins=100, color="skyblue")
+        axs[i].set_title("Weight Distribution")
+        axs[i].set_xlabel("Weight")
+        axs[i].set_ylabel("Frequency")
 
     plt.tight_layout()
     plt.show()

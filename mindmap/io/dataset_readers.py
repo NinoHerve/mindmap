@@ -273,6 +273,33 @@ class SimfReader(DatasetReader):
                 file      = mm_dir/subject/"sc"/f"{subject}_cst-template.npy"
                 data[key] = np.load(file, allow_pickle=True)
 
+            if key.lower() == "src1000":
+                # always read source from forward model. Forward modeling can change the original source space.
+                file = mm_dir/subject/"fwd"/f"{subject}_1000_fwd.fif"
+                if file.exists():
+                    fwd       = mne.read_forward_solution(file, verbose="warning")
+                    data[key] = fwd["src"]
+                else:
+                    print("\033[93mCould not find forward solution, reading src1000-raw instead.\033[0m")  # src can change when generating forward solution 
+                    d = self(subject, "src1000-raw", verbose=0)
+                    data[key] = d["src1000-raw"]
+
+            if key.lower() == "src1000-raw":
+                    file = mm_dir/subject/"src"/f"{data['sub']}_1000_src.fif"
+                    data[key] = mne.read_source_spaces(file, verbose="warning")
+
+            if key.lower() == "fwd1000":
+                file      = mm_dir/subject/"fwd"/f"{subject}_1000_fwd.fif"
+                data[key] = mne.read_forward_solution(file, verbose="warning")
+
+            if key.lower() == "length1000":
+                file      = mm_dir/subject/"sc"/f"{data['sub']}_1000_sc-length-tracto.npy"
+                data[key] = np.load(file, allow_pickle=True)
+
+            if key.lower() == "weight1000":
+                file      = mm_dir/subject/"sc"/f"{data['sub']}_1000_sc-weight-tracto.npy"
+                data[key] = np.load(file, allow_pickle=True)  
+
 
         args = list(set(args) - set(data.keys()))   # update list of missing arguments
 
