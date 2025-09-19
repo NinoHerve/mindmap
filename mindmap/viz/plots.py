@@ -1038,3 +1038,37 @@ def plot_harmonics(src, harmonics, frequencies=[0,1,2,3,4,5]):
     titles    = [f"harm {i}" for i in frequencies]
     plotter   = mm.viz.plot_brain(src, harmonics, title = titles)
     return plotter
+
+
+
+def plot_graph(points, adjacency):
+    """
+    Parameters
+    ----------
+    points: np.array (N,3) 
+    lines: np.array (N,2)
+    """
+
+    P = pv.PolyData(points)
+    A1 = adjacency > 0
+    A2 = adjacency < 0
+
+    lines1 = []
+    lines2 = []
+    for i in range(len(A1)):
+        for j in range(i, len(A1)):
+            if A1[i,j]:
+                lines1 += [points[i], points[j]]
+            if A2[i,j]:
+                lines2 += [points[i], points[j]]
+    lines1 = np.array(lines1)
+    lines2 = np.array(lines2)
+
+    p = pv.Plotter()
+    p.add_mesh(P)
+    if len(lines1) > 0:
+        p.add_lines(lines1, color="green", width=0.05)
+    if len(lines2) > 0:
+        p.add_lines(lines2, color="red", width=0.01)
+
+    return p

@@ -301,6 +301,34 @@ class SimfReader(DatasetReader):
                 data[key] = np.load(file, allow_pickle=True)  
 
 
+            if key.lower() == "src500":
+                # always read source from forward model. Forward modeling can change the original source space.
+                file = mm_dir/subject/"fwd"/f"{subject}_500_fwd.fif"
+                if file.exists():
+                    fwd       = mne.read_forward_solution(file, verbose="warning")
+                    data[key] = fwd["src"]
+                else:
+                    print("\033[93mCould not find forward solution, reading src500-raw instead.\033[0m")  # src can change when generating forward solution 
+                    d = self(subject, "src500-raw", verbose=0)
+                    data[key] = d["src500-raw"]
+
+            if key.lower() == "src500-raw":
+                    file = mm_dir/subject/"src"/f"{data['sub']}_500_src.fif"
+                    data[key] = mne.read_source_spaces(file, verbose="warning")
+
+            if key.lower() == "fwd500":
+                file      = mm_dir/subject/"fwd"/f"{subject}_500_fwd.fif"
+                data[key] = mne.read_forward_solution(file, verbose="warning")
+
+            if key.lower() == "length500":
+                file      = mm_dir/subject/"sc"/f"{data['sub']}_500_sc-length-tracto.npy"
+                data[key] = np.load(file, allow_pickle=True)
+
+            if key.lower() == "weight500":
+                file      = mm_dir/subject/"sc"/f"{data['sub']}_500_sc-weight-tracto.npy"
+                data[key] = np.load(file, allow_pickle=True)
+
+
         args = list(set(args) - set(data.keys()))   # update list of missing arguments
 
         # FreeSurfer

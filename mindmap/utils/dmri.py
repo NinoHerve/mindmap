@@ -303,7 +303,7 @@ def sabotage_connectome(connectome:np.ndarray, deletions:int = 0, additions:int=
     return conn.astype(bool)
 
 
-def build_geometry(src, dmax=10, conn_hemis=False, weights=True):
+def build_geometry(src, dmax=10, k=None, inter_hemi_dmax=0, weights=True):
     """
     Build adjacency matrix from brain geometry.
 
@@ -315,6 +315,9 @@ def build_geometry(src, dmax=10, conn_hemis=False, weights=True):
     dmax: float
         Maximal distance in [mm] at which to connect neighbors.
 
+    k: int
+        Maximum number of neighbors.
+        
     conn_hemis: bool
         Whether to add connections in order to connect both hemispheres.
 
@@ -326,40 +329,59 @@ def build_geometry(src, dmax=10, conn_hemis=False, weights=True):
     geometry: sp.sparce.csc_matrix
         Brain geometry at source level. 
     """
-    # left hemisphere
-    vertices = src[0]["vertno"]
-    lh_dist  = src[0]["dist"][vertices][:,vertices].todense() * 1000 # in [mm]
-    lh_dist[lh_dist > dmax] = 0
+    hemispheres = []
 
-    # right hemisphere
-    vertices = src[1]["vertno"]
-    rh_dist  = src[1]["dist"][vertices][:,vertices].todense() * 1000 # in [mm]
-    rh_dist[rh_dist > dmax]  = 0
+    for hemi in [0,1]:  # 0 for left hemisphere and 1 for right hemisphere
+        
+        # get geodesic distance matrix of used nodes
+        vertices = src[hemi]["vertno"]
+        dist     = src[hemi]["dist"][vertices][:,vertices].todense() * 1000     # in [mm]
+
+        # threshold according to dmax
+        dist[dist > dmax] = np.inf
+
+        # choose only k neerest connections
+        if k is not None:
+            # indices of k closest nodes
+            knn_indices = np.argpartition(dist, k, axis=1)[:,:k]
+            
+            # create symmetric mask of nearest neighbors
+            mask = np.zeros_like(dist, dtype=bool)
+            rows = np.arange(dist.shape[0])[:,None]
+            mask[rows, knn_indices] = True
+            
+            sym_mask = np.logical_or(mask, mask.T)
+
+            # apply mask
+            dist = np.where(sym_mask, dist, np.inf)
+
+        hemispheres.append(dist)
 
     # connect hemispheres
-    n, m = src[0]["nuse"], src[1]["nuse"]
-    if conn_hemis:
-        pos    = mm.utils.get_src_position(src)
-        lh_src = pos[:n]
-        rh_src = pos[n:]
+    n = src[0]["nuse"]
 
-        inter_dist = np.linalg.norm(lh_src[:, np.newaxis, :]-rh_src[np.newaxis, :, :], axis=2)
-        inter_dist[inter_dist > dmax] = 0
-    else: 
-        inter_dist = np.zeros((n,m), dtype=bool)
+    # add inter hemispheric connections
+    pos    = mm.utils.get_src_position(src) * 1000  # in [mm]
+    lh_src = pos[:n]
+    rh_src = pos[n:]
+
+    inter_dist = np.linalg.norm(lh_src[:, np.newaxis, :]-rh_src[np.newaxis, :, :], axis=2)
+    inter_dist[inter_dist > inter_hemi_dmax] = np.inf
 
     # geometry
     geometry = np.block([
-        [lh_dist,      inter_dist],
-        [inter_dist.T, rh_dist             ]
+        [hemispheres[0],  inter_dist    ],
+        [inter_dist.T,    hemispheres[1]]
     ])
-    np.fill_diagonal(geometry, 0)     # avoid self-loop
+
+    # replace infinities with zeros, remove self loops
+    geometry[geometry == np.inf] = 0
+    np.fill_diagonal(geometry, 0)
 
     if not weights:
         return (geometry > 0).astype(int)
 
     return geometry
-
 
 def compute_streamline_length(streamline):
     """Compute streamline length"""
