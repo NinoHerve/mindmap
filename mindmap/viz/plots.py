@@ -545,6 +545,74 @@ def plot_leadfield(eeg, forward):
     
     return plotter
 
+def plot_dipole_function(source_space, dipole_function, title="Dipole function"):
+    """
+    Plots a function that depends on dipole position (e.g. point-spread function, cross-talk function, ...)
+
+    Parameters
+    ----------
+    source_space: mne.SourceSpaces 
+        Dipole space.
+
+    dipole_function: np.ndarray (N,N)
+        Dipole function. Row i corresponds to function output of dipole i.
+
+    Returns
+    -------
+    Pyvista object
+    """
+
+    plotter = pv.Plotter()
+
+    # style
+    cmap = "bwr"
+    smooth_shading = True
+    max_abs = np.max(np.abs(dipole_function))
+    clim = [-max_abs, max_abs]
+    size = 5
+
+    # brain mesh
+    hemiL, hemiR = mm.utils.mne_to_polydata(source_space, dipole_function[0])
+
+    plotter.add_mesh(hemiL, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="lh")
+    plotter.add_mesh(hemiR, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="rh")
+    plotter.add_title(title)
+
+    # dipoles
+    dipoles                 = pv.PolyData(mm.utils.get_src_position(source_space))
+    dipoles["selection"]    = np.zeros(dipoles.n_cells)
+    dipoles["selection"][0] = 1
+
+    dipoles_actor = plotter.add_mesh(dipoles, render_points_as_spheres=True, point_size=size)
+    plotter.remove_scalar_bar(title="selection")
+
+    # dipole visibility checkbox
+    def toggle_vis(flag) -> None:
+        dipoles_actor.SetVisibility(flag)
+
+    plotter.add_checkbox_button_widget(toggle_vis, value=True)
+
+    # dipole picking
+    def pick_dipole(picked_point):
+        if picked_point is not None:
+            # get index of closest point
+            closest_point_id = dipoles.find_closest_point(picked_point)
+
+            # change selected dipole
+            dipoles["selection"] = np.zeros(dipoles.n_cells)
+            dipoles["selection"][closest_point_id] = 1
+
+            # change corresponding function output
+            tmp_hemiL, tmp_hemiR = mm.utils.mne_to_polydata(source_space, dipole_function[closest_point_id])
+            plotter.meshes[0]["signal"] = tmp_hemiL["signal"]
+            plotter.meshes[1]["signal"] = tmp_hemiR["signal"]
+
+            plotter.render()
+
+    plotter.enable_point_picking(callback=pick_dipole)
+
+    return plotter
+
 
 
 def plot_connectome(connectome, name="Connectome", show_adj=True, show_degree=True, show_weights=True, nonzero=False, figsize=(12,5),):
