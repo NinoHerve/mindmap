@@ -1,21 +1,35 @@
-import nibabel as nib
+"""
+Module Name: plots.py
+Description: Functions to plot data.
+
+This module provides functions to plot data.
+
+Author: Nino Herve
+Created: 2025-10-28
+Last Modified: 2025-10-28
+License: MIT
+"""
 import numpy as np
+from scipy.fft import ifftn
+import nibabel as nib
+import mne
+
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.colors import ListedColormap
-import pyvista as pv
-import mindmap as mm
-import mne
 import plotly.graph_objs as go
 import plotly.express as px
-from scipy.fft import ifftn
+import pyvista as pv
+
+from mindmap.head import mne_to_polydata, nib_to_polydata, get_dipole_positions
+from mindmap.sensor import get_ch_positions
 
 
 def show_slices(
-        volume: np.ndarray | nib.Nifti1Image, 
-        slice_indices: list[int] = None, 
-        axis: int = 2,
-        cmap: str = "gray",
+        volume        : np.ndarray | nib.Nifti1Image,
+        slice_indices : list[int] = None,
+        axis          : int = 2,
+        cmap          : str = "gray",
 ) -> None:
     """
     Display slices from a volume.
@@ -37,10 +51,10 @@ def show_slices(
     if isinstance(volume, nib.Nifti1Image):
         volume = volume.get_fdata()
 
-    if slice_indices == None:
+    if slice_indices is None:
         slice_indices = [volume.shape[axis]//2] # default
 
-    fig, axes = plt.subplots(1, len(slice_indices), figsize=(15,5))
+    _, axes = plt.subplots(1, len(slice_indices), figsize=(15,5))
 
     if len(slice_indices) == 1:
         axes = [axes]
@@ -50,7 +64,7 @@ def show_slices(
             slice_vol = volume[slice_idx, :, :]
         elif axis == 1:
             slice_vol = volume[:, slice_idx, :]
-        elif axis == 2:
+        else:
             slice_vol = volume[:, :, slice_idx]
 
         if len(slice_vol) > 2:  # RGB image
@@ -65,88 +79,101 @@ def show_slices(
     plt.show()
 
 
-def plot_sources(
-        sources: mne.SourceSpaces,
-        mask: nib.Nifti1Image = None,
-        cras: np.ndarray = np.array([0,0,0]),
-        src_size: float = 5,
-        src_color: str = "red",
-        src_clut: np.ndarray = None, 
-        brain_color: str = "lightblue",
-        mask_opacity: float = 0.2, 
-) -> pv.Plotter:
-    
-    plotter = pv.Plotter()
+# I DON'T NEED THIS FUNCTION ANYMORE
+#def plot_sources(
+#        sources: mne.SourceSpaces,
+#        mask: nib.Nifti1Image = None,
+#        cras: np.ndarray = np.array([0,0,0]),
+#        src_size: float = 5,
+#        src_color: str = "red",
+#        src_clut: np.ndarray = None,
+#        brain_color: str = "lightblue",
+#        mask_opacity: float = 0.2,
+#) -> pv.Plotter:
+#    """
+#    Plot source space.
+#
+#    Parameters
+#    ----------
+#    sources: mne.SourceSpaces
+#        Source space.
 
-    # sources
-    points = mm.utils.get_src_position(sources)
+#    mask: nib.Nifti1Image
+#        Gray matter.
 
-    if mask is None:
+#    ....
+#    """
+#    plotter = pv.Plotter()
+
+#    # sources
+#    points = mm.utils.get_src_position(sources)
+
+#    if mask is None:
         # surfaces
-        vertices, faces = sources[0]["rr"], sources[0]["tris"]
-        surflh = mm.utils.surf_to_polydata(vertices, faces)
+#        vertices, faces = sources[0]["rr"], sources[0]["tris"]
+#        surflh = mm.utils.surf_to_polydata(vertices, faces)
 
-        vertices, faces = sources[1]["rr"], sources[1]["tris"]
-        surfrh = mm.utils.surf_to_polydata(vertices, faces)
+#        vertices, faces = sources[1]["rr"], sources[1]["tris"]
+#        surfrh = mm.utils.surf_to_polydata(vertices, faces)
 
         # plot
-        plotter.add_mesh(surflh, show_edges=True, color=brain_color)
-        plotter.add_mesh(surfrh, show_edges=True, color=brain_color)
+#        plotter.add_mesh(surflh, show_edges=True, color=brain_color)
+#        plotter.add_mesh(surfrh, show_edges=True, color=brain_color)
         
-    else: 
-        if np.all(cras == [0,0,0]):
-            print("\033[93mNo cras translation applied")
+#    else: 
+#        if np.all(cras == [0,0,0]):
+#            print("\033[93mNo cras translation applied")
         
         # sources
-        points     = points*1000 + cras
-        inv_affine = np.linalg.inv(mask.affine)
-        points     = mne.transforms.apply_trans(inv_affine, points)
-        points     = pv.PolyData(points)
+#        points     = points*1000 + cras
+#        inv_affine = np.linalg.inv(mask.affine)
+#        points     = mne.transforms.apply_trans(inv_affine, points)
+#        points     = pv.PolyData(points)
 
         # mask
-        volume = pv.ImageData(dimensions=mask.shape, spacing=(1,1,1), origin=(0,0,0))
-        volume.point_data["scalars"] = mask.get_fdata().flatten(order="F")
+#        volume = pv.ImageData(dimensions=mask.shape, spacing=(1,1,1), origin=(0,0,0))
+#        volume.point_data["scalars"] = mask.get_fdata().flatten(order="F")
 
         # plot
-        plotter.add_mesh(volume.contour(3), color="white", opacity=mask_opacity)
+#        plotter.add_mesh(volume.contour(3), color="white", opacity=mask_opacity)
 
-    if src_clut is None:
-        plotter.add_mesh(points, src_color, point_size=src_size, render_points_as_spheres=True)
-    else:
-        plotter.add_mesh(points, scalars=src_clut, point_size=src_size, render_points_as_spheres=True)
-
-
-    return plotter
+#    if src_clut is None:
+#        plotter.add_mesh(points, src_color, point_size=src_size, render_points_as_spheres=True)
+#    else:
+#        plotter.add_mesh(points, scalars=src_clut, point_size=src_size, render_points_as_spheres=True)
 
 
-def plot_brain_signal(sources, signal=None, n_points=2, name="signal", cmap="bwr", clim=None, show_max=False):
+#    return plotter
 
-    hemiL, hemiR = mm.utils.mne_to_polydata(sources, signal)
+# I DON'T NEED THIS FUNCTION ANYMORE
+#def plot_brain_signal(sources, signal=None, n_points=2, name="signal", cmap="bwr", clim=None, show_max=False):
 
-    plotter = pv.Plotter()
-    plotter.add_mesh(hemiL, cmap=cmap, smooth_shading=True, clim=clim, name="lh")
-    plotter.add_mesh(hemiR, cmap=cmap, smooth_shading=True, clim=clim, name="rh")
+#    hemiL, hemiR = mm.utils.mne_to_polydata(sources, signal)
 
-    if show_max == True:
-        split = sources[0]["nuse"]
-        idx_max = np.argmax(np.abs(signal))
-        if idx_max < split:
-            map_max = sources[0]["rr"][sources[0]["vertno"]][idx_max]
-        else:
-            map_max = sources[1]["rr"][sources[1]["vertno"]][idx_max-split]
+#    plotter = pv.Plotter()
+#    plotter.add_mesh(hemiL, cmap=cmap, smooth_shading=True, clim=clim, name="lh")
+#    plotter.add_mesh(hemiR, cmap=cmap, smooth_shading=True, clim=clim, name="rh")
+
+#    if show_max == True:
+#        split = sources[0]["nuse"]
+#        idx_max = np.argmax(np.abs(signal))
+#        if idx_max < split:
+#            map_max = sources[0]["rr"][sources[0]["vertno"]][idx_max]
+#        else:
+#            map_max = sources[1]["rr"][sources[1]["vertno"]][idx_max-split]
         
-        plotter.add_mesh(map_max, render_points_as_spheres=True, color="violet", point_size=10)
+#        plotter.add_mesh(map_max, render_points_as_spheres=True, color="violet", point_size=10)
 
 
-    return plotter
+#    return plotter
 
 
 
 def plot_brain(
-    sources         : mne.SourceSpaces | list[mne.SourceSpaces], 
+    sources         : mne.SourceSpaces | list[mne.SourceSpaces],
     signal          : np.ndarray | mne.SourceEstimate | list[np.ndarray] | list[mne.SourceSpaces] = None,
     overlay         : np.ndarray | nib.Nifti1Image | list[np.ndarray] | list[nib.Nifti1Image]     = None,
-    cras            : np.ndarray | list[np.ndarray] = np.zeros(3),
+    tkras2ras       : np.ndarray | list[np.ndarray] = np.zeros(3),
     show_max        : bool  = False,
     show_src        : bool  = False,
     clim            : list  = None,
@@ -174,8 +201,8 @@ def plot_brain(
     overlay: np.ndarray (M,3) | nib.Nifti1Image
         Overlay defined as point cloud.
 
-    cras: np.ndarray
-        Translation subject -> FreeSurfer. Necessary to align MRI images with meshes.
+    tkras2ras: np.ndarray
+        Affine transform (freesurfer ras -> T1 ras). Necessary to align MRI images with meshes.
 
     show_max: bool
         Show maximum of signal if True.
@@ -218,10 +245,9 @@ def plot_brain(
     if not isinstance(sources, mne.SourceSpaces):
         if len(sources) > size:
             size = len(sources)
-    for obj in [signal, overlay, cras]:
+    for obj in [signal, overlay, tkras2ras]:
         if isinstance(obj, list):
-            if len(obj) > size: 
-                size = len(obj)
+            size = max(size, len(obj))
 
     # check every entry
     if isinstance(sources, mne.SourceSpaces):
@@ -231,8 +257,8 @@ def plot_brain(
         if not isinstance(overlay, list):
             overlay = [overlay]*size
 
-    if not isinstance(cras, list):
-        cras = [cras]*size
+    if not isinstance(tkras2ras, list):
+        tkras2ras = [tkras2ras]*size
 
     if signal is not None:
         if isinstance(signal, mne.SourceEstimate) or isinstance(signal, np.ndarray):
@@ -243,60 +269,47 @@ def plot_brain(
 
     # if Time Series plot TimeMesh
     if signal is not None and isinstance(signal[0], mne.SourceEstimate):
-        return TimeMesh(sources, signal, overlay=overlay, titles=title, cmap=cmap, absolute=absolute, smooth_shading=smooth_shading,
-                        overlay_color=overlay_color, overlay_label=overlay_label, overlay_size=overlay_size, overlay_opacity=overlay_opacity)
+        return TimeMesh(
+                sources, signal, overlay=overlay, titles=title, cmap=cmap, 
+                absolute=absolute, smooth_shading=smooth_shading, overlay_color=overlay_color,
+                overlay_label=overlay_label, overlay_size=overlay_size, overlay_opacity=overlay_opacity,
+            )
 
     # else plot single time point
     plotter = pv.Plotter(shape=(1,size))
 
     # brain plot
     if signal is not None:
-        maxi = -np.inf 
-        mini = np.inf
+        if absolute:
+            signal = [np.abs(s) for s in signal]
 
-        # find max and min amongst all data
-        for i in range(size):
-            
-            if absolute:
-                signal[i] = np.abs(signal[i])
+        if clim is None:
+            clim = find_clim(signal)
 
-            s_max = np.max(signal[i])
-            s_min = np.min(signal[i])
-        
-            if maxi < s_max:
-                maxi = s_max
-            if mini > s_min:
-                mini = s_min
-    
         # clim/cmap when positive values
-        if mini > 0:
-            clim = [0, maxi]
-            if cmap is None:
-                cmap = "Reds"
-        # clim/cmap when pos/neg values
-        else:
-            extremum = np.max([np.abs(mini), np.abs(maxi)])
-            clim     = [-extremum, extremum]
-            if cmap is None:
+        if cmap is None:
+            if clim[0] < 0:
                 cmap = "bwr"
+            else:
+                cmap = "Reds"
 
         for i in range(size):
             # brain meshes
-            hemiL, hemiR = mm.utils.mne_to_polydata(sources[i], signal[i])
+            hemi_l, hemi_r = mne_to_polydata(sources[i], signal[i])
 
             plotter.subplot(0,i)
-            plotter.add_mesh(hemiL, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="lh")
-            plotter.add_mesh(hemiR, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="rh")
+            plotter.add_mesh(hemi_l, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="lh")
+            plotter.add_mesh(hemi_r, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="rh")
             plotter.add_title(title[i])
 
     else:
         for i in range(size):
             # brain meshes
-            hemiL, hemiR = mm.utils.mne_to_polydata(sources[i], None)
+            hemi_l, hemi_r = mne_to_polydata(sources[i], None)
 
             plotter.subplot(0,i)
-            plotter.add_mesh(hemiL, color="white", smooth_shading=smooth_shading, name="lh")
-            plotter.add_mesh(hemiR, color="white", smooth_shading=smooth_shading, name="rh")
+            plotter.add_mesh(hemi_l, color="white", smooth_shading=smooth_shading, name="lh")
+            plotter.add_mesh(hemi_r, color="white", smooth_shading=smooth_shading, name="rh")
             plotter.add_title(title[i])
 
     # maximum value
@@ -308,7 +321,7 @@ def plot_brain(
                 map_max = sources[i][0]["rr"][sources[i][0]["vertno"]][idx_max]
             else:
                 map_max = sources[i][1]["rr"][sources[i][1]["vertno"]][idx_max-split]
-        
+
             plotter.subplot(0,i)
             plotter.add_mesh(map_max, color="yellow", point_size=10)
 
@@ -316,7 +329,7 @@ def plot_brain(
     if overlay is not None:
         for i in range(size):
             if isinstance(overlay[i], nib.Nifti1Image):
-                over = mm.utils.nib_to_polydata(overlay[i], trans=cras[i])
+                over = nib_to_polydata(overlay[i], trans=np.linalg.inv(tkras2ras[i]))
             else:
                 over = overlay[i]
 
@@ -325,7 +338,7 @@ def plot_brain(
 
     if show_src:
         for i in range(size):
-            pos = pv.PolyData(mm.utils.get_src_position(sources[i]))
+            pos = pv.PolyData(get_dipole_positions(sources[i]))
 
             plotter.subplot(0,i)
             plotter.add_mesh(pos, color="green", point_size=5, render_points_as_spheres=True)
@@ -335,20 +348,23 @@ def plot_brain(
 
 
 class TimeMesh:
+    """
+    Class to manage temporal brain plots.
+    """
     def __init__(
         self, 
         sources         : mne.SourceSpaces | list[mne.SourceSpaces], 
         stc             : mne.SourceEstimate | list[mne.SourceEstimate],
-        overlay         : np.ndarray | nib.Nifti1Image | list[np.ndarray] | list[nib.Nifti1Image]     = None,
-        cras            : np.ndarray | list[np.ndarray] = np.zeros(3),
-        titles          : str | list[str] = "", 
-        cmap            : str = None, 
-        absolute        : bool = False, 
+        overlay         : np.ndarray | nib.Nifti1Image | list[np.ndarray] | list[nib.Nifti1Image] = None,
+        tkras2ras       : np.ndarray | list[np.ndarray] = np.zeros(3),
+        titles          : str | list[str] = "",
+        cmap            : str = None,
+        absolute        : bool = False,
         smooth_shading  : bool = False,
         overlay_color   : str   = "green",
         overlay_label   : str   = None,
         overlay_size    : float = 1,
-        overlay_opacity : float = 1, 
+        overlay_opacity : float = 1,
     ):
         """
         Init
@@ -367,15 +383,15 @@ class TimeMesh:
             Whether to take absolute values.
         """
         # instanciate objects
-        self.to_self(sources, stc, overlay, cras)
+        self.to_self(sources, stc, overlay, tkras2ras)
         self.select_cmap(cmap, absolute)
 
         size = len(self.sources)
-        
+
         # instanciate first plot
         start      = int(self.stc[0].data.shape[1]/2)
         signals    = [s.data[:, start] for s in self.stc]
-        self.hemis = [mm.utils.mne_to_polydata(self.sources[i], signals[i]) for i in range(size)]
+        self.hemis = [mne_to_polydata(self.sources[i], signals[i]) for i in range(size)]
 
         self.plotter = pv.Plotter(shape=(1,size))
 
@@ -393,7 +409,7 @@ class TimeMesh:
         if overlay is not None:
             for i in range(size):
                 if isinstance(self.overlay[i], nib.Nifti1Image):
-                    over = mm.utils.nib_to_polydata(self.overlay[i], trans=self.cras[i])
+                    over = nib_to_polydata(self.overlay[i], trans=self.cras[i])
                 else:
                     over = self.overlay[i]
 
@@ -410,6 +426,7 @@ class TimeMesh:
         )
 
     def show(self):
+        """show plot"""
         self.plotter.show()
 
     def __call__(self, time_point):
@@ -422,21 +439,19 @@ class TimeMesh:
 
         # update values (plot update automatically like magic)
         for i in range(size):
-            hemiL, hemiR = mm.utils.mne_to_polydata(self.sources[i], signal[i])
-            self.hemis[i][0]["signal"] = hemiL["signal"]
-            self.hemis[i][1]["signal"] = hemiR["signal"]
+            hemi_l, hemi_r = mne_to_polydata(self.sources[i], signal[i])
+            self.hemis[i][0]["signal"] = hemi_l["signal"]
+            self.hemis[i][1]["signal"] = hemi_r["signal"]
 
     def to_self(self, sources, stc, overlay, cras):
-
+        """basically __init__?"""
         # Find longest list
         longest_list = 1
         if not isinstance(sources, mne.SourceSpaces):
-            if longest_list < len(sources):
-                longest_list = len(sources)
+            longest_list = max(longest_list, len(sources))
         for obj in [stc, overlay, cras]:
             if isinstance(obj, list):
-                if longest_list < len(obj):
-                    longest_list = len(obj)
+                longest_list = max(longest_list, len(obj))
 
         # Check data and convert to list
         if isinstance(sources, mne.SourceSpaces):    # sources are list so investigate if element inside is SourceSpace or list
@@ -448,11 +463,11 @@ class TimeMesh:
                 assert len(times) == len(s.times), "Source estimates must have the same time span in TimeMesh"
         else:
             stc = [stc]*longest_list
-        
+
         if overlay is not None:
             if not isinstance(overlay, list):
                 overlay = [overlay]*longest_list
-        
+
         if not isinstance(cras, list):
             cras = [cras]*longest_list
 
@@ -465,24 +480,21 @@ class TimeMesh:
 
 
     def select_cmap(self, cmap=None, absolute=False):
-
-        maxi = -np.inf 
+        """Select proper colormap"""
+        maxi = -np.inf
         mini = np.inf
 
         # find max and min amongst all data
         for stc in self.stc:
-            
+
             if absolute:
                 stc.data = np.abs(stc.data)
 
             stc_max = np.max(stc.data)
             stc_min = np.min(stc.data)
 
-            if maxi < stc_max:
-                maxi = stc_max
-
-            if mini > stc_min:
-                mini = stc_min
+            maxi = max(maxi, stc_max)
+            mini = min(mini, stc_min)
 
         # clim/cmap when positive values
         if mini > 0:
@@ -499,13 +511,14 @@ class TimeMesh:
             if cmap is None:
                 cmap = "bwr"
 
-        self.clim = clim 
+        self.clim = clim
         self.cmap = cmap
 
 
 def plot_leadfield(eeg, forward):
+    """Plot to interactively look at leadfields"""
     # get electrode positions
-    points = mm.utils.get_ch_positions(eeg)
+    points = get_ch_positions(eeg)
     cap    = pv.PolyData(points)
     cap["highlight"] = np.zeros(len(points))
 
@@ -515,11 +528,10 @@ def plot_leadfield(eeg, forward):
     )
     leadfield = leadfield["sol"]["data"]
 
-    max_abs = max([abs(leadfield.max()), abs(leadfield.min())])
-    clim    = [-max_abs, max_abs]
+    clim = find_clim(leadfield)
 
     # plot
-    plotter = mm.viz.plot_brain_signal(forward["src"], np.zeros(leadfield.shape[1]), clim=clim)
+    plotter = plot_brain(forward["src"], np.zeros(leadfield.shape[1]), clim=clim)
     plotter.add_mesh(cap, point_size=10, render_points_as_spheres=True, name="cap")
     plotter.remove_scalar_bar(title="highlight")
 
@@ -534,7 +546,7 @@ def plot_leadfield(eeg, forward):
             cap["highlight"][closest_point_id] = 1
 
             # change leadfield vector
-            tmp = mm.viz.plot_brain_signal(forward["src"], leadfield[closest_point_id], clim=clim)
+            tmp = plot_brain(forward["src"], leadfield[closest_point_id], clim=clim)
             plotter.meshes[0]["signal"] = tmp.meshes[0]["signal"]
             plotter.meshes[1]["signal"] = tmp.meshes[1]["signal"]
 
@@ -542,7 +554,7 @@ def plot_leadfield(eeg, forward):
             plotter.render()
 
     plotter.enable_point_picking(callback=pick_electrode)
-    
+
     return plotter
 
 def plot_dipole_function(source_space, dipole_function, title="Dipole function"):
@@ -572,14 +584,14 @@ def plot_dipole_function(source_space, dipole_function, title="Dipole function")
     size = 5
 
     # brain mesh
-    hemiL, hemiR = mm.utils.mne_to_polydata(source_space, dipole_function[0])
+    hemi_l, hemi_r = mne_to_polydata(source_space, dipole_function[0])
 
-    plotter.add_mesh(hemiL, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="lh")
-    plotter.add_mesh(hemiR, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="rh")
+    plotter.add_mesh(hemi_l, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="lh")
+    plotter.add_mesh(hemi_r, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="rh")
     plotter.add_title(title)
 
     # dipoles
-    dipoles                 = pv.PolyData(mm.utils.get_src_position(source_space))
+    dipoles                 = pv.PolyData(get_dipole_positions(source_space))
     dipoles["selection"]    = np.zeros(dipoles.n_cells)
     dipoles["selection"][0] = 1
 
@@ -603,9 +615,9 @@ def plot_dipole_function(source_space, dipole_function, title="Dipole function")
             dipoles["selection"][closest_point_id] = 1
 
             # change corresponding function output
-            tmp_hemiL, tmp_hemiR = mm.utils.mne_to_polydata(source_space, dipole_function[closest_point_id])
-            plotter.meshes[0]["signal"] = tmp_hemiL["signal"]
-            plotter.meshes[1]["signal"] = tmp_hemiR["signal"]
+            tmp_hemi_l, tmp_hemi_r = mne_to_polydata(source_space, dipole_function[closest_point_id])
+            plotter.meshes[0]["signal"] = tmp_hemi_l["signal"]
+            plotter.meshes[1]["signal"] = tmp_hemi_r["signal"]
 
             plotter.render()
 
@@ -748,7 +760,7 @@ def plot_spectrum(spectrum, times=None):
         )]
 
         fig.update_layout(sliders = sliders)
-    
+
     else:
         trace = new_trace(spectrum)
 
@@ -774,8 +786,39 @@ def plot_spectrum(spectrum, times=None):
             range     = border,
         ),
     )
-    
+
     return fig
+
+
+def find_clim(data):
+    """
+    Find color limits to account accross all data.
+
+    Parameters
+    ----------
+    data: list[np.ndarray]
+        List of datas.
+
+    Returns
+    -------
+    clim: tuple
+        Value range defined accross all datas.
+    """
+    if not isinstance(data, list):
+        data = [data]
+
+    abs_max       = 0
+    only_positive = True
+
+    for d in data:
+        abs_max = max(abs_max, np.max(np.abs(d)))
+        if np.any(d < 0):
+            only_positive = False
+
+    if only_positive:
+        return [0, abs_max]
+    
+    return [-abs_max, abs_max]
 
 
 def plot_resection(
@@ -840,10 +883,10 @@ def plot_resection(
     # resection area
     #voxels = np.argwhere(resection.get_fdata()>0)
     #points = (nib.affines.apply_affine(resection.affine, voxels)-cras)/1000
-    points = mm.utils.nib_to_polydata(resection, trans=cras)
+    points = nib_to_polydata(resection, trans=cras)
 
      # plotter
-    plotter = mm.viz.plot_brain_signal(sources, signal, cmap=cmap, show_max=show_max)
+    plotter = plot_brain_signal(sources, signal, cmap=cmap, show_max=show_max)
     plotter.add_mesh(points, color=color, label="Resected Area", **style)
 
     return plotter
@@ -961,14 +1004,14 @@ def brain_gif(
     plotter = pv.Plotter(notebook=False, off_screen=True)
 
     # brain hemispheres
-    hemiL, hemiR = mm.utils.mne_to_polydata(sources, signals[:,0])
+    hemiL, hemiR = mne_to_polydata(sources, signals[:,0])
     plotter.add_mesh(hemiL, smooth_shading=True, cmap="Reds", clim=[0, np.max(signals)])
     plotter.add_mesh(hemiR, smooth_shading=True, cmap="Reds", clim=[0, np.max(signals)])
     plotter.remove_scalar_bar()
 
     # head
     if head is not None:
-        head = mm.utils.surf_to_polydata(head["rr"], head["tris"])
+        head = surf_to_polydata(head["rr"], head["tris"])
         plotter.add_mesh(head, show_edges=True, color="white", opacity=0.2, edge_opacity=0.8, edge_color="black")
 
     # camera position
@@ -981,7 +1024,7 @@ def brain_gif(
     plotter.open_gif(fname, fps=fps)
     nframe = signals.shape[1]
     for frame in np.arange(nframe):
-        new_hemiL, new_hemiR = mm.utils.mne_to_polydata(sources, signals[:,frame])
+        new_hemiL, new_hemiR = mne_to_polydata(sources, signals[:,frame])
         hemiL["signal"] = new_hemiL["signal"]
         hemiR["signal"] = new_hemiR["signal"]
         plotter.write_frame()
@@ -1018,7 +1061,7 @@ def plot_hops(sim, n_hops=3):
 
         rois = rois | roi 
 
-    fig, axes = plt.subplots(nrows=1, ncols=n_hops+1, sharex=True, sharey=True, figsize=(15,3))
+    _, axes = plt.subplots(nrows=1, ncols=n_hops+1, sharex=True, sharey=True, figsize=(15,3))
     coloors   = ["#EE6C4D", "#FFB627", "#3D5A80", "#98C1D9", "#293241"]
 
     for i in range(n_hops+1):

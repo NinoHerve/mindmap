@@ -274,8 +274,8 @@ def nib_to_polydata(image, trans=np.eye(4)):
     image: nib.Nifti1Image
         Nibabel volume image.
     
-    trans: np.ndarray (3,) or (4,4)
-        Transformation subject -> FreeSurfer ((3,) is a translation)
+    trans: np.ndarray (4,4)
+        Affine transformation (image space -> freesurfer space)
 
     Returns
     -------
@@ -286,10 +286,7 @@ def nib_to_polydata(image, trans=np.eye(4)):
     points = (nib.affines.apply_affine(image.affine, voxels))
 
     # subject -> FreeSurfer space
-    if trans.shape == (3,): # translation
-        points = (points - trans)/1000 
-    else:
-        points = nib.affines.apply_affine(trans, points)/1000
+    points = nib.affines.apply_affine(trans, points)/1000   # MNE is in [m]
 
     return pv.PolyData(points)
 

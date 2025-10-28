@@ -8,6 +8,7 @@ import ants
 import pandas as pd
 import mindmap as mm
 from mindmap.utils.sources import get_src_position, mask_sources
+import random
 
 
 def get_folders(
@@ -304,7 +305,7 @@ def avg_power(signal):
     Compute average power of a signal. 
     """
     if len(signal.shape) == 1:
-        signal = signal.reshape(1,-1)
+        signal = signal.reshape(1,-1)   # consider signal as temporal signal (1,T)
 
     avg_pow = signal - np.mean(signal, axis=1)[:,None]
     avg_pow = np.sum(avg_pow**2, axis=1)/signal.shape[-1]
@@ -663,7 +664,7 @@ def squared_stc(stc):
     return stc
 
 
-def make_stc(src, activity, tmin, dt):
+def make_stc(src, activity, tmin, tstep):
     """
     Make mne.SourceEstimate object
 
@@ -692,7 +693,23 @@ def make_stc(src, activity, tmin, dt):
         activity, 
         vertices, 
         tmin=tmin, 
-        tstep=dt,
+        tstep=tstep,
     )
 
     return stc
+
+
+
+def random_region(src, parc, cras=None, n=1):
+
+    if cras is None:
+        print("\033[93mWarning: No CRAS translation for computing source labels.\033[0m")
+        cras = np.zeros(3)
+
+    sources = mm.utils.get_src_position(src)
+    sources = sources*1000 + cras
+    labels  = parc.label_points(sources)
+
+    random.shuffle(labels)
+
+    return labels[:n]

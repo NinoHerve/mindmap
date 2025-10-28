@@ -1,10 +1,25 @@
+"""
+mindmap
+=======
 
-from . import utils, io, viz
-from .inverse import cset, sloreta, wcset, enet
-from .forward import forward_problem, solve_volume_conduction
+A toolkit for source imaging. Complements the already existing MNE-python package.
 
-__all__ = [
-    "prior",
-    "utils",
-    "io",
-]
+Submodules:
+- io — input/output functions
+- viz — visualization functions
+- forward — computes forward solutions
+- inverse — computes inverse solutions
+- head_model — manages head models
+- sensor — manages sensor data
+- metrics — computes various metrics
+- utils — miscelaneous functions
+
+Example:
+    import mindmap as mm
+"""
+
+from . import io, viz
+from .inverse import *
+#from .forward import *
+from .utilities import *
+from .head import *
