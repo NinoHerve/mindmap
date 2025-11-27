@@ -2,8 +2,12 @@
 conftest file
 """
 
+from pathlib import Path
+
 import pytest
 import numpy as np
+import nibabel as nib
+import ants
 import mne
 
 # pylint: disable=redefined-outer-name
@@ -47,6 +51,9 @@ def info(montage):
 
 @pytest.fixture(scope="session")
 def raw(temporal_sequence, info):
+    """
+    raw EEG fixture
+    """
     # data
     recording    = np.hstack([np.vstack([temporal_sequence]*16)]*5)
     onsets       = [0.2, 0.6, 1.0, 1.4, 1.8]
@@ -87,12 +94,22 @@ def ave(temporal_sequence, info):
 
     return output
 
-@pytest.fixture(scope="session", params=["nib", "ants"])
-def mri():
+@pytest.fixture(scope="session", params=["nibabel", "ants"])
+def mri(request):
     """
     MRI volume fixture.
     """
-    pass
+    dtype = request.param
+    file  = Path(__file__).parent/"data"/"sample"/"anat"/"sample_T1w.nii.gz"
+
+    if dtype == "nibabel":
+        output = nib.load(str(file))
+    elif dtype == "ants":
+        output = ants.image_read(str(file))
+    else:
+        raise ValueError(f"Unknown image type requested: {dtype}")
+
+    return output
 
 
 @pytest.fixture(scope="session")

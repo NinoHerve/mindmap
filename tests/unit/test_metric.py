@@ -1,8 +1,8 @@
 """
-This module performs unit tests of the metric.py module.
+This module performs unit tests for the metric.py module.
 """
-import numpy as np
 import pytest
+import numpy as np
 
 from mindmap.metric import *
 
@@ -44,9 +44,3 @@ def test_peak_baseline_snr(request, dummy_eeg, baseline_window, epoch_window, ex
     # assert
     assert snr == pytest.approx(expected, abs=1e-1)
 
-
-def test_point_to_area_distance():
-    """
-    Test point_to_area_distance.
-    """
-    pass
