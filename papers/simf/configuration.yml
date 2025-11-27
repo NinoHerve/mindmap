@@ -9,6 +9,22 @@ MM_DIR: /media/nino/DATA/SIMF/derivatives/mindmap
 MNI: /media/nino/DATA/templates/mni_icbm152_nlin_asym_09c_nifti/mni_icbm152_nlin_asym_09c/mni_icbm152_t1_tal_nlin_asym_09c.nii
 MONTAGE: /media/nino/DATA/SPIKE/derivatives/cartool-v3.80/sub-pat44/ses-preop/eeg/
 NAME: simf
+SUBS:
+- 10
+TASKS:
+- spike
+RUNS:
+- '000'
+- '001'
+- '002'
+- '003'
+- '004'
+- '005'
+- '006'
+- '007'
+- '008'
+- '009'
+- '010'
 SAMP:
 - sample001
 - sample002
@@ -36,7 +52,5 @@ SAMP:
 - sample024
 - sample025
 SIM_DIR: /media/nino/DATA/SIMF/derivatives/simulations/
-SUBS:
-- vepcon_sub-10
 THAL: /media/nino/DATA/atlas/Thalamic_Nuclei/Thalamus_Nuclei-HCP-4DSPAMs.nii.gz
 THAL_CLUT: /media/nino/DATA/atlas/Thalamic_Nuclei/Thalamic_Nuclei-ColorLUT.txt

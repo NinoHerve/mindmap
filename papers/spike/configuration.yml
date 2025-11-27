@@ -1,4 +1,5 @@
 CONN: /media/nino/DATA/atlas/probconnatlas/wm.connatlas.scale4.h5
+CMP_DIR: /media/nino/DATA/SPIKE/derivatives/cmp-v3.0.0-beta-RC1
 DS_DIR: /media/nino/DATA/SPIKE
 FS_DIR: /media/nino/DATA/SPIKE/derivatives/freesurfer-7.4.1
 FS_HOME: /home/nino/Softwares/freesurfer
