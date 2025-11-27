@@ -700,16 +700,3 @@ def make_stc(src, activity, tmin, tstep):
 
 
 
-def random_region(src, parc, cras=None, n=1):
-
-    if cras is None:
-        print("\033[93mWarning: No CRAS translation for computing source labels.\033[0m")
-        cras = np.zeros(3)
-
-    sources = mm.utils.get_src_position(src)
-    sources = sources*1000 + cras
-    labels  = parc.label_points(sources)
-
-    random.shuffle(labels)
-
-    return labels[:n]

@@ -20,6 +20,7 @@ Example:
 
 from . import io, viz
 from .inverse import *
-#from .forward import *
+from .forward import *
 from .utilities import *
 from .head import *
+from .simulation import *

@@ -13,6 +13,7 @@ License: MIT
 """
 from __future__ import annotations
 from typing import TYPE_CHECKING
+import random
 
 import numpy as np
 import scipy as sp
@@ -230,6 +231,27 @@ def add_subcortical_dipoles(
     subctx_src = mne.setup_volume_source_space(pos=pos, verbose="warning")
 
     return source_space + subctx_src
+
+
+def random_region(
+        source_space : mne.SourceSpaces,
+        parc         : Parcellation,
+        tkras2ras    : np.ndarray,
+        n            : int = 1
+        ) -> str:
+    """
+    Select a random region amongst the ones that have dipoles in it.
+    """
+
+    dipoles = get_dipole_positions(source_space)*1000
+    dipoles = align_freesurfer2subject(dipoles, tkras2ras)
+
+    labels = parc.label_points(dipoles)
+    labels = np.unique(labels)
+
+    random.shuffle(labels)
+
+    return labels[:n]
 
 
 # ------------------

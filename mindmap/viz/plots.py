@@ -9,6 +9,9 @@ Created: 2025-10-28
 Last Modified: 2025-10-28
 License: MIT
 """
+import subprocess
+from pathlib import Path
+
 import numpy as np
 from scipy.fft import ifftn
 import nibabel as nib
@@ -77,6 +80,23 @@ def show_slices(
             axes[i].axis("off")
 
     plt.show()
+
+def plot_segmentation(
+        t1_file  : str | Path,
+        seg_file : str | Path,
+        lut_file : str | Path = None
+        ):
+    """
+    Opens FreeView to plot structural MRI with segmentation on top.
+    """
+    cmd = ["freeview", "-v", str(t1_file)]
+
+    if lut_file is None:
+        cmd += [str(seg_file)]
+    else:
+        cmd += [str(f"{seg_file}:lut={lut_file}")]
+
+    subprocess.run(cmd, check=True)
 
 
 # I DON'T NEED THIS FUNCTION ANYMORE
@@ -181,11 +201,11 @@ def plot_brain(
     absolute        : bool  = False,
     smooth_shading  : bool  = False,
     title           : str   = "",
-    signal_label    : str   = None,
+    std             : str   = False,
     overlay_color   : str   = "green",
     overlay_label   : str   = None,
     overlay_size    : float = 1,
-    overlay_opacity : float = 1, 
+    overlay_opacity : float = 1,
 ):
     """
     Plot the brain !
@@ -225,6 +245,9 @@ def plot_brain(
     title: str
         Plot title
 
+    std: bool
+        Standardize accross signals.
+        
     sname: str
         Signal name.
 
@@ -268,9 +291,10 @@ def plot_brain(
         title = [title]*size
 
     # if Time Series plot TimeMesh
+    signal = [s.copy() for s in signal]
     if signal is not None and isinstance(signal[0], mne.SourceEstimate):
         return TimeMesh(
-                sources, signal, overlay=overlay, titles=title, cmap=cmap, 
+                sources, signal, overlay=overlay, titles=title, cmap=cmap, std=std,
                 absolute=absolute, smooth_shading=smooth_shading, overlay_color=overlay_color,
                 overlay_label=overlay_label, overlay_size=overlay_size, overlay_opacity=overlay_opacity,
             )
@@ -280,6 +304,9 @@ def plot_brain(
 
     # brain plot
     if signal is not None:
+        if std:
+            signal = [(s - np.mean(s))/np.std(s) for s in signal]
+
         if absolute:
             signal = [np.abs(s) for s in signal]
 
@@ -359,6 +386,7 @@ class TimeMesh:
         tkras2ras       : np.ndarray | list[np.ndarray] = np.zeros(3),
         titles          : str | list[str] = "",
         cmap            : str = None,
+        std             : bool = False,
         absolute        : bool = False,
         smooth_shading  : bool = False,
         overlay_color   : str   = "green",
@@ -384,7 +412,7 @@ class TimeMesh:
         """
         # instanciate objects
         self.to_self(sources, stc, overlay, tkras2ras)
-        self.select_cmap(cmap, absolute)
+        self.select_cmap(cmap, std, absolute)
 
         size = len(self.sources)
 
@@ -479,13 +507,16 @@ class TimeMesh:
         self.cras    = cras
 
 
-    def select_cmap(self, cmap=None, absolute=False):
+    def select_cmap(self, cmap=None, std=False, absolute=False):
         """Select proper colormap"""
         maxi = -np.inf
         mini = np.inf
 
         # find max and min amongst all data
         for stc in self.stc:
+
+            if std:
+                stc.data = (stc.data-stc.data.mean())/stc.data.std()
 
             if absolute:
                 stc.data = np.abs(stc.data)
@@ -747,10 +778,10 @@ def plot_spectrum(spectrum, times=None):
                     {"title": f"Connectum Spectrum: t = {t:.3f}[s]"},
                 ],
             )
-            step["args"][0]["visible"][i] = True 
+            step["args"][0]["visible"][i] = True
             steps.append(step)
 
-        fig.data[int(len(times)/2)].visible = True 
+        fig.data[int(len(times)/2)].visible = True
 
         sliders = [dict(
             active       = int(len(times)/2),
@@ -1126,7 +1157,7 @@ def cm_frrim():
     return newcmp
 
 
-def plot_harmonics(src, harmonics, frequencies=[0,1,2,3,4,5]):
+def plot_harmonics(src, harmonics, frequencies=(0,1,2,3,4,5)):
     """
     Plot brain harmonics.
 
@@ -1145,9 +1176,9 @@ def plot_harmonics(src, harmonics, frequencies=[0,1,2,3,4,5]):
     -------
     plot: pv.Plotter
     """
-    harmonics = [harmonics[freq,:] for freq in frequencies]
+    harmonics = [harmonics[:,freq] for freq in frequencies]
     titles    = [f"harm {i}" for i in frequencies]
-    plotter   = mm.viz.plot_brain(src, harmonics, title = titles)
+    plotter   = plot_brain(src, harmonics, title = titles)
     return plotter
 
 

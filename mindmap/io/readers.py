@@ -25,6 +25,208 @@ import pandas as pd
 import nibabel as nib
 import ants
 import mne
+import mne_bids
+
+
+# -------------------
+# BIDS file naming
+# -------------------
+
+def get_bidspath(
+        root        : str | Path,
+        subject     : str,
+        datatype    : str,
+        session     : str = None,
+        task        : str = None,
+        run         : str | int = None,
+        acquisition : str = None,
+        space       : str = None,
+        description : str = None,
+        atlas       : str = None,
+        resolution  : str = None,
+        suffix      : str = None,
+        extension   : str = None,
+        mne         : bool= True,
+        ) -> Path:
+    """
+    Retrieves file name following BIDS standards.
+
+    Parameters
+    ----------
+    mne: bool
+        Avoid mne_bids if False.
+    """
+    mne_bids_datatypes = ["meg", "eeg", "ieeg", "nirs", "anat", "beh"]
+    other_datatypes    = ["bem", "fwd", "src", "cov", "con", "dseg", "ave", "stc", "eig"]
+
+    assert datatype in mne_bids_datatypes + other_datatypes, f"datatype ({datatype}) is not valid. Should be one of {mne_bids_datatypes+other_datatypes}"
+
+    # use mne_bids library if datatype available
+    if datatype in mne_bids_datatypes and mne:
+        fname = mne_bids.BIDSPath(
+            root        = root,
+            subject     = subject,
+            datatype    = datatype,
+            session     = session,
+            task        = task,
+            run         = run,
+            acquisition = acquisition,
+            space       = space,
+            description = description,
+            suffix      = suffix,
+        )
+
+        return fname.fpath
+
+    # file path
+    fpath = Path(root)/f"sub-{subject}"
+
+    if session is not None:
+        fpath = fpath/f"ses-{session}"
+
+    fpath = fpath/f"{datatype}"
+
+    # file name
+    keys   = ["ses", "task", "run", "acq", "space", "desc", "atlas", "res"]
+    values = [session, task, run, acquisition, space, description, atlas, resolution]
+
+    fname = f"sub-{subject}"
+    for key, val in zip(keys, values):
+        if val is not None:
+            fname += f"_{key}-{val}"
+
+    # suffix and extension
+    if suffix is None:
+        datatype_suffix = {
+            "bem"  : "_bem",
+            "fwd"  : "_fwd",
+            "src"  : "_src",
+            "cov"  : "_cov",
+            "con"  : "_con",
+            "dseg" : "_dseg",
+            "ave"  : "_ave",
+            "stc"  : "_stc",
+            "eig"  : "_eigvec",
+            "anat" : "_T1w"
+        }
+
+        fname += datatype_suffix[datatype]
+    else:
+        fname += f"_{suffix}"
+
+    # extension
+    if extension is None:
+        datatype_extension = {
+            "bem"  : ".fif",
+            "fwd"  : ".fif",
+            "src"  : ".fif",
+            "cov"  : ".fif",
+            "con"  : ".npy",
+            "dseg" : ".nii.gz",
+            "ave"  : ".fif",
+            "stc"  : "",
+            "eig"  : ".npy",
+            "anat" : ".nii.gz"
+        }
+
+        fname += datatype_extension[datatype]
+
+    else:
+        fname += f".{extension}"
+
+    return fpath/fname
+
+def get_charmpath(
+        root     : str | Path,
+        subject  : str,
+        datatype : str,
+) -> Path:
+    """
+    Retrieve file name for the CHARM folders.
+
+    Parameters
+    ----------
+    root: str | Path
+        Root folder where CHARM was run (folder of the T1).
+
+    subject: str | Path
+        Subject name.
+        
+    datatype: str
+        Type of data to retrieve.
+
+    Returns
+    -------
+    fname: Path
+        File name.
+    """
+    types = ["t1", "seg", "lut"]
+    assert datatype.lower() in types, f"Unknown datatype '{datatype}'. Expected {types}"
+
+    root = root/f"m2m_sub-{subject}"/"segmentation"
+
+    if datatype.lower() == "t1":
+        fname = root/"T1_bias_corrected.nii.gz"
+
+    elif datatype.lower() == "seg":
+        fname = root/"labeling.nii.gz"
+
+    else:
+        fname = root/"labeling_LUT.txt"
+
+    return fname
+
+
+def check_file(
+        fname     : str | Path,
+        extension : list[str] | str = None,
+        instance  : str = None,
+        ) -> str | Path:
+    """
+    Check file:
+    1. Check file existance. Raises FileNotFound if false.
+    2. Check file extension if one provided. Raises ValueError if false.
+
+    Parameters
+    ----------
+    fname: str | Path
+        File name.
+
+    extension: str
+        Required extension.
+
+    instance: str
+        "str" or "path". Instance in which to return the file name.
+        If None, return the file name as it was given.
+
+    Return:
+    ------
+    fname: str | Path
+        File name returned as string or Path.
+    """
+
+    # check if file exists
+    f = Path(fname)
+    if not f.exists():
+        raise FileNotFoundError(f"Following file was not found: {fname}")
+
+    # check extension
+    if extension is not None:
+        if not isinstance(extension, list):
+            extension = [extension]
+
+        extension = [ext if ext.startswith(".") else "." + ext for ext in extension]
+
+        if not f.suffix in extension:
+            raise ValueError(f"Invalid file extension for {f}. Expected {extension}")
+
+    # return requested instance
+    if instance is not None:
+        if instance == "str":
+            return str(f)
+        return f
+
+    return f
 
 
 
@@ -204,6 +406,37 @@ def read_mri(file, mri_dtype="nib"):
     raise ValueError("Unknown mri file type")
 
 
+def read_eigendecomposition(fname: str | Path, return_eigval=False):
+    """
+    Read eigenvectors and eigenvalues (optional).
+
+    Parameters
+    ----------
+    fname: path-like
+        File name of eigenvectors.
+
+    return_eigval: bool
+        Whether to return eigval if eigval exists.
+
+    Returns
+    -------
+    eigvec: np.ndarray (n,n)
+        Eigenvectors.
+
+    eigval: np.ndarray (n,) (optional)
+        Eigenvalues.
+    """
+    eigvec = np.load(fname, allow_pickle=True)
+    
+    if return_eigval:
+        new_name = fname.name.replace("eigvec", "eigval")
+        eigval = np.load(fname.with_name(new_name), allow_pickle=True)
+        return eigvec, eigval
+    
+    return eigvec
+
+
+
 ##########################################################
 # DatasetReader class
 # --------------------
@@ -271,24 +504,24 @@ class DatasetReader(ABC):
 
             # T1-weighted MRI (freesurfer space)
             if key.lower() == "t1":
-                file      = fs_dir/subject/"mri"/"T1.mgz"
+                file      = fs_dir/f"sub-{subject}"/"mri"/"T1.mgz"
                 data[key] = read_mri(file, mri_dtype=mri_dtype)
 
             # PLAN TO DELETE THIS ONE
             if key.lower() == "t1-orig":
                 # T1 original image
-                file =  fs_dir/subject/"mri"/"orig"/"001.mgz"
+                file =  fs_dir/f"sub-{subject}"/"mri"/"orig"/"001.mgz"
                 data[key] = read_mri(file, mri_dtype=mri_dtype)
 
             # Brain mask (freesurfer space)
             if key.lower() == "t1-brain":
-                file = fs_dir/subject/"mri"/"brain.mgz"
+                file = fs_dir/f"sub-{subject}"/"mri"/"brain.mgz"
                 data[key] = read_mri(file, mri_dtype=mri_dtype)
 
             # White surface (freesurfer space)
             if key.lower() == "white":
-                file_l = fs_dir/subject/"surf"/"lh.white"
-                file_r = fs_dir/subject/"surf"/"rh.white"
+                file_l = fs_dir/f"sub-{subject}"/"surf"/"lh.white"
+                file_r = fs_dir/f"sub-{subject}"/"surf"/"rh.white"
 
                 white_l = nib.freesurfer.io.read_geometry(file_l)
                 white_r = nib.freesurfer.io.read_geometry(file_r)
@@ -299,8 +532,8 @@ class DatasetReader(ABC):
             if key.lower() == "seg":
                 # Head segmentation (charm)
                 from mindmap.head import Parcellation
-                fseg = fs_dir/subject/"mri"/f"m2m_{subject}/segmentation/labeling.nii.gz"
-                flut = fs_dir/subject/"mri"/f"m2m_{subject}/segmentation/labeling_LUT.txt"
+                fseg = fs_dir/f"sub-{subject}"/"mri"/f"m2m_sub-{subject}/segmentation/labeling.nii.gz"
+                flut = fs_dir/f"sub-{subject}"/"mri"/f"m2m_sub-{subject}/segmentation/labeling_LUT.txt"
                 data[key] = Parcellation(fseg, flut)
 
             # ---------------------
@@ -309,7 +542,7 @@ class DatasetReader(ABC):
 
             # Affine transform (freesurfer space -> T1 space)
             if key.lower() == "tkras2ras":
-                file = fs_dir/subject/"mri"/"T1.mgz"
+                file = fs_dir/f"sub-{subject}"/"mri"/"T1.mgz"
                 mri  = nib.load(file)
 
                 vox2ras     = mri.header.get_vox2ras()
@@ -320,13 +553,20 @@ class DatasetReader(ABC):
             # PLAN TO DELETE THIS ONE
             if key.lower() == "cras":
                 # Translation part of the Talairach transform
-                file = fs_dir/subject/"mri"/"transforms"/"talairach.lta"
+                file = fs_dir/f"sub-{subject}"/"mri"/"transforms"/"talairach.lta"
                 data[key] = read_talairach(file)[:3,3]
                 
         return data
 
 
-    def read_mindmap(self, subject, *args, sample=None):
+    def read_mindmap(
+            self,
+            subject : str,
+            *args   : list,
+            session : str = None,
+            task    : str = None,
+            run     : str = None
+            ) -> dict:
         """
         Read data inside Mindmap directory.
 
@@ -339,8 +579,14 @@ class DatasetReader(ABC):
             Requested data. Data are requested via an abreviated code. See Returns to check 
             available abreviations and associated datatype.
 
-        sample: str | int
-            Sample name or id.
+        session: str
+            Session name.
+
+        task: str
+            Task name.
+
+        run: str | int
+            Run name or number.
 
         Returns
         -------
@@ -392,8 +638,23 @@ class DatasetReader(ABC):
             # parcellation (T1-ras space)
             if key.lower() == "parc":
                 from mindmap.head import Parcellation
-                file = mm_dir/subject/"parc"/f"{subject}_space-T1w_atlas-MultiConn2022_desc-scale4_dseg.nii.gz"
-                clut = mm_dir/subject/"parc"/f"{subject}_space-T1w_atlas-MultiConn2022_desc-scale4_dseg.txt"
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    space       = "T1w",
+                    atlas       = "MultiConn2022",
+                    description = "scale4",
+                    datatype    = "dseg",
+                )
+                clut = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    space       = "T1w",
+                    atlas       = "MultiConn2022",
+                    description = "scale4",
+                    datatype    = "dseg",
+                    extension   = "txt",
+                )
                 data[key] = Parcellation(file, clut)
 
             # cortical mask (T1-ras space)
@@ -403,14 +664,28 @@ class DatasetReader(ABC):
                 ctx       = clut[clut["Label name"].str.startswith("ctx")]
                 data[key] = d["parc"].create_mask(ctx["#No."].values)
 
+            # -----------------------------------
+            # Read Boundary Element Models (BEM)
+            # -----------------------------------
+
             # Boundary element model (freesurfer space in [mm])
             if key.lower() == "bem":
-                file = mm_dir/subject/"fwd"/f"{subject}_desc-inverse_bem.fif"
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    description = "inverse",
+                    datatype    = "bem",
+                )
                 data[key] = mne.read_bem_solution(file, verbose="warning")
 
             # Boundary element model for simulations (freesurfer space in [mm])
             if key.lower() == "bem-sim":
-                file = mm_dir/subject/"fwd"/f"{subject}_desc-simulation_bem.fif"
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    description = "simulation",
+                    datatype    = "bem",
+                )
                 data[key] = mne.read_bem_solution(file, verbose="warning")
 
 
@@ -419,12 +694,21 @@ class DatasetReader(ABC):
             # ------------------
 
             if key.lower() == "src":
-                file      = mm_dir/subject/"fwd"/f"{subject}_fwd.fif"
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    description = "inverse",
+                    datatype    = "fwd",
+                )
                 fwd       = mne.read_forward_solution(file, verbose="warning")
                 data[key] = fwd["src"]
 
             if key.lower() == "src-raw":
-                file      = mm_dir/subject/"src"/f"{subject}_src.fif"
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    datatype    = "src",
+                )
                 data[key] = mne.read_source_spaces(file, verbose="warning")
 
 
@@ -433,97 +717,163 @@ class DatasetReader(ABC):
             # -----------------------
 
             if key.lower() == "fwd":
-                file = mm_dir/subject/"fwd"/f"{subject}_desc-inverse_fwd.fif"
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    description = "inverse",
+                    datatype    = "fwd",
+                )
                 data[key] = mne.read_forward_solution(file, verbose="warning")
 
             if key.lower() == "fwd-sim":
-                file = mm_dir/subject/"fwd"/f"{subject}_desc-simulation_fwd.fif"
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    description = "simulation",
+                    datatype    = "fwd",
+                )
                 data[key] = mne.read_forward_solution(file, verbose="warning")
 
             # ------------------
             # Read Connectomics
             # ------------------
 
-            # DELETE THIS ONE SOON
+            # distance-based structural connectome
             if key.lower() == "sc":
-                file1 = mm_dir/subject/"sc"/f"{subject}_sc-tracto.npy"
-                file2 = mm_dir/subject/"sc"/f"{subject}_sc-template.npy"
-
-                if file1.exists():
-                    data[key] = np.load(file1)
-                else:
-                    data[key] = np.load(file2)
-
-            # structural connectome with fiber lengths
-            if key.lower() == "sc-lengths":
-                file1 = mm_dir/subject/"sc"/f"{subject}_sc-lengths-tracto.npy"
-                file2 = mm_dir/subject/"sc"/f"{subject}_sc-lengths-template.npy"
-
-                if file1.exists():
-                    data[key] = np.load(file1)
-                else:
-                    data[key] = np.load(file2)
-
-            # structural connectome with number of fibers
-            if key.lower() == "sc-nfiber":
-                file1 = mm_dir/subject/"sc"/f"{subject}_sc-weights-tracto.npy"
-                file2 = mm_dir/subject/"sc"/f"{subject}_sc-weights-template.npy"
-
-                if file1.exists():
-                    data[key] = np.load(file1)
-                else:
-                    data[key] = np.load(file2)
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    description = "distance",
+                    atlas       = "sourcespace",
+                    datatype    = "con",
+                )
+                data[key] = np.load(file)
 
             # region-based structural connectome with fiber lengths
             if key.lower() == "sc-rb-length":
-                file      = mm_dir/subject/"sc"/f"{subject}_atlas-MultiConn2022_res-scale4_desc-fiberlength_conn.npy"
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    description = "fiberlength",
+                    atlas       = "MultiConn2022",
+                    resolution  = "scale4",
+                    datatype    = "bem",
+                )
                 data[key] = np.load(file)
 
             # region-based structural connectome with number of fibers
             if key.lower() == "sc-rb-nfiber":
-                file      = mm_dir/subject/"sc"/f"{subject}_atlas-MultiConn2022_res-scale4_desc-numfibers_conn.npy"
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    description = "numfibers",
+                    atlas       = "MultiConn2022",
+                    resolution  = "scale4",
+                    datatype    = "bem",
+                )
                 data[key] = np.load(file)
 
-            # DELETE THIS ONE SOON
-            if key.lower() == "cst":
-                file = mm_dir/subject/"sc"/f"{subject}_cst.npy"
-                data[key] = np.load(file, allow_pickle=True)
+            if key.lower() == "eig":
+                file = get_bidspath(
+                    root = mm_dir,
+                    subject = subject,
+                    datatype = "eig",
+                )
+                eigvec, eigval = read_eigendecomposition(file, return_eigval=True)
+                data[key] = {"vec":eigvec, "val":eigval}
 
             # -------------
             # Read EEG
             # -------------
 
-            if key.lower() == "eeg":
-                if sample is None:
-                    raise ValueError("Require sample name to read EEG.")
-                file      = mm_dir/subject/"eeg"/f"{subject}-{sample}_ave.fif"
+            # evoked signal
+            if key.lower() == "ave":
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    datatype    = "ave",
+                    session     = session,
+                    task        = task,
+                    run         = run,
+                )
+
+                assert file.exists(), "Averaged EEG file not found. Check if the proper 'task' and/or 'run' are provided."
+                
                 data[key] = mne.Evoked(file, verbose="warning")
 
-            # -----------------------
-            # Read inverse solutions
-            # -----------------------
+            # noise covariance
+            if key.lower() == "ncov":
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    datatype    = "cov",
+                    session     = session,
+                    task        = task,
+                    run         = run,
+                )
+
+                assert file.exists(), "Noise covariance not found. Check if the proper 'task' and/or 'run' are provided."
+
+                data[key] = mne.read_cov(file, verbose="warning")
+
+            # -------------------------------
+            # Read source time currents (stc)
+            # -------------------------------
 
             # connectome spectrum electromagnetic tomography
-            if key.lower().startswith("cset"):
-                file = mm_dir/subject/"inv"/f"{subject}-{sample}_{key}"
+            if key.lower() == "cset":
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    datatype    = "stc",
+                    task        = task,
+                    run         = run,
+                    description = "cset",
+                )
+
+                assert file.exists(), "CSET solution not found. Check if the proper 'task' and/or 'run' are provided."
+
                 data[key] = mne.read_source_estimate(file)
 
             # standardized low resolution electromagnetic tomography
-            if key.lower().startswith("sloreta"):
-                file = mm_dir/subject/"inv"/f"{subject}-{sample}_{key}"
+            if key.lower() == "sloreta":
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    datatype    = "stc",
+                    task        = task,
+                    run         = run,
+                    description = "sloreta",
+                )
+
+                assert file.exists(), "sLORETA solution not found. Check if the proper 'task' and/or 'run' are provided."
+
                 data[key] = mne.read_source_estimate(file)
 
             # weighted connectome spectrum electromagnetic tomography
-            if key.lower().startswith("wcset"):
-                pass
+            if key.lower() == "wcset":
+                file = get_bidspath(
+                    root        = mm_dir,
+                    subject     = subject,
+                    datatype    = "stc",
+                    task        = task,
+                    run         = run,
+                    description = "wcset",
+                )
+
+                assert file.exists(), "wCSET solution not found. Check if the proper 'task' and/or 'run' are provided."
+
+                data[key] = mne.read_source_estimate(file)
 
             # -----------------------
             # Read transformations
             # -----------------------
 
+
+
             # Coregistration (sensor space -> freesurfer space)
             if key.lower() == "trans":
-                file = mm_dir/subject/"eeg"/f"{subject}_eeg-trans.fif"
+                file = mm_dir/f"sub-{subject}"/"eeg"/f"sub-{subject}_eeg-trans.fif"
                 data[key] = mne.read_trans(file)
 
         return data
@@ -583,11 +933,13 @@ class DatasetReader(ABC):
         Print state of retrieved data 
         """
         missing   = list(set(args) - set(data.keys()))
-        retrieved = list(set(data.keys())-set(["name", "sub", "samp"]))
+        retrieved = list(set(data.keys())-set(["name", "sub", "task", "run"]))
 
         print("\033[95mDATA SUMMARY\033[0m")
         print(f"Dataset: {data['name']}")
         print(f"Subject: {data['sub']}")
+        print(f"Task: {data['task']}")
+        print(f"Run: {data['run']}")
 
         print("Retrieved objects:")
         for r in retrieved:

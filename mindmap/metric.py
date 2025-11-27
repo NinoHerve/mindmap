@@ -79,6 +79,58 @@ def estimate_snr(
     return 10*np.log10(pow_sig/pow_noise)
 
 
+def peak_baseline_snr(
+        sensor          : mne.io.Raw | mne.Epochs | mne.Evoked,
+        baseline_window : tuple = (-0.44, -0.2),
+        epoch_window    : tuple = (-0.45, 0.45),
+        ) -> np.ndarray:
+    """
+    Estimate amplitude signal to noise ratio.
+
+    Parameters
+    ----------
+    sensor: mne.io.Raw | mne.Epochs | mne.Evoked
+        Sensor data.
+
+    baseline_window: tuple
+        Baseline window (same window will be applied to each epoch).
+
+    epoch_window: tuple
+        Epoch windows if sensor is Raw.
+
+    Returns
+    -------
+    snr: np.ndarray
+        SNR for each channel (averaged accross epochs).
+    """
+    
+    if isinstance(sensor, (mne.io.Raw, mne.io.RawArray)):
+        # split into epochs
+        events = mne.events_from_annotations(sensor, verbose="warning")[0]
+        sensor = mne.Epochs(sensor, events, tmin=epoch_window[0], tmax=epoch_window[1], baseline=baseline_window, verbose="warning")
+
+    if isinstance(sensor, (mne.Epochs, mne.EpochsArray)):
+        epochs_ = sensor.copy()
+        epochs_.load_data()
+
+        # compute snr for each epoch
+        amps = np.array([np.max(np.abs(ep), axis=1) for ep in epochs_])                                           # n_epochs * n_channels
+        stds = np.array([np.std(ep, axis=1) for ep in epochs_.crop(baseline_window[0], baseline_window[1])])      # n_epochs * n_channels
+        snr  = 20*np.log10(amps/stds)
+
+        # average accross epochs
+        snr = np.mean(snr, axis=0)
+
+    else:
+        baseline = sensor.copy().crop(baseline_window[0], baseline_window[1])
+        amp      = np.max(np.abs(sensor.data), axis=1)
+        std      = np.std(baseline.data, axis=1)
+        snr      = 20*np.log10(amp/std)
+
+    return snr
+
+
+
 def point_to_area_distance(
         target_point : np.ndarray,
         target_area  : np.ndarray | nib.Nifti1Image,
@@ -91,10 +143,10 @@ def point_to_area_distance(
     Parameters
     ----------
     target_point: np.ndarray (3,)
-        Target point
+        Target point in [m]
 
-    target_area: np.ndarray (3,N) | nibabel.Nifti1
-        Cloud point
+    target_area: np.ndarray (3,N) | nibabel.Nifti1Image
+        Cloud point in [m] if array, in [mm] if Niti1Image.
 
     x: int
         Number of points from the cloud point to consider.

@@ -12,13 +12,18 @@ Created: 2025-10-27
 Last Modified: 2025-10-27
 License: MIT
 """
+from pathlib import Path
+import glob
 
 import numpy as np
 import scipy as sp
 import nibabel as nib
+import ants
 import mne
+import mne_bids
 
-from mindmap.io.readers import DatasetReader, read_config, read_eeg, read_mri
+from mindmap.io.readers import DatasetReader, read_config, read_eeg, read_mri, get_bidspath
+from mindmap.sensor import build_eeg_template
 
 def dataset_reader(config):
     """
@@ -40,12 +45,15 @@ def dataset_reader(config):
     dataset = config["NAME"]
 
     if dataset.lower() == "spike":
-        return SpikeReader(config)
+        reader = SpikeReader(config)
     elif dataset.lower() == "simf":
-        return SimfReader(config)
+        reader = SimfReader(config)
+    elif dataset.lower() == "intra":
+        reader = IntraReader(config)
     else:
         raise ValueError(f"Unknown dataset '{dataset}' for dataset reader.")
 
+    return reader
 
 
 # --------------
@@ -58,7 +66,7 @@ class SpikeReader(DatasetReader):
     Class to read data from the SPIKE dataset.
     """
     def __init__(self, config):
-        super(SpikeReader, self).__init__(config)
+        super().__init__(config)
 
     def __call__(self, subject, *args, mri_dtype="nib", sample=None, verbose=1):
         """
@@ -141,9 +149,9 @@ class SpikeReader(DatasetReader):
         mm_dir = self.config["MM_DIR"]
 
         data = {
-            "name":name,
-            "sub":subject,
-            "samp":"spike"
+            "name": name,
+            "sub" : subject,
+            "samp": "spike",
         }
 
         # Others
@@ -155,18 +163,18 @@ class SpikeReader(DatasetReader):
 
             # Presurgery T1-weighted MRI
             if key.lower() == "t1":
-                file = ds_dir/"derivatives"/"cmp-v3.0.0-beta-RC1"/subject/"ses-preop"/"anat"/f"{subject}_ses-preop_space-individual_desc-brain_T1w.nii.gz"
+                file = ds_dir/"derivatives"/"cmp-v3.0.0-beta-RC1"/f"sub-{subject}"/"ses-preop"/"anat"/f"sub-{subject}_ses-preop_space-individual_desc-brain_T1w.nii.gz"
 
             # Postsurgery T1-weighted MRI
             if key.lower() == "mri_post":
-                file = ds_dir/"derivatives"/"cmp-v3.0.0-beta-RC1"/subject/"ses-postop"/"anat"/f"{subject}_ses-postop_space-individual_desc-brain_T1w.nii.gz"
+                file = ds_dir/"derivatives"/"cmp-v3.0.0-beta-RC1"/f"sub-{subject}"/"ses-postop"/"anat"/f"sub-{subject}_ses-postop_space-individual_desc-brain_T1w.nii.gz"
                 data[key] = read_mri(file, mri_dtype=mri_dtype)
 
             # Resection area
             if key.lower() == "resec":
                 # mask of resected area
-                manual = mm_dir/subject/"resec"/f"{subject}_man-recon-seg.nii.gz"
-                auto   = mm_dir/subject/"resec"/f"{subject}_auto-seg.nii.gz"
+                manual = mm_dir/f"sub-{subject}"/"resec"/f"sub-{subject}_man-recon-seg.nii.gz"
+                auto   = mm_dir/f"sub-{subject}"/"resec"/f"sub-{subject}_auto-seg.nii.gz"
 
                 if manual.exists():
                     data[key] = read_mri(manual, mri_dtype=mri_dtype)
@@ -180,7 +188,7 @@ class SpikeReader(DatasetReader):
             # ---------
 
             if key.lower() == "eeg-raw":
-                folder = ds_dir/"derivatives"/"cartool-v3.80"/subject/"ses-preop"/"eeg"
+                folder = ds_dir/"derivatives"/"cartool-v3.80"/f"sub-{subject}"/"ses-preop"/"eeg"
                 data[key] = read_eeg(folder, dataset=name)
 
         args = list(set(args) - set(data.keys()))    # update missing arguments
@@ -190,7 +198,7 @@ class SpikeReader(DatasetReader):
         # [t1-fs, t1-brain, white, charm, tkras2ras]
         # --------------------------------------------------
 
-        fs_data = self.read_freesurfer(subject, *args, mri_dtype=mri_dtype) 
+        fs_data = self.read_freesurfer(subject, *args, mri_dtype=mri_dtype)
         data.update(fs_data)
         args = list(set(args) - set(data.keys()))
 
@@ -208,7 +216,7 @@ class SpikeReader(DatasetReader):
         # Read Standardized data
         # [std-ctx, std-thal, std-mni]
         # ------------------------------------------------------------------------
-        
+
         std_data = self.read_standards(*args, mri_dtype=mri_dtype)
         data.update(std_data)
         args = list(set(args) - set(data.keys()))
@@ -230,9 +238,9 @@ class SimfReader(DatasetReader):
     Class to read data from the SIMF dataset.
     """
     def __init__(self, config):
-        super(SimfReader, self).__init__(config)
+        super().__init__(config)
 
-    def __call__(self, subject, *args, mri_dtype="nib", sample=None, verbose=1):
+    def __call__(self, subject, *args, mri_dtype="nib", task=None, run=None, verbose=1):
         """
         Read data for dataset SIMF.
 
@@ -306,25 +314,19 @@ class SimfReader(DatasetReader):
                 Affine transformation (sensor space -> freesurfer space)
         """
         if isinstance(subject, int):
-            subject = self.config["SUBS"][subject-1]
-        if isinstance(sample, int):
-            sample = self.config["SAMP"][sample-1]
+            subject  = self.config["SUBS"][subject-1]
 
         name    = self.config["NAME"]
-        mm_dir  = self.config["MM_DIR"]
-        cmp_dir = self.config["CMP_DIR"]
-        sim_dir = self.config["SIM_DIR"]
+        mm_dir  = self.config["MM_DIR"]     # mindmap directory (derivative)
+        cmp_dir = self.config["CMP_DIR"]    # connectome mapper directory (derivative)
+        ds_dir  = self.config["DS_DIR"]     # dataset directory (raw)
 
         data = {
-            "name":name,
-            "sub":subject
+            "name" : name,
+            "sub"  : subject,
+            "task" : task,
+            "run"  : run,
         }
-
-        if sample is not None: 
-            data["samp"] = sample
-
-        if isinstance(sample, int):
-            sample = f"sample{sample:03}"
 
         # dataset specifics (use this section to also overwrite freesurfer and mindmap)
         for key in args:
@@ -335,51 +337,86 @@ class SimfReader(DatasetReader):
             
             # Tractogram
             if key.lower() == "tracto":
-                if subject == "vepcon_sub-10":
-                    file = cmp_dir/subject/"dwi"/"sub-10_model-CSD_desc-DET_tractogram.trk"
+                if subject == 10:
+                    file = cmp_dir/f"sub-{subject}"/"dwi"/"sub-10_model-CSD_desc-DET_tractogram.trk"
                 else:
-                    file = cmp_dir/subject/"fibtracking"/"sd_stream"/"dwi_denoised_eddy_distc_corrected_1mm_shore_sdstream.trk"
+                    file = cmp_dir/f"sub-{subject}"/"fibtracking"/"sd_stream"/"dwi_denoised_eddy_distc_corrected_1mm_shore_sdstream.trk"
                 data[key] = nib.streamlines.load(file)
 
             # ---------
             # Read EEG
             # ---------
 
-            # EEG averaged
+            # raw EEG
             if key.lower() == "eeg":
-                if sample is None:
-                    # look for empty coregistered
-                    d = self.__call__(subject, "eeg-coreg", verbose=0)
-                    data[key] = d["eeg-coreg"]
+                # template
+                if task is None or run is None:
+                    print("No task and/or run provided, loading EEG template ...")
+                    file = mm_dir/f"sub-{subject}"/"eeg"/f"sub-{subject}_desc-empty-coreg_ave.fif"
+                    
+                    # coregistered template
+                    if file.exists():
+                        print("Coregistered template found, loading ...")
+                        data[key] = mne.Evoked(file, verbose="warning")
+
+                    # not coregistered template
+                    else:
+                        print("No coregistered template found. Building new template ...")
+                        eeg = build_eeg_template()
+                        data[key] = eeg
+
+                # read raw EEG given task and run
                 else:
-                    file = sim_dir/subject/sample/"eeg_ave.fif"
-                    data[key] = mne.Evoked(file, verbose="warning")
+                    file = mne_bids.BIDSPath(
+                        root      = ds_dir,
+                        subject   = subject,
+                        datatype  = "eeg",
+                        task      = task,
+                        run       = run,
+                    )
+                    data[key] = mne_bids.read_raw_bids(file, verbose="warning").load_data(verbose="warning")
 
-            # default null EEG
-            if key.lower() == "eeg-raw":
-                # load builtin montage
-                montage = mne.channels.make_standard_montage("EGI_256")
-            
-                # create info
-                info    = mne.create_info(ch_names=montage.ch_names, ch_types="eeg", sfreq=250)
-                info.set_montage(montage)
+            # ---------------------
+            # Read ground truth
+            # ---------------------
 
-                info["description"] = "Simulation EEG"
-                info["bads"] = ["E31", "E67", "E73", "E82", "E91", "E92", "E102", "E111", "E120", "E133", "E145", "E165", "E174", "E187", "E199", "E208", "E209", "E216", "E217", "E218", "E219"] + [f"E{i}" for i in range(225,257)]
+            # full ground truth
+            if key.lower() == "gt":
+                file = get_bidspath(
+                    root     = ds_dir,
+                    datatype = "stc",
+                    subject  = subject,
+                    task     = task,
+                    run      = run,
+                )
+                data[key] = mne.read_source_estimate(file)
 
-                # create null data
-                eeg = np.zeros((info["nchan"], int(info["sfreq"])))
+            # full ground truth with noise
+            if key.lower() == "gtnoise":
+                file = get_bidspath(
+                    root        = ds_dir,
+                    datatype    = "stc",
+                    subject     = subject,
+                    task        = task,
+                    run         = run,
+                    description = "noisy",
+                )
+                data[key] = mne.read_source_estimate(file)
 
-                # create eeg
-                eeg = mne.EvokedArray(eeg, info, verbose="warning")
-                eeg.drop_channels(info["bads"])
+            # ground truth: first event only
+            if key.lower() == "gt-1":
+                d = self.__call__(subject, "gt", "eeg", "ave", task=task, run=run, verbose=0)
 
-                data[key] = eeg
+                # extract time interval of first event
+                onset = d["eeg"].annotations[0]["onset"]
+                tmin  = d["ave"].tmin
+                tmax  = d["ave"].tmax
 
-            # coregistered null EEG
-            if key.lower() == "eeg-coreg":
-                file      = mm_dir/subject/"eeg"/f"{subject}_desc-empty-coreg_ave.fif"
-                data[key] = mne.Evoked(file, verbose="warning")
+                # crop ground truth
+                gt = d["gt"].crop(tmin = onset+tmin, tmax = onset+tmax)
+                gt.tmin = d["ave"].tmin
+
+                data[key] = gt
 
             # ---------------------
             # Read transformations
@@ -391,45 +428,9 @@ class SimfReader(DatasetReader):
 
             # diffusion ras space in [mm] -> T1-ras space in [mm]
             if key.lower() == "t12diff":
-                file      = cmp_dir/subject/"xfm"/"final0GenericAffine.mat"
+                file      = cmp_dir/f"sub-{subject}"/"xfm"/"final0GenericAffine.mat"
                 affine    = sp.io.loadmat(str(file))["AffineTransform_double_3_3"].reshape(3, 4, order="F")
                 data[key] = np.concatenate((affine, np.array([[0, 0, 0, 1]])))
-
-
-            # -------------------------
-            # Read MindMap derivatives
-            # -------------------------
-
-            if key.lower() == "gt":
-                # ground truth 
-                if sample is None: 
-                    raise ValueError("Require sample name to read data 'gt'.")
-                file = sim_dir/subject/sample/"ground-truth-noisefree"
-                data[key] = mne.read_source_estimate(file)
-            
-            if key.lower() == "gt_noise":
-                # ground truth with noise
-                if sample is None:
-                    raise ValueError("Require sample name to read data 'gt'.")
-                file = sim_dir/subject/sample/"ground-truth-noise"
-                data[key] = mne.read_source_estimate(file)
-
-            if key.lower() == "sc_tmp":
-                file      = mm_dir/subject/"sc"/f"{subject}_sc-template.npy"
-                data[key] = np.load(file)
-            
-            if key.lower() == "cst_tmp":
-                file      = mm_dir/subject/"sc"/f"{subject}_cst-template.npy"
-                data[key] = np.load(file, allow_pickle=True)
-
-            if key.lower() == "sc-length":
-                file      = mm_dir/subject/"sc"/f"{data['sub']}_sc-length-tracto.npy"
-                data[key] = np.load(file, allow_pickle=True)
-
-            if key.lower() == "sc-weight":
-                file      = mm_dir/subject/"sc"/f"{data['sub']}_sc-weight-tracto.npy"
-                data[key] = np.load(file, allow_pickle=True)
-
 
         args = list(set(args) - set(data.keys()))   # update list of missing arguments
 
@@ -448,7 +449,206 @@ class SimfReader(DatasetReader):
         # sc-rb-nfiber, sc-rb-length, eeg, cset, sloreta, wcset, trans]
         # ------------------------------------------------------------------------
 
-        mm_data = self.read_mindmap(subject, *args, sample=sample)
+        mm_data = self.read_mindmap(subject, *args, task=task, run=run)
+        data.update(mm_data)
+        args = list(set(args) - set(data.keys()))
+
+        # ------------------------------------------------------------------------
+        # Read Standardized data
+        # [std-ctx, std-thal, std-mni]
+        # ------------------------------------------------------------------------
+        std_data = self.read_standards(*args, mri_dtype=mri_dtype)
+        data.update(std_data)
+        args = list(set(args) - set(data.keys()))
+
+        if verbose == 1:
+            self.log(data, args)
+
+        return data
+
+
+
+# --------------
+# INTRA dataset
+# --------------
+
+
+class IntraReader(DatasetReader):
+    """
+    Class to read data from the SIMF dataset.
+    """
+    def __init__(self, config):
+        super().__init__(config)
+
+    def __call__(self, subject, *args, mri_dtype="nib", task=None, run=None, verbose=1):
+        """
+        Read data for dataset SIMF.
+
+        Parameters
+        ----------
+        subject: str | int
+            Subject name or id.
+
+        *args: list(str)
+            Requested data. Data are requested via an abreviated code. See Returns to check 
+            available abreviations and associated datatype.
+
+        mri_dtype: str
+            MRI dtype (Nibabel or ANTs) for MRI images.
+
+        Returns:
+        data: dict
+            Dictionnary containing (only) requested data:
+            - t1: nib.Nifti1Image | ants.ANTsImage
+                T1-weigthed MRI. (raw)
+            - ave: mne.Evoked
+                Averaged EEG. (mindmap)
+            - eeg:mne.Raw
+                Raw EEG. (raw)
+            - ieeg: mne.Raw
+                Raw intracranial EEG. (raw)
+            - t1-brain: nib.Nifti1Image | ants.ANTsImage
+                Brain mask.(freesurfer)
+            - white: list[np.ndarray (n,3), np.ndarray (m,3)]
+                White surface (boundary between white a gray matter). The surface correponds
+                to a mesh defined by its vertex locations (n,3) and triangular faces (m,3). 
+                (freesurfer)
+            - charm: nib.Nifti1Image | ants.ANTsImage
+                CHARM head segmentation.
+            - parc: Parcellation
+                Parcellation in T1-ras space (mindmap)
+            - ctx: nib.Nifti1Image
+                Cortical mask in T1-ras space. (mindmap)
+            - src: mne.SourceSpaces
+                Source space in tkras space. (mindmap)
+            - src-raw: mne.SourceSpaces
+                Source space before forward solution.
+            - bem: mne.BEM
+                Boundary element model in tkras space. (mindmap)
+            - fwd: mne.Forward
+                Forward solution. (mindmap)
+            - sc-nfiber: np.ndarray
+                Structural connectome with number of fibers as weights. (mindmap)
+            - sc-length: np.ndarray
+                Structural connectome with fiber lengths as weights. (mindmap)
+            - cset: mne.SourceEstimate
+                CSET inverse solution. (mindmap)
+            - sloreta: mne.SourceEstimate
+                sLORETA inverse solution. (mindmap)
+            - wcset: mne.SourceEstimate
+                weighted CSET inverse solution. (mindmap)
+            - trans: mne.Transformation
+                Affine transformation (sensor space -> freesurfer space)
+            - tkras2ras: np.ndarray (4,4)
+                Affine transformation (freesurfer space (tkras) -> T1 ras space)
+        """
+        if isinstance(subject, int):
+            subject  = self.config["SUBS"][subject-1]
+
+        name    = self.config["NAME"]
+        ds_dir  = self.config["DS_DIR"]     # dataset directory (raw)
+        spk_dir = self.config["SPK_DIR"]    # spike trials directory (derivative)
+
+        data = {
+            "name" : name,
+            "sub"  : subject,
+            "task" : None,
+            "run"  : None,
+        }
+
+        # dataset specifics (use this section to also overwrite freesurfer and mindmap)
+        for key in args:
+
+            # -------------
+            # Read Anatomy
+            # -------------
+            
+            if key.lower() == "t1":
+                file = get_bidspath(
+                    root     = ds_dir,
+                    datatype = "anat",
+                    subject  = subject,
+                    suffix   = "T1w",
+                )
+                data[key] = read_mri(file, mri_dtype=mri_dtype)
+
+            # ---------
+            # Read EEG
+            # ---------
+
+            # raw EEG
+            if key.lower() == "eeg":
+                # read epochs
+                if task is None:
+                    files   = glob.glob(str(spk_dir/f"sub-{subject}"/"eeg"/f"sub-{subject}_task-spk*_desc-cleaned_eeg.vhdr"))
+                    montage = spk_dir/f"sub-{subject}"/"eeg"/f"sub-{subject}_electrodes.tsv"
+
+                    # extract data
+                    dat = []
+
+                    for f in files:
+                        spike = mne.io.read_raw_brainvision(f, verbose="warning")
+                        dat.append(spike["data"][0])
+                    dat = np.array(dat)
+
+                    # info & montage
+                    info    = spike.info
+                    montage = mne.channels.read_custom_montage(montage)
+
+                    # store in Epoch object
+                    epochs = mne.EpochsArray(dat, info)
+                    epochs = epochs.set_montage(montage)
+
+                    data[key] = epochs
+
+                # read single spike
+                else:
+                    file = get_bidspath(
+                        root        = ds_dir,
+                        datatype    = "anat",
+                        subject     = subject,
+                        task        = task,
+                        description = "cleaned",
+                    )
+                    montage = file.fpath.parent/f"sub-{subject}_electrodes.tsv"
+
+                    raw     = mne.io.read_raw_brainvision(file.fpath)
+                    montage = mne.channels.read_custom_montage(montage)
+                    raw     = raw.set_montage(montage)
+
+                    data[key] = raw
+
+            # ---------------------
+            # Read ground truth
+            # ---------------------
+
+
+            # ---------------------
+            # Read transformations
+            # ---------------------
+
+            # EEG coregistration (sensor space in [m] -> freesurfer ras space in [m])
+            if key.lower() == "trans":
+                data[key] = mne.transforms.Transform("head", "mri")    # identity transformation
+
+        args = list(set(args) - set(data.keys()))   # update list of missing arguments
+
+        # --------------------------------------------------
+        # Read FreeSurfer derivatives
+        # [t1-fs, t1-brain, white, charm, tkras2ras]
+        # --------------------------------------------------
+
+        fs_data = self.read_freesurfer(subject, *args, mri_dtype=mri_dtype)
+        data.update(fs_data)
+        args = list(set(args) - set(data.keys()))
+
+        # ------------------------------------------------------------------------
+        # Read MindMap derivatives
+        # [parc, ctx, , src, src-raw, bem, bem-sim, fwd, sc-nfiber, sc-length, \\
+        # sc-rb-nfiber, sc-rb-length, eeg, cset, sloreta, wcset, trans]
+        # ------------------------------------------------------------------------
+
+        mm_data = self.read_mindmap(subject, *args, task=task, run=run)
         data.update(mm_data)
         args = list(set(args) - set(data.keys()))
 

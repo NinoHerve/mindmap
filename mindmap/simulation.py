@@ -22,8 +22,8 @@ import networkx as nx
 import mne
 import seaborn as sns
 
-from mindmap.head import get_dipole_positions, Parcellation, make_stc
-from mindmap.metric import estimate_snr
+from mindmap.head import get_dipole_positions, align_freesurfer2subject, Parcellation, make_stc
+from mindmap.metric import peak_baseline_snr
 from mindmap.viz import plot_brain
 
 
@@ -120,7 +120,7 @@ class Source:
         offset = self.off if self.off is not None else times[-1]
 
         train = np.zeros_like(times)
-        train[int(onset*sfreq)] = 1 
+        train[int(onset*sfreq)] = 1
 
         if self.rep is not None:
             assert (self.rep > 1/sfreq), f"Repetition ({self.rep} [s]) can't be smaller than the sampling time (currently: {1/sfreq} [s] <-> {sfreq} [Hz])"
@@ -144,15 +144,16 @@ class Source:
 
         waveform = np.convolve(train, window, mode="same") * scale
 
-        out = dict(
-            data    = waveform,
-            wavelet = window,
-            events  = train,
-        )
+        out = {
+            "data"    : waveform,
+            "wavelet" : window,
+            "times"   : times,
+            "events"  : train,
+        }
 
         return out
 
-    def select_targets(self, source_space, parc=None, cras=None):
+    def select_targets(self, source_space, parc=None, tkras2ras=None):
         """
         Retrieves dipole ids belonging to source.
         """
@@ -163,16 +164,13 @@ class Source:
             targets[self.loc] = True
         else:
             assert parc is not None, "Need parcellation to build stimulus because source locations are given as brain regions."
-            if cras is None:
-                print("\033[93mWarning: No CRAS translation for computing dipole labels.\033[0m")
-                cras = np.zeros(3)
+            assert tkras2ras is not None, "Need tkras2ras transform to algin dipoles with T1-space."
 
-            dipoles = dipoles*1000 + cras
+            dipoles = align_freesurfer2subject(dipoles*1000, tkras2ras)
             labels  = parc.label_points(dipoles)
             targets = np.isin(labels, self.loc)
 
         return targets
-
 
 
     def plot_waveform(self, times, show_events=False, title="Source waveform"):
@@ -224,16 +222,16 @@ class HeadModel:
     sensor positions, and dipole connections. This class is primarily used to measure distances 
     through the dipole network in order to predict time delays.
     """
-    sens    : mne.Epochs | mne.Evoked
-    fwd     : mne.Forward
-    weights : np.ndarray
-    lenghts : np.ndarray
-    speed_a : float
-    d_syn   : float
-    parc    : Parcellation
-    cras    : np.ndarray
+    sens      : mne.Epochs | mne.Evoked
+    fwd       : mne.Forward
+    weights   : np.ndarray
+    lenghts   : np.ndarray
+    speed_a   : float
+    d_syn     : float
+    parc      : Parcellation
+    tkras2ras : np.ndarray
 
-    def __init__(self, sensors, forward, connectome_weights, connectome_lengths, axonal_speed=500, synaptic_delay=0.001, parcellation=None, cras=None):
+    def __init__(self, sensors, forward, connectome_weights, connectome_lengths, axonal_speed=500, synaptic_delay=0.001, parcellation=None, tkras2ras=None):
         """
         Parameters
         ----------
@@ -268,7 +266,7 @@ class HeadModel:
         self.speed_a = axonal_speed
         self.d_syn   = synaptic_delay
         self.parc    = parcellation
-        self.cras    = cras
+        self.cras    = tkras2ras
         self.delays  = self.compute_delay_matrix()
 
     def compute_delay_matrix(self):
@@ -328,7 +326,7 @@ class HeadModel:
                   f"- Axonal speed: {self.speed_a} [mm/s]\n" \
                   f"- Synaptic delay: {self.d_syn} [s]\n" \
                   f"- Parcellation: {None if self.parc is None else self.parc.n_regions}\n" \
-                  f"- CRAS: {self.cras} \n" \
+                  f"- tkras2ras: {True if self.cras is not None else False} \n" \
 
         return summary
 
@@ -491,7 +489,7 @@ def colored_noise(filt):
     return lambda t, n=1: color_noise(t, n, filt)
 
 @colored_noise
-def white_noise(f):
+def white_noise(_):
     """White noise filter"""
     return 1
 
@@ -585,7 +583,7 @@ class Simulator:
 
         return data
 
-    def run(self, w, snr, return_stc_noise=False):
+    def run(self, w, snr, return_stc_noise=False, recording_type="raw"):
         """
         Simulate a source propagation.
 
@@ -599,8 +597,13 @@ class Simulator:
             the ratio between the absolute maximum of a channel and the average power during the 
             baseline of that channel. The final snr is an average across all channels.
         
-        return_stc_noise
+        return_stc_noise: bool
             Flag to return brain simulation with noise too.
+
+        recording_type: str
+            Type of MNE object to return:
+            - raw: mne.io.Raw (raw recordings)
+            - ave: mne.Evoked (averaged epochs)
 
         Returns
         -------
@@ -639,8 +642,8 @@ class Simulator:
             for s in sources:
                 data += self.compute_single_source_propagation(s, waveform["data"], w=w)
 
-        # scale maximum to 1e-8 A (will later be adjusted to fit SNR)
-        data = data / np.max(np.abs(data)) * 1e-8
+            # scale maximum to 1e-8 A (will later be adjusted to fit SNR)
+            data = data / np.max(np.abs(data)) * 1e-8
 
         # ---------------
         # Generate noise
@@ -665,7 +668,7 @@ class Simulator:
         # Adjust SNR
         # ------------
 
-        # check if SNR can be adjusted 
+        # check if SNR can be adjusted
         if at_least_one_source and at_least_one_noise:
 
             # project the current simulation to sensors
@@ -679,11 +682,13 @@ class Simulator:
             )
 
             # apply forward
-            recordings       = mne.apply_forward(self.hm.fwd, stc, self.hm.sens.info, verbose="warning")
-            recordings.data += noise_sensor
+            if recording_type == "raw":
+                recordings = self.apply_forward_raw(stc, noise_sensor, waveform["events"])
+            else:
+                recordings = self.apply_forward_evoked(stc, noise_sensor)
 
             # compute average peak to power SNR
-            current_snr = estimate_snr(recordings).mean()
+            current_snr = peak_baseline_snr(recordings).mean() # average accross channels
 
             # adjust dipole amplitudes
             scale = 10**((snr-current_snr)/20)
@@ -691,7 +696,7 @@ class Simulator:
 
         else:
             if not at_least_one_source:
-                print("\033[93mSNR can't be adjusted due to missing sources.\033[0m")      
+                print("\033[93mSNR can't be adjusted due to missing sources.\033[0m")
             if not at_least_one_noise:    
                 print("\033[93mSNR can't be adjusted due to missing noises.\033[0m")
 
@@ -709,8 +714,12 @@ class Simulator:
         )
 
         # apply forward
-        recordings       = mne.apply_forward(self.hm.fwd, stc, self.hm.sens.info, verbose="warning")
-        recordings.data += noise_sensor
+        if recording_type == "raw":
+            events     = waveform["events"] if at_least_one_source else None
+            recordings = self.apply_forward_raw(stc, noise_sensor, events)
+
+        else:
+            recordings = self.apply_forward_evoked(stc, noise_sensor)
 
         # ----------------
         # Manage outputs
@@ -728,6 +737,87 @@ class Simulator:
 
         return ground_truth, recordings, stc
 
+    def apply_forward_raw(
+            self,
+            stc          : mne.SourceEstimate,
+            noise_sensor : np.ndarray,
+            events       : np.ndarray = None,
+            ) -> mne.io.Raw:
+        """
+        Apply forward model and make a io.Raw object.
+
+        Parameters
+        ----------
+        stc: mne.SourceEstimates
+            Source time currents.
+
+        noise_sensor: np.ndarray
+            Sensor noise.
+            
+        events: np.ndarray
+            Spike envents.
+
+        Returns
+        -------
+        recordings: mne.io.Raw
+        """
+        recordings  = mne.apply_forward_raw(
+            fwd     = self.hm.fwd,
+            stc     = stc,
+            info    = self.hm.sens.info,
+            verbose = "warning",
+        )
+
+        if events is not None:
+            # build event annotation
+            indices = np.argwhere(events == 1).squeeze()
+
+            onsets       = self.hm.sens.times[indices]
+            durations    = np.zeros_like(onsets)
+            descriptions = np.ones_like(onsets)
+
+            annotations = mne.Annotations(onsets, durations, descriptions)
+            recordings.set_annotations(annotations)
+
+        # add sensor noise
+        recordings._data += noise_sensor
+
+        return recordings
+
+
+    def apply_forward_evoked(
+        self,
+        stc          : mne.SourceEstimate,
+        noise_sensor : np.ndarray,
+        ) -> mne.Evoked:
+        """
+        Apply forward model and make an Evoked object.
+        
+        Parameters
+        ----------
+        stc: mne.SourceEstimates
+            Source time currents.
+
+        noise_sensor: np.ndarray
+            Sensor noise.
+
+        Returns
+        -------
+        recordings: mne.Evoked
+        """
+        recordings = mne.apply_forward(
+                fwd     = self.hm.fwd,
+                stc     = stc,
+                info    = self.hm.sens.info,
+                verbose = "warning"
+            )
+
+        # add sensor noise
+        recordings.data += noise_sensor
+
+        return recordings
+
+
 
     def __str__(self):
         summary = "\033[92mSimulator:\033[0m\n" \
@@ -736,12 +826,12 @@ class Simulator:
         summary += self.hm.__str__() + "\n"
 
         if self.source is not None:
-            summary += self.source.__str__() + "\n" 
+            summary += self.source.__str__() + "\n"
         else:
             summary += "\033[94mSource:\033[0m\n" + "\033[91mNone\033[0m\n" + "\n"
 
         if self.noise is not None:
-            summary += self.noise.__str__() + "\n" 
+            summary += self.noise.__str__() + "\n"
         else:
             summary += "\033[94mNoise:\033[0m\n" + "\033[91mNone\033[0m\n" + "\n"
 
