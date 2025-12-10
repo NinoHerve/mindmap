@@ -21,11 +21,13 @@ import pandas as pd
 import networkx as nx
 import mne
 import seaborn as sns
+import mne_bids
 
 from mindmap.head import get_dipole_positions, align_freesurfer2subject, Parcellation, make_stc
 from mindmap.metric import peak_baseline_snr
 from mindmap.viz import plot_brain
-
+from mindmap.io import get_bidspath, mkdir, DatasetReader
+from mindmap.sensor import build_eeg_template
 
 # -------------
 # Source class
@@ -836,3 +838,131 @@ class Simulator:
             summary += "\033[94mNoise:\033[0m\n" + "\033[91mNone\033[0m\n" + "\n"
 
         return summary
+
+
+def make_sim_dataset(
+    reader      : DatasetReader,
+    subject     : str, 
+    regions     : list[str] | list[int],
+    params      : dict=None,
+    repetitions : int=1,
+    root        : str=None,
+) -> None:
+    """
+    Make a dataset of simulated data.
+
+    Parameters:
+    -----------
+    reader: mm.io.DatasetReader
+        Reader to retrieve dataset components:
+        - fwd: Forward solution
+        - conn: Fiber length connectome
+        - ...
+    subject: str
+        Subject id to use a sample.
+    regions: list[str] | list[int]
+        List of regions to simulate. The simulation will use these regions as source onsets. If the 
+        regions are a list of brain region names, the subject sample needs to be parcellated.
+    params:
+        Simulations parameters. When a parameter is not provided, it will use the default parameter.
+        Parameters are as follows:
+        - duration: Duration of 1 simulation in [s].
+        - frequency: Recording sampling frequency.
+        - source: dictionary with source parameters
+            - waveform_width: source waveform width.
+            - onset: first waveform apparition in [ms]
+            - offset: last waveform apparition in [ms]
+            - repeat: time in [ms] between consecutive repetitions.
+        - headmodel: dictionary with HeadModel parameters
+            - synaptic_delay: Nodal delay in [ms].
+            - axonal_speed: Axonal speed in [mm/ms].
+        - simulator: dictionary with Simulator parameters.
+            - w: Weight decay factor [0-1].
+            - snr: Target SNR (peak to baseline SNR).
+    repitition: int
+        Repetitions per region.
+    root: str
+        Root directory where to store the data. If None, it will take the root directory
+        of the reader as root.
+    Saves
+    -----
+    This function creates new `eeg` and `ave` folders in the root directory in which, 
+    for a given subject, will create simulated data. If the number of regions is greater
+    than 1, each simulation will have the BIDS run tag with corresponding to the repetition.
+    """
+    # -----------
+    # load data
+    # -----------
+    data = reader(subject, "parc", "sc", "fwd", "tkras2ras")
+    data["eeg"] = build_eeg_template(params["duration"], params["frequency"])
+
+    if root is None:
+        root = reader.config["DS_DIR"]
+
+    # ------------
+    # head model
+    # ------------
+    hm = HeadModel(
+        sensors = data["eeg"],
+        forward = data["fwd"],
+        connectome_weights = data["sc"]>0,
+        connectome_lengths=data["sc"],
+        parcellation = data["parc"],
+        tkras2ras = data["tkras2ras"],
+        **params["headmodel"],
+    )
+
+    # -------------
+    # noise model
+    # -------------
+    noise_dipole = {
+        "component": "dipole",
+        "category": "pink",
+        "scale": 1e-9,      # dipole activity are of the order 1e-8 [A]
+    }
+
+    noise_sensor = {
+        "component": "sensor",
+        "category": "white",
+        "scale": 1e-6,      # EEG activity are of the order 1e-3 [V]
+    }
+
+    noise = Noise(noise_dipole, noise_sensor)
+
+    # -----------------------------------
+    # Simulate for each source locations
+    # -----------------------------------
+
+    # metadata table
+    table = pd.DataFrame(columns=["run", "location"])
+
+    # iterate over source locations
+    run = 1
+    for reg in regions:
+        source = Source(locations = reg, **params["source"])
+        simu   = Simulator(hm, source, noise=noise)
+
+        for _ in range(repetitions):
+            # simulate
+            gt, eeg, gtnoise = simu.run(return_stc_noise=True, recording_type="raw", **params["simulator"])
+
+            # save result
+            feeg = mne_bids.BIDSPath(root=reader.config["DS_DIR"], subject=data["sub"], datatype="eeg", task="rest", run=run)
+            mne_bids.write_raw_bids(eeg, feeg, allow_preload=True, format="BrainVision", overwrite=True, verbose="warning")
+
+            fgt = get_bidspath(root=reader.config["DS_DIR"], subject=data["sub"], datatype="stc", task="rest", run=run)
+            mkdir(fgt)
+            gt.save(fgt, overwrite=True)
+
+            fgtnoise = get_bidspath(root=reader.config["DS_DIR"], subject=data["sub"], datatype="stc", task="rest", run=run, description="noisy")
+            mkdir(fgtnoise)
+            gtnoise.save(fgtnoise, overwrite=True)
+
+            # add entries to the metadata table
+            table = pd.concat([table, pd.DataFrame([[run, reg]], columns=table.columns)], ignore_index=True)
+
+            # increment run count
+            run += 1
+
+    # Save the table in the root directory
+    table.to_csv(root/"simulation_metadata.csv")
