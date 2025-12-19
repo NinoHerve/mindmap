@@ -98,6 +98,44 @@ def plot_segmentation(
 
     subprocess.run(cmd, check=True)
 
+def plot_bem(
+    fs_dir  : str | Path,
+    subject : str,
+):
+    """
+    Plot boundary element surfaces.
+
+    Parameters
+    ----------
+    fs_dir: str | Path
+        Path to FreeSurfer directory.
+    
+    subject: str
+        Subject id.
+    """
+    fs_dir = Path(fs_dir)
+    sub_id = f"sub-{subject}"
+
+    mri       = fs_dir/sub_id/"mri"/"T1.mgz"
+    white_lh  = fs_dir/sub_id/"surf"/"lh.white"
+    white_rh  = fs_dir/sub_id/"surf"/"rh.white"
+    in_skull  = fs_dir/sub_id/"bem"/"inner_skull.surf"
+    out_skull = fs_dir/sub_id/"bem"/"outer_skull.surf"
+    out_skin  = fs_dir/sub_id/"bem"/"outer_skin.surf"
+
+    cmd = [
+        "freeview",
+        "-v", str(mri),
+        "-f",
+        str(white_lh) + ":edgecolor=white",
+        str(white_rh) + ":edgecolor=white",
+        str(in_skull) + ":edgecolor=red",
+        str(out_skull) + ":edgecolor=green",
+        str(out_skin) + ":edgecolor=blue",
+    ]
+
+    subprocess.run(cmd, check=True)
+
 
 # I DON'T NEED THIS FUNCTION ANYMORE
 #def plot_sources(
@@ -187,32 +225,22 @@ def plot_segmentation(
 
 #    return plotter
 
-
-
 def plot_brain(
-    sources         : mne.SourceSpaces | list[mne.SourceSpaces],
-    signal          : np.ndarray | mne.SourceEstimate | list[np.ndarray] | list[mne.SourceSpaces] = None,
-    overlay         : np.ndarray | nib.Nifti1Image | list[np.ndarray] | list[nib.Nifti1Image]     = None,
-    tkras2ras       : np.ndarray | list[np.ndarray] = np.zeros(3),
-    show_max        : bool  = False,
-    show_src        : bool  = False,
-    clim            : list  = None,
-    cmap            : str   = None,
-    absolute        : bool  = False,
-    smooth_shading  : bool  = False,
-    title           : str   = "",
-    std             : str   = False,
-    overlay_color   : str   = "green",
-    overlay_label   : str   = None,
-    overlay_size    : float = 1,
-    overlay_opacity : float = 1,
-):
+    source_space   : mne.SourceSpaces | list[mne.SourceSpaces],
+    signal         : np.ndarray | list[np.ndarray] = None,
+    overlay        : np.ndarray | nib.Nifti1Image | list[np.ndarray] | list[nib.Nifti1Image]     = None,
+    tkras2ras      : np.ndarray | list[np.ndarray] = None,
+    title          : str | list[str] = "",
+    mesh_params    : dict = None,
+    signal_params  : dict = None,
+    overlay_params : dict = None,
+) -> pv.Plotter:
     """
-    Plot the brain !
-
+    Docstring pour plot_brain_
+    
     Parameters
     ----------
-    sources: mne.SourceSpaces 
+    source_space: mne.SourceSpaces | list[mne.SourceSpaces] 
         Source space.
 
     signal: mne.SourceEstimate | np.ndarray (N,)
@@ -224,154 +252,363 @@ def plot_brain(
     tkras2ras: np.ndarray
         Affine transform (freesurfer ras -> T1 ras). Necessary to align MRI images with meshes.
 
-    show_max: bool
-        Show maximum of signal if True.
+    brain_params: dict
+        key : value
+        key : value
+    
+    signal_params: dict
+        key : value
+        key : value
+    
+    overlay_params: dict
+        key : value
+        key : value
 
-    show_src: bool
-        Show sources.
-
-    clim: list(float)
-        Color limit.
-
-    cmap: str
-        Color map.
-
-    absolute: bool
-        Whether to plot absolute values.
-
-    smooth_shading: str
-        Smoothen mesh if True.
-
-    title: str
-        Plot title
-
-    std: bool
-        Standardize accross signals.
-        
-    sname: str
-        Signal name.
-
-    overlay_color: str
-        Overlay color
-
-    overlay_label: str
-        Overlay label
-
-    overlay_size: float
-        Overlay point size
-
-    overlay_opacity: float
-        Overlay opacity
+    Returns
+    -------
+    brain: pv.Plotter
+        Brain plot.
     """
-    # find longest list
+    # -----------------------
+    # Handle inputs as lists
+    # -----------------------
+
+    # biggest list size
     size = 1
-    if not isinstance(sources, mne.SourceSpaces):
-        if len(sources) > size:
-            size = len(sources)
-    for obj in [signal, overlay, tkras2ras]:
+    if not isinstance(source_space, mne.SourceSpaces):
+        if len(source_space) > size:
+             size = len(source_space)
+    for obj in [signal, overlay]:
         if isinstance(obj, list):
             size = max(size, len(obj))
 
-    # check every entry
-    if isinstance(sources, mne.SourceSpaces):
-        sources = [sources]*size
+    # convert non-lists to lists
+    if isinstance(source_space, mne.SourceSpaces):
+        source_space = [source_space]*size
 
-    if overlay is not None:
-        if not isinstance(overlay, list):
-            overlay = [overlay]*size
+    if not isinstance(signal, list):
+        if signal is None:
+            signal = [signal]*size
+        else:
+            signal = signal.squeeze()   # avoid dimension (n, 1)
+            if len(signal.shape) == 2:  # multiple brain images, assuming that second axis is number of images
+                signal = [signal[:,i] for i in signal.shape[1]]
+            else:
+                signal = [signal]
+
+    if not isinstance(overlay, list):
+        overlay = [overlay]*size
 
     if not isinstance(tkras2ras, list):
         tkras2ras = [tkras2ras]*size
 
-    if signal is not None:
-        if isinstance(signal, mne.SourceEstimate) or isinstance(signal, np.ndarray):
-            signal = [signal]*size
-
     if not isinstance(title, list):
         title = [title]*size
 
-    # if Time Series plot TimeMesh
-    signal = [s.copy() for s in signal]
-    if signal is not None and isinstance(signal[0], mne.SourceEstimate):
-        return TimeMesh(
-                sources, signal, overlay=overlay, titles=title, cmap=cmap, std=std,
-                absolute=absolute, smooth_shading=smooth_shading, overlay_color=overlay_color,
-                overlay_label=overlay_label, overlay_size=overlay_size, overlay_opacity=overlay_opacity,
-            )
+    # check if all list sizes are the same
+    lists        = [source_space, signal, overlay, tkras2ras]
+    list_lengths = [len(lst) for lst in lists if lst is not None]
+    if len(list_lengths) > 1:
+        unique_lengths = set(list_lengths)
+        if len(unique_lengths) != 1:
+            raise ValueError("All non-None inputs must have the same length.")
 
-    # else plot single time point
+    # ---------------
+    # Process signal
+    # ---------------
+
+    if signal_params is None:
+        signal_params = {}
+
+    if signal_params.get("std"):
+        signal = [(s-np.mean(s))/np.std(s) if s is not None else None for s in signal]
+
+    if signal_params.get("absolute"):
+        signal = [np.abs(s) if s is not None else None for s in signal]
+
+    clim  = find_clim(signal)
+    cmap  = default_cmap(clim)
+    color = "white" if cmap is None else None
+
+    # ------------------------
+    # Handle plot parameters
+    # ------------------------
+
+    if mesh_params is None:
+        mesh_params = {}
+    if overlay_params is None:
+        overlay_params = {}
+
+    # default plot parameters
+    mesh_parameters = {
+        "smooth_shading" : True,
+        "clim"           : clim,
+        "cmap"           : cmap,
+        "color"          : color,
+        "show_src"       : False,
+        "show_max"       : False,
+    }
+    mesh_parameters = mesh_parameters | mesh_params
+    show_src = mesh_parameters.pop("show_src")
+    show_max = mesh_parameters.pop("show_max")
+
+    overlay_parameters = {
+        "color"      : "green",
+        "label"      : None,
+        "point_size" : 1,
+        "opacity"    : 1,
+    }
+    overlay_parameters = overlay_parameters | overlay_params
+
+    show_src_parameters = {
+        "color"                    : "green",
+        "point_size"               : 5,
+        "render_points_as_spheres" : True,    
+    }
+
+    show_max_parameters = {
+        "color"      : "yellow",
+        "point_size" : 10,
+    }
+
+    # -----------------
+    # Plot brain mesh
+    # -----------------
+
     plotter = pv.Plotter(shape=(1,size))
 
-    # brain plot
-    if signal is not None:
-        if std:
-            signal = [(s - np.mean(s))/np.std(s) for s in signal]
+    # iterate through images
+    for i in range(size):
+        src = source_space[i]
+        sig = signal[i]
 
-        if absolute:
-            signal = [np.abs(s) for s in signal]
+        # build polydata meshes
+        hemi_l, hemi_r = mne_to_polydata(src, sig)
 
-        if clim is None:
-            clim = find_clim(signal)
+        # plot
+        plotter.subplot(0,i)
+        plotter.add_mesh(hemi_l, name="lh", **mesh_parameters)
+        plotter.add_mesh(hemi_r, name="rh", **mesh_parameters)
+        plotter.add_title(title[i])
 
-        # clim/cmap when positive values
-        if cmap is None:
-            if clim[0] < 0:
-                cmap = "bwr"
-            else:
-                cmap = "Reds"
+        # show src
+        if show_src:
+            # convert source space to polydata
+            pos = pv.PolyData(get_dipole_positions(src))
 
-        for i in range(size):
-            # brain meshes
-            hemi_l, hemi_r = mne_to_polydata(sources[i], signal[i])
+            # plot source space
+            plotter.add_mesh(pos, **show_src_parameters)
 
-            plotter.subplot(0,i)
-            plotter.add_mesh(hemi_l, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="lh")
-            plotter.add_mesh(hemi_r, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="rh")
-            plotter.add_title(title[i])
+        # show max
+        if show_max:
+            if sig is not None:
+                # select proper hemisphere then find node position
+                split   = src[0]["nuse"]
+                idx_max = np.argmax(np.abs(sig))
+                if idx_max < split:
+                    map_max = src[0]["rr"][src[0]["vertno"]][idx_max]
+                else:
+                    map_max = src[1]["rr"][src[1]["vertno"]][idx_max-split]
 
-    else:
-        for i in range(size):
-            # brain meshes
-            hemi_l, hemi_r = mne_to_polydata(sources[i], None)
+                # highlight maximum value
+                plotter.add_mesh(map_max, **show_max_parameters)
 
-            plotter.subplot(0,i)
-            plotter.add_mesh(hemi_l, color="white", smooth_shading=smooth_shading, name="lh")
-            plotter.add_mesh(hemi_r, color="white", smooth_shading=smooth_shading, name="rh")
-            plotter.add_title(title[i])
-
-    # maximum value
-    if show_max:
-        for i in range(size):
-            split   = sources[i][0]["nuse"]
-            idx_max = np.argmax(np.abs(signal[i]))
-            if idx_max < split:
-                map_max = sources[i][0]["rr"][sources[i][0]["vertno"]][idx_max]
-            else:
-                map_max = sources[i][1]["rr"][sources[i][1]["vertno"]][idx_max-split]
-
-            plotter.subplot(0,i)
-            plotter.add_mesh(map_max, color="yellow", point_size=10)
-
-    # overlay
-    if overlay is not None:
-        for i in range(size):
+        # overlay
+        if overlay[i] is not None:
+            # convert overlay to polydata
             if isinstance(overlay[i], nib.Nifti1Image):
                 over = nib_to_polydata(overlay[i], trans=np.linalg.inv(tkras2ras[i]))
             else:
                 over = overlay[i]
 
-            plotter.subplot(0,i)
-            plotter.add_mesh(over, color=overlay_color, label=overlay_label, point_size=overlay_size, opacity=overlay_opacity)
-
-    if show_src:
-        for i in range(size):
-            pos = pv.PolyData(get_dipole_positions(sources[i]))
-
-            plotter.subplot(0,i)
-            plotter.add_mesh(pos, color="green", point_size=5, render_points_as_spheres=True)
-
+            # plot overlay
+            plotter.add_mesh(over, **overlay_parameters)
 
     return plotter
+
+# def plot_brain(
+#     sources         : mne.SourceSpaces | list[mne.SourceSpaces],
+#     signal          : np.ndarray | mne.SourceEstimate | list[np.ndarray] | list[mne.SourceSpaces] = None,
+#     overlay         : np.ndarray | nib.Nifti1Image | list[np.ndarray] | list[nib.Nifti1Image]     = None,
+#     tkras2ras       : np.ndarray | list[np.ndarray] = np.zeros(3),
+#     show_max        : bool  = False,
+#     show_src        : bool  = False,
+#     clim            : list  = None,
+#     cmap            : str   = None,
+#     absolute        : bool  = False,
+#     smooth_shading  : bool  = False,
+#     title           : str   = "",
+#     std             : str   = False,
+#     overlay_color   : str   = "green",
+#     overlay_label   : str   = None,
+#     overlay_size    : float = 1,
+#     overlay_opacity : float = 1,
+# ):
+#     """
+#     Plot the brain !
+
+#     Parameters
+#     ----------
+#     sources: mne.SourceSpaces 
+#         Source space.
+
+#     signal: mne.SourceEstimate | np.ndarray (N,)
+#         Source values.
+
+#     overlay: np.ndarray (M,3) | nib.Nifti1Image
+#         Overlay defined as point cloud.
+
+#     tkras2ras: np.ndarray
+#         Affine transform (freesurfer ras -> T1 ras). Necessary to align MRI images with meshes.
+
+#     show_max: bool
+#         Show maximum of signal if True.
+
+#     show_src: bool
+#         Show sources.
+
+#     clim: list(float)
+#         Color limit.
+
+#     cmap: str
+#         Color map.
+
+#     absolute: bool
+#         Whether to plot absolute values.
+
+#     smooth_shading: str
+#         Smoothen mesh if True.
+
+#     title: str
+#         Plot title
+
+#     std: bool
+#         Standardize accross signals.
+        
+#     sname: str
+#         Signal name.
+
+#     overlay_color: str
+#         Overlay color
+
+#     overlay_label: str
+#         Overlay label
+
+#     overlay_size: float
+#         Overlay point size
+
+#     overlay_opacity: float
+#         Overlay opacity
+#     """
+#     # find longest list
+#     size = 1
+#     if not isinstance(sources, mne.SourceSpaces):
+#         if len(sources) > size:
+#             size = len(sources)
+#     for obj in [signal, overlay, tkras2ras]:
+#         if isinstance(obj, list):
+#             size = max(size, len(obj))
+
+#     # check every entry
+#     if isinstance(sources, mne.SourceSpaces):
+#         sources = [sources]*size
+
+#     if overlay is not None:
+#         if not isinstance(overlay, list):
+#             overlay = [overlay]*size
+
+#     if not isinstance(tkras2ras, list):
+#         tkras2ras = [tkras2ras]*size
+
+#     if signal is not None:
+#         if isinstance(signal, mne.SourceEstimate) or isinstance(signal, np.ndarray):
+#             signal = [signal]*size
+
+#     if not isinstance(title, list):
+#         title = [title]*size
+
+#     # if Time Series plot TimeMesh
+#     signal = [s.copy() for s in signal]
+#     if signal is not None and isinstance(signal[0], mne.SourceEstimate):
+#         return TimeMesh(
+#                 sources, signal, overlay=overlay, titles=title, cmap=cmap, std=std,
+#                 absolute=absolute, smooth_shading=smooth_shading, overlay_color=overlay_color,
+#                 overlay_label=overlay_label, overlay_size=overlay_size, overlay_opacity=overlay_opacity,
+#             )
+
+#     # else plot single time point
+#     plotter = pv.Plotter(shape=(1,size))
+
+#     # brain plot
+#     if signal is not None:
+#         if std:
+#             signal = [(s - np.mean(s))/np.std(s) for s in signal]
+
+#         if absolute:
+#             signal = [np.abs(s) for s in signal]
+
+#         if clim is None:
+#             clim = find_clim(signal)
+
+#         # clim/cmap when positive values
+#         if cmap is None:
+#             if clim[0] < 0:
+#                 cmap = "bwr"
+#             else:
+#                 cmap = "Reds"
+
+#         for i in range(size):
+#             # brain meshes
+#             hemi_l, hemi_r = mne_to_polydata(sources[i], signal[i])
+
+#             plotter.subplot(0,i)
+#             plotter.add_mesh(hemi_l, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="lh")
+#             plotter.add_mesh(hemi_r, cmap=cmap, smooth_shading=smooth_shading, clim=clim, name="rh")
+#             plotter.add_title(title[i])
+
+#     else:
+#         for i in range(size):
+#             # brain meshes
+#             hemi_l, hemi_r = mne_to_polydata(sources[i], None)
+
+#             plotter.subplot(0,i)
+#             plotter.add_mesh(hemi_l, color="white", smooth_shading=smooth_shading, name="lh")
+#             plotter.add_mesh(hemi_r, color="white", smooth_shading=smooth_shading, name="rh")
+#             plotter.add_title(title[i])
+
+#     # maximum value
+#     if show_max:
+#         for i in range(size):
+#             split   = sources[i][0]["nuse"]
+#             idx_max = np.argmax(np.abs(signal[i]))
+#             if idx_max < split:
+#                 map_max = sources[i][0]["rr"][sources[i][0]["vertno"]][idx_max]
+#             else:
+#                 map_max = sources[i][1]["rr"][sources[i][1]["vertno"]][idx_max-split]
+
+#             plotter.subplot(0,i)
+#             plotter.add_mesh(map_max, color="yellow", point_size=10)
+
+#     # overlay
+#     if overlay is not None:
+#         for i in range(size):
+#             if isinstance(overlay[i], nib.Nifti1Image):
+#                 over = nib_to_polydata(overlay[i], trans=np.linalg.inv(tkras2ras[i]))
+#             else:
+#                 over = overlay[i]
+
+#             plotter.subplot(0,i)
+#             plotter.add_mesh(over, color=overlay_color, label=overlay_label, point_size=overlay_size, opacity=overlay_opacity)
+
+#     if show_src:
+#         for i in range(size):
+#             pos = pv.PolyData(get_dipole_positions(sources[i]))
+
+#             plotter.subplot(0,i)
+#             plotter.add_mesh(pos, color="green", point_size=5, render_points_as_spheres=True)
+
+
+#     return plotter
 
 
 class TimeMesh:
@@ -842,14 +1079,41 @@ def find_clim(data):
     only_positive = True
 
     for d in data:
+        if d is None:
+            continue
+
         abs_max = max(abs_max, np.max(np.abs(d)))
+
         if np.any(d < 0):
             only_positive = False
 
-    if only_positive:
-        return [0, abs_max]
+    if abs_max == 0:
+        clim = None
+    elif only_positive:
+        clim = [0, abs_max]
+    else:
+        clim = [-abs_max, abs_max]
+
+    return clim
+
+def default_cmap(clim):
+    """
+    Retrieves default cmap depending on clim.
     
-    return [-abs_max, abs_max]
+    Parameters
+    ----------
+    clim: tuple
+        Upper and lower values. If values are all above zero, choose
+        'Reds' as cmap. Else, 'bwr'.
+    """
+    if clim is None:
+        cmap = None
+    elif clim[0] < 0:
+        cmap = "bwr"
+    else:
+        cmap = "Reds"
+
+    return cmap
 
 
 def plot_resection(

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import random
 
 import numpy as np
+import pandas as pd
 import scipy as sp
 import sklearn
 import nibabel as nib
@@ -113,7 +114,7 @@ def make_stc(
 # ---------
 
 
-def mask_dipoles(
+def filter_dipoles_by_nifti_mask(
     source_space   : mne.SourceSpaces,
     mask           : nib.Nifti1Image,
     tkras2ras      : np.ndarray,
@@ -163,6 +164,49 @@ def mask_dipoles(
 
         src["inuse"]  = new_inuse
         src["nuse"]   = nuse
+        src["vertno"] = vertno
+
+    return source_space
+
+
+def filter_dipoles_by_id_list(
+    source_space : mne.SourceSpaces,
+    id_list      : pd.DataFrame,
+) -> mne.SourceSpaces:
+    """
+    Mask Sources not in id_list.
+
+    Parameters
+    ----------
+    source_space: mne.SourceSpaces
+        Source space.
+
+    id_list: pd.DataFrame
+        DataFrame with columns vertex id and hemisphere.
+
+    Returns
+    -------
+    source_space: mne.SourceSpaces
+        Source space with updated 'inuse', 'use' and 'vertno' attributes.
+    """
+
+    if not all(col in id_list for col in ["vertex id", "hemisphere"]):
+        raise ValueError("'vertex id' or 'hemisphere' is missing from id_list.")
+
+    vertex_ids = [
+        id_list[id_list["hemisphere"]=="L"]["vertex id"].values,
+        id_list[id_list["hemisphere"]=="R"]["vertex id"].values,
+    ]
+
+    for src, vertices in zip(source_space, vertex_ids):
+        # new attributes
+        vertno        = list(set(src["vertno"]) & set(vertices))        # vertices that were sampled and are cortical
+        inuse         = np.zeros_like(src["inuse"], dtype=bool)
+        inuse[vertno] = True
+
+        # change object attributes
+        src["inuse"]  = inuse
+        src["nuse"]   = np.sum(inuse)
         src["vertno"] = vertno
 
     return source_space

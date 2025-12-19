@@ -436,6 +436,22 @@ def read_eigendecomposition(fname: str | Path, return_eigval=False):
     return eigvec
 
 
+def read_cortex_label(fname):
+    """
+    Read cortex.label file from FreeSurfer.
+    """
+    cortex_label = pd.read_csv(
+        fname,
+        sep = "\s+",        # skips one or more spaces
+        skiprows = 2,
+        header = None,
+        names = ["vertex id", "x", "y", "z", "statistics"],
+        engine = "python",  # required for using the expression "\s+"
+    )
+
+    return cortex_label
+
+
 
 ##########################################################
 # DatasetReader class
@@ -491,6 +507,8 @@ class DatasetReader(ABC):
                 CHARM head segmentation.
             - tkras2ras: np.ndarray (4,4)
                 Affine transformation (freesurfer space (tkras) -> T1 ras space)
+            - vertex-ctx
+                List of vertices of brain meshes belonging to cortex.
         """
         fs_dir = self.config["FS_DIR"]
 
@@ -527,6 +545,20 @@ class DatasetReader(ABC):
                 white_r = nib.freesurfer.io.read_geometry(file_r)
                 
                 data[key] = [white_l, white_r]
+
+            if key.lower() == "vertex-ctx":
+                file_l = fs_dir/f"sub-{subject}"/"label"/"lh.cortex.label"
+                file_r = fs_dir/f"sub-{subject}"/"label"/"rh.cortex.label"
+
+                lh_vertex = read_cortex_label(file_l)
+                rh_vertex = read_cortex_label(file_r)
+
+                # add hemisphere
+                lh_vertex["hemisphere"] = "L"
+                rh_vertex["hemisphere"] = "R"
+
+                data[key] = pd.concat([lh_vertex, rh_vertex], ignore_index=True)
+
 
             # CHARM head segmentation (freesurfer or T1 space ???)
             if key.lower() == "seg":

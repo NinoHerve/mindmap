@@ -1,7 +1,7 @@
 [project]
 name = "mindmap"
 version = "0.0.1"
-requires-python = "== 3.10.16"
+requires-python = "== 3.11.11"  # 3.10.16
 description = "Python package to do EEG source reconstruction."
 authors = [
     {name = "Nino Herve", email = "herve.nino@gmail.com"},
@@ -31,6 +31,10 @@ dependencies = [
 eval = [
 ]
 test = ["pytest>=0.0.1"]
+
+[project.scripts]
+mindmap-viz = "mindmap.cli:main"
+
 
 [tool.setuptools]
 py-modules = ["mindmap"]

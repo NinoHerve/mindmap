@@ -467,11 +467,11 @@ class SimfReader(DatasetReader):
         return data
 
 
-
-# --------------
+# ---------------------------------
 # INTRA dataset
-# --------------
-
+# ¨¨¨¨¨¨¨¨¨¨¨¨¨
+# Simultaneous EEG-iEEG recordings
+# ----------------------------------
 
 class IntraReader(DatasetReader):
     """
@@ -500,47 +500,44 @@ class IntraReader(DatasetReader):
         data: dict
             Dictionnary containing (only) requested data:
             - t1: nib.Nifti1Image | ants.ANTsImage
-                T1-weigthed MRI. (raw)
-            - ave: mne.Evoked
-                Averaged EEG. (mindmap)
-            - eeg:mne.Raw
-                Raw EEG. (raw)
-            - ieeg: mne.Raw
-                Raw intracranial EEG. (raw)
+                Raw T1 weighted MRI.
+            - eeg: mne.io.Raw
+                Raw eeg simulation.
+            - eeg-tmp:mne.Raw
+                EEG template (no recordings)
+            - t1-fs: nib.Nifti1Image | ants.ANTsImage
+                T1-weigthed MRI in freesurfer space.
             - t1-brain: nib.Nifti1Image | ants.ANTsImage
-                Brain mask.(freesurfer)
+                Brain mask in freesurfer space.
             - white: list[np.ndarray (n,3), np.ndarray (m,3)]
                 White surface (boundary between white a gray matter). The surface correponds
-                to a mesh defined by its vertex locations (n,3) and triangular faces (m,3). 
-                (freesurfer)
-            - charm: nib.Nifti1Image | ants.ANTsImage
-                CHARM head segmentation.
+                to a mesh defined by its vertex locations (n,3) and triangular faces (m,3).
             - parc: Parcellation
-                Parcellation in T1-ras space (mindmap)
+                Parcellation (raw space)
             - ctx: nib.Nifti1Image
-                Cortical mask in T1-ras space. (mindmap)
+                Cortical mask (raw space).
             - src: mne.SourceSpaces
-                Source space in tkras space. (mindmap)
+                Source space (freesurfer space).
             - src-raw: mne.SourceSpaces
-                Source space before forward solution.
+                Source space before forward solution (freesurfer space).
             - bem: mne.BEM
-                Boundary element model in tkras space. (mindmap)
+                Boundary element model for source reconstruction (freesurfer space).
             - fwd: mne.Forward
-                Forward solution. (mindmap)
-            - sc-nfiber: np.ndarray
-                Structural connectome with number of fibers as weights. (mindmap)
-            - sc-length: np.ndarray
-                Structural connectome with fiber lengths as weights. (mindmap)
+                Forward solution.
+            - conn: np.ndarray
+                Structural Connectome.
+            - ave: mne.Evoked
+                Averaged and preprocessed EEG.
             - cset: mne.SourceEstimate
-                CSET inverse solution. (mindmap)
+                CSET inverse solution.
             - sloreta: mne.SourceEstimate
-                sLORETA inverse solution. (mindmap)
+                sLORETA inverse solution.
             - wcset: mne.SourceEstimate
-                weighted CSET inverse solution. (mindmap)
+                weighted CSET inverse solution.
             - trans: mne.Transformation
                 Affine transformation (sensor space -> freesurfer space)
             - tkras2ras: np.ndarray (4,4)
-                Affine transformation (freesurfer space (tkras) -> T1 ras space)
+                Affine transformation (freesurfer space -> raw space)
         """
         if isinstance(subject, int):
             subject  = self.config["SUBS"][subject-1]
@@ -579,8 +576,8 @@ class IntraReader(DatasetReader):
             # raw EEG
             if key.lower() == "eeg":
                 # read epochs
-                if task is None:
-                    files   = glob.glob(str(spk_dir/f"sub-{subject}"/"eeg"/f"sub-{subject}_task-spk*_desc-cleaned_eeg.vhdr"))
+                if run is None:
+                    files   = glob.glob(str(spk_dir/f"sub-{subject}"/"eeg"/f"sub-{subject}_task-spk_*_eeg.vhdr"))
                     montage = spk_dir/f"sub-{subject}"/"eeg"/f"sub-{subject}_electrodes.tsv"
 
                     # extract data
@@ -596,23 +593,24 @@ class IntraReader(DatasetReader):
                     montage = mne.channels.read_custom_montage(montage)
 
                     # store in Epoch object
-                    epochs = mne.EpochsArray(dat, info)
-                    epochs = epochs.set_montage(montage)
+                    epochs = mne.EpochsArray(dat, info, verbose="warning")
+                    epochs = epochs.set_montage(montage, verbose="warning")
 
                     data[key] = epochs
 
                 # read single spike
                 else:
                     file = get_bidspath(
-                        root        = ds_dir,
-                        datatype    = "anat",
+                        root        = spk_dir,
+                        datatype    = "eeg",
                         subject     = subject,
                         task        = task,
-                        description = "cleaned",
+                        run         = run,
                     )
-                    montage = file.fpath.parent/f"sub-{subject}_electrodes.tsv"
+                    #montage = file.fpath.parent/f"sub-{subject}_electrodes.tsv"
+                    montage = file.parent/f"sub-{subject}_electrodes.tsv"
 
-                    raw     = mne.io.read_raw_brainvision(file.fpath)
+                    raw     = mne.io.read_raw_brainvision(file)
                     montage = mne.channels.read_custom_montage(montage)
                     raw     = raw.set_montage(montage)
 
