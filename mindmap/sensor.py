@@ -167,3 +167,18 @@ def build_eeg_template(
     eeg.drop_channels(info["bads"])
 
     return eeg
+
+
+def scale_montage(montage, scale=1e-3):
+    """
+    Scale montage. Usually from [mm] -> [m] (scale=1e-3).
+    """
+    mm_to_m_trans = np.eye(4)
+    mm_to_m_trans[:3, :3] *= scale   # scale the X, Y, Z axes
+
+    mm_to_m_trans = mne.transforms.Transform(fro="head", to="head", trans=mm_to_m_trans)
+
+    # apply scaling
+    montage.apply_trans(mm_to_m_trans)
+
+    return montage

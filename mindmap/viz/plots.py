@@ -24,7 +24,7 @@ import plotly.graph_objs as go
 import plotly.express as px
 import pyvista as pv
 
-from mindmap.head import mne_to_polydata, nib_to_polydata, get_dipole_positions
+from mindmap.head import mne_to_polydata, nib_to_polydata, get_dipole_positions, surf_to_polydata
 from mindmap.sensor import get_ch_positions
 
 
@@ -136,6 +136,27 @@ def plot_bem(
 
     subprocess.run(cmd, check=True)
 
+
+def plot_alignment(bem, ave):
+    """
+    Plot alignment between the head and sensors.
+    """
+    # outer skin surface
+    head = bem["surfs"][0]
+    head = surf_to_polydata(head["rr"], head["tris"])
+
+    # sensor positions
+    sens = get_ch_positions(ave)
+    sens = pv.PolyData(sens)
+
+    # plot
+    plotter = pv.Plotter()
+    plotter.add_mesh(head, label="head", smooth_shading=True, color="#D2A18C")
+    plotter.add_mesh(sens, render_points_as_spheres=True, color="black", label="sensors", point_size=8)
+
+    plotter.add_legend(face="circle")
+    
+    return plotter
 
 # I DON'T NEED THIS FUNCTION ANYMORE
 #def plot_sources(
@@ -796,10 +817,14 @@ def plot_leadfield(eeg, forward):
     )
     leadfield = leadfield["sol"]["data"]
 
-    clim = find_clim(leadfield)
+    mesh_params = {
+        "clim"  : find_clim(leadfield),
+        "cmap"  : "bwr",
+        "color" : None,
+    }
 
     # plot
-    plotter = plot_brain(forward["src"], np.zeros(leadfield.shape[1]), clim=clim)
+    plotter = plot_brain(forward["src"], np.zeros(leadfield.shape[1]), mesh_params=mesh_params)
     plotter.add_mesh(cap, point_size=10, render_points_as_spheres=True, name="cap")
     plotter.remove_scalar_bar(title="highlight")
 
@@ -814,7 +839,7 @@ def plot_leadfield(eeg, forward):
             cap["highlight"][closest_point_id] = 1
 
             # change leadfield vector
-            tmp = plot_brain(forward["src"], leadfield[closest_point_id], clim=clim)
+            tmp = plot_brain(forward["src"], leadfield[closest_point_id], mesh_params=mesh_params)
             plotter.meshes[0]["signal"] = tmp.meshes[0]["signal"]
             plotter.meshes[1]["signal"] = tmp.meshes[1]["signal"]
 
@@ -824,6 +849,7 @@ def plot_leadfield(eeg, forward):
     plotter.enable_point_picking(callback=pick_electrode)
 
     return plotter
+
 
 def plot_dipole_function(source_space, dipole_function, title="Dipole function"):
     """

@@ -6,3 +6,8 @@ configurations/
 tvb_data/
 .vscode/
 *.gz
+*.npy
+*.csv
+*.gif
+*.zip
+

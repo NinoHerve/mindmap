@@ -23,7 +23,7 @@ import mne
 import mne_bids
 
 from mindmap.io.readers import DatasetReader, read_config, read_eeg, read_mri, get_bidspath
-from mindmap.sensor import build_eeg_template
+from mindmap.sensor import build_eeg_template, scale_montage
 
 def dataset_reader(config):
     """
@@ -540,7 +540,7 @@ class IntraReader(DatasetReader):
                 Affine transformation (freesurfer space -> raw space)
         """
         if isinstance(subject, int):
-            subject  = self.config["SUBS"][subject-1]
+            subject  = str(subject)
 
         name    = self.config["NAME"]
         ds_dir  = self.config["DS_DIR"]     # dataset directory (raw)
@@ -549,8 +549,8 @@ class IntraReader(DatasetReader):
         data = {
             "name" : name,
             "sub"  : subject,
-            "task" : None,
-            "run"  : None,
+            "task" : task,
+            "run"  : run,
         }
 
         # dataset specifics (use this section to also overwrite freesurfer and mindmap)
@@ -590,7 +590,8 @@ class IntraReader(DatasetReader):
 
                     # info & montage
                     info    = spike.info
-                    montage = mne.channels.read_custom_montage(montage)
+                    montage = mne.channels.read_custom_montage(montage, coord_frame="head")
+                    montage = scale_montage(montage, scale=1e-3)
 
                     # store in Epoch object
                     epochs = mne.EpochsArray(dat, info, verbose="warning")
@@ -611,7 +612,8 @@ class IntraReader(DatasetReader):
                     montage = file.parent/f"sub-{subject}_electrodes.tsv"
 
                     raw     = mne.io.read_raw_brainvision(file)
-                    montage = mne.channels.read_custom_montage(montage)
+                    montage = mne.channels.read_custom_montage(montage, coord_frame="head")
+                    montage = scale_montage(montage, scale=1e-3)
                     raw     = raw.set_montage(montage)
 
                     data[key] = raw

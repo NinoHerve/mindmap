@@ -705,7 +705,6 @@ class DatasetReader(ABC):
                 file = get_bidspath(
                     root        = mm_dir,
                     subject     = subject,
-                    description = "inverse",
                     datatype    = "bem",
                 )
                 data[key] = mne.read_bem_solution(file, verbose="warning")
