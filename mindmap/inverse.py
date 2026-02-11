@@ -307,7 +307,7 @@ class wCSET(InverseOperator):
         eig_vec   : np.ndarray,
         eig_val   : np.ndarray,
         noise_cov : mne.Covariance = None,
-        depth     : float = 0.5,
+        depth     : float = 0,
         harm      : float = 0.3,
     ):
         """

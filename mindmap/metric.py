@@ -183,3 +183,40 @@ def point_to_area_distance(
         norm          = np.linalg.norm(mean_distance)
 
     return norm
+
+
+def compute_distances(array1, array2, output_type="scalar"):
+    """
+    Computes distances between points of two arrays. Displacements
+    will point from array1 to array2.
+
+    Parameters:
+    ----------
+    array1: np.ndarray
+        Array of shape (N,D) or (N,)
+    
+    array2: np.ndarray
+        Array of shape (M,D) or (M,)
+
+    output_type: str
+        'scalar' (Euclidean) or 'vector' (Displacement)
+
+    Returns
+    -------
+    dist: np.ndarray
+        If 'scalar': Array of shape (N,M) containing L2 norms
+        If 'vector': Array of shape (N,M,D) containing displacement vectors.
+    """
+    # Ensure inputs are numpy arrays
+    a1 = np.atleast_2d(array1)
+    a2 = np.atleast_2d(array2)
+
+    # Broadcasting to find difference between every pair
+    diff =  a2[np.newaxis,:,:] - a1[:,np.newaxis,:]
+
+    if output_type == "vector":
+        return diff
+    elif output_type == "scalar":
+        return np.linalg.norm(diff, axis=2)
+    else:
+        raise ValueError("output_type must be 'scalar' or 'vector'")

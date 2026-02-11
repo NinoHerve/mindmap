@@ -57,7 +57,7 @@ def get_bidspath(
         Avoid mne_bids if False.
     """
     mne_bids_datatypes = ["meg", "eeg", "ieeg", "nirs", "anat", "beh"]
-    other_datatypes    = ["bem", "fwd", "src", "cov", "con", "dseg", "ave", "stc", "eig"]
+    other_datatypes    = ["bem", "fwd", "src", "cov", "con", "dseg", "ave", "iave", "stc", "eig"]
 
     assert datatype in mne_bids_datatypes + other_datatypes, f"datatype ({datatype}) is not valid. Should be one of {mne_bids_datatypes+other_datatypes}"
 
@@ -105,9 +105,10 @@ def get_bidspath(
             "con"  : "_con",
             "dseg" : "_dseg",
             "ave"  : "_ave",
+            "iave" : "_i-ave",
             "stc"  : "_stc",
-            "eig"  : "_eigvec",
-            "anat" : "_T1w"
+            "eig"  : "_eig",
+            "anat" : "_T1w",
         }
 
         fname += datatype_suffix[datatype]
@@ -124,9 +125,10 @@ def get_bidspath(
             "con"  : ".npy",
             "dseg" : ".nii.gz",
             "ave"  : ".fif",
+            "iave" : ".fif",
             "stc"  : "",
-            "eig"  : ".npy",
-            "anat" : ".nii.gz"
+            "eig"  : ".npz",
+            "anat" : ".nii.gz",
         }
 
         fname += datatype_extension[datatype]
@@ -405,35 +407,16 @@ def read_mri(file, mri_dtype="nib"):
 
     raise ValueError("Unknown mri file type")
 
-
-def read_eigendecomposition(fname: str | Path, return_eigval=False):
+def read_eig(file: str | Path):
     """
-    Read eigenvectors and eigenvalues (optional).
-
-    Parameters
-    ----------
-    fname: path-like
-        File name of eigenvectors.
-
-    return_eigval: bool
-        Whether to return eigval if eigval exists.
-
-    Returns
-    -------
-    eigvec: np.ndarray (n,n)
-        Eigenvectors.
-
-    eigval: np.ndarray (n,) (optional)
-        Eigenvalues.
+    Read eigendecomposition.
     """
-    eigvec = np.load(fname, allow_pickle=True)
-    
-    if return_eigval:
-        new_name = fname.name.replace("eigvec", "eigval")
-        eigval = np.load(fname.with_name(new_name), allow_pickle=True)
-        return eigvec, eigval
-    
-    return eigvec
+    eig = np.load(file)
+
+    eigvec = eig["eigvec"]
+    eigval = eig["eigval"]
+
+    return eigvec, eigval
 
 
 def read_cortex_label(fname):
@@ -597,6 +580,7 @@ class DatasetReader(ABC):
             *args   : list,
             session : str = None,
             task    : str = None,
+            desc    : str = None,
             run     : str = None
             ) -> dict:
         """
@@ -740,6 +724,7 @@ class DatasetReader(ABC):
                     subject     = subject,
                     datatype    = "src",
                 )
+                print(file)
                 data[key] = mne.read_source_spaces(file, verbose="warning")
 
 
@@ -751,7 +736,6 @@ class DatasetReader(ABC):
                 file = get_bidspath(
                     root        = mm_dir,
                     subject     = subject,
-                    description = "inverse",
                     datatype    = "fwd",
                 )
                 data[key] = mne.read_forward_solution(file, verbose="warning")
@@ -806,16 +790,16 @@ class DatasetReader(ABC):
 
             if key.lower() == "eig":
                 file = get_bidspath(
-                    root = mm_dir,
-                    subject = subject,
+                    root     = mm_dir,
+                    subject  = subject,
                     datatype = "eig",
                 )
-                eigvec, eigval = read_eigendecomposition(file, return_eigval=True)
-                data[key] = {"vec":eigvec, "val":eigval}
+                eigvec, eigval = read_eig(file)
+                data[key]      = {"vec":eigvec, "val":eigval}
 
-            # -------------
-            # Read EEG
-            # -------------
+            # -----------------
+            # Read average EEG
+            # -----------------
 
             # evoked signal
             if key.lower() == "ave":
@@ -830,6 +814,21 @@ class DatasetReader(ABC):
 
                 assert file.exists(), "Averaged EEG file not found. Check if the proper 'task' and/or 'run' are provided."
                 
+                data[key] = mne.Evoked(file, verbose="warning")
+
+            # intracranial evoked signal
+            if key.lower() == "iave":
+                file = get_bidspath(
+                    root = mm_dir,
+                    subject = subject,
+                    datatype = "iave",
+                    session = session,
+                    task = task,
+                    run = run,
+                )
+
+                assert file.exists(), "Averaged iEEG file not found. Check if the proper 'task' and/or 'run' are provided."
+
                 data[key] = mne.Evoked(file, verbose="warning")
 
             # noise covariance

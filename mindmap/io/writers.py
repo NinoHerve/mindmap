@@ -77,3 +77,9 @@ def write_config(fname, config):
     with open(fname, 'w', encoding="utf-8") as outfile:
         yaml.dump(config, outfile, default_flow_style=False)
         
+
+def write_eig(fname, eigvec, eigval):
+    """
+    Write eigendecomposition.
+    """
+    np.savez(fname, eigvec=eigvec, eigval=eigval)

@@ -22,7 +22,7 @@ import ants
 import mne
 import mne_bids
 
-from mindmap.io.readers import DatasetReader, read_config, read_eeg, read_mri, get_bidspath
+from mindmap.io.readers import DatasetReader, read_config, read_eeg, read_mri, get_bidspath, read_eig
 from mindmap.sensor import build_eeg_template, scale_montage
 
 def dataset_reader(config):
@@ -55,6 +55,256 @@ def dataset_reader(config):
 
     return reader
 
+
+# -------------
+# Tuto dataset
+# --------------
+
+class TutoReader(DatasetReader):
+    """
+    Class to read data from tutorial dataset.
+    """
+    def __init__(self, config):
+        super().__init__(config)
+
+    def __call__(self, subject, *args, mri_dtype="nib", task=None, run=None, description=None, verbose=1):
+        """
+        Read data for dataset SPIKE.
+
+        Parameters
+        ----------
+        subject: str | int
+            Subject name or id.
+
+        *args: list(str)
+            Requested data. Data are requested via an abreviated code. See Returns to check 
+            available abreviations and associated datatype.
+
+        mri_dtype: str
+            MRI dtype (Nibabel or ANTs) for MRI images.
+
+        Returns:
+        data: dict
+            Dictionnary containing (only) requested data:
+            - t1: nib.Nifti1Image | ants.ANTsImage
+                Presurgery T1-weigthed MRI.
+            - t1-post: nib.Nifti1Image | ants.ANTsImage
+                Postsurgery T1-weighted MRI.
+            - resec: nib.Nifti1Image | ants.ANTsImage
+                Resection area.
+            - eeg: mne.Evoked
+                Averaged inter-ictal EEG.
+            - eeg-raw:mne.Raw
+                Raw inter-ictal EEG.
+            - t1-fs: nib.Nifti1Image | ants.ANTsImage
+                T1-weigthed MRI in freesurfer space (tkras).
+            - t1-brain: nib.Nifti1Image | ants.ANTsImage
+                Brain mask.
+            - white: list[np.ndarray (n,3), np.ndarray (m,3)]
+                White surface (boundary between white a gray matter). The surface correponds
+                to a mesh defined by its vertex locations (n,3) and triangular faces (m,3).
+            - charm: nib.Nifti1Image | ants.ANTsImage
+                CHARM head segmentation.
+            - tkras2ras: np.ndarray (4,4)
+                Affine transformation (freesurfer space (tkras) -> T1 ras space)
+            - parc: Parcellation
+                Parcellation (T1-ras space)
+            - ctx: nib.Nifti1Image
+                Cortical mask.
+            - src: mne.SourceSpaces
+                Source space.
+            - src-raw: mne.SourceSpaces
+                Source space before forward solution.
+            - bem: mne.BEM
+                Boundary element model.
+            - bem-sim: mne.BEM
+                Boundary element model for simulations.
+            - fwd: mne.Forward
+                Forward solution
+            - sc-nfiber: np.ndarray
+                Structural connectome with number of fibers as weights.
+            - sc-length: np.ndarray
+                Structural connectome with fiber lengths as weights.
+            - sc-rb-nfiber: np.ndarray
+                Region-based structural connectome with number of fibers as weights.
+            - sc-rb-nfiber: np.ndarray
+                Region-based structural connectome with fiber lengths as weights.
+            - eeg: mne.Evoked
+                Averaged and preprocessed EEG.
+            - cset: mne.SourceEstimate
+                CSET inverse solution.
+            - sloreta: mne.SourceEstimate
+                sLORETA inverse solution.
+            - wcset: mne.SourceEstimate
+                weighted CSET inverse solution.
+            - trans: mne.Transformation
+                Affine transformation (sensor space -> freesurfer space)
+        """
+        name   = self.config["NAME"]
+        ds_dir = self.config["DS_DIR"]
+        mm_dir = self.config["MM_DIR"]
+
+        data = {
+            "name": name,
+            "sub" : subject,
+            "task": task,
+            "run": run,
+        }
+
+        # dataset name
+        if "vep" in subject:
+            dataset = "vep"
+        elif "intra" in subject:
+            dataset = "intra"
+        elif "spike" in subject:
+            dataset = "spike"
+        elif "simf" in subject:
+            dataset = "simf"
+        else:
+            raise ValueError(f"Can't associate subject name '{subject}' to any dataset")
+
+        # Others
+        for key in args:
+
+            # -------------
+            # Read Anatomy
+            # -------------
+
+            # T1
+            if key.lower() == "t1":
+                ses, res = None, None
+                if dataset in ["spike"]:
+                    ses = "preop"
+                    res = "cmp"
+                
+                file      = get_bidspath(ds_dir, subject, "anat", session=ses, resolution=res)
+                data[key] = read_mri(file, mri_dtype=mri_dtype)
+
+            # Postsurgery T1 (spike)
+            if key.lower() == "post_t1":
+                file = get_bidspath(ds_dir, subject, "anat", session="postop", resolution="cmp")
+                data[key] = read_mri(file, mri_dtype=mri_dtype)
+
+            # ---------
+            # Read EEG
+            # ---------
+            if key.lower() == "eeg":
+                if dataset == "vep":
+                    pass
+                
+                elif dataset == "intra":
+                    folder  = ds_dir/"derivatives"/"spike_trials"/f"sub-{subject}"/"eeg"
+                    files   = glob.glob(str(folder/f"sub-{subject}_task-spk_*_eeg.vhdr"))
+                    montage = folder/f"sub-{subject}_electrodes.tsv"
+                
+                    # extract data
+                    dat = []
+
+                    for f in files:
+                        spike = mne.io.read_raw_brainvision(f, verbose="warning")
+                        dat.append(spike["data"][0])
+                    dat = np.array(dat)
+
+                    # info & montage
+                    info    = spike.info
+                    montage = mne.channels.read_custom_montage(montage, coord_frame="head")
+                    montage = scale_montage(montage, scale=1e-3)
+
+                    # store in Epoch object
+                    epochs = mne.EpochsArray(dat, info, verbose="warning")
+                    epochs = epochs.set_montage(montage, verbose="warning")
+
+                    data[key] = epochs
+
+                else:   # spike
+                    pass
+
+            # ------------------
+            # Read iEEG (intra)
+            # ------------------
+            if key.lower() == "ieeg":
+                folder  = ds_dir/"derivatives"/"intra_spike_trials"/f"sub-{subject}"/"ieeg"
+                files   = glob.glob(str(folder/f"sub-{subject}_task-spk_*_ieeg.vhdr"))
+                montage = folder/f"sub-{subject}_electrodes.tsv"
+
+                # extract data
+                dat = []
+
+                for f in files:
+                    spike = mne.io.read_raw_brainvision(f, verbose="warning")
+                    dat.append(spike["data"][0])
+                dat = np.array(dat)
+
+                # info & montage
+                info    = spike.info
+                montage = mne.channels.read_custom_montage(montage, coord_frame="head")
+                montage = scale_montage(montage, scale=1e-3)
+
+                # store in Epoch object
+                epochs = mne.EpochsArray(dat, info, verbose="warning")
+                epochs = epochs.set_montage(montage, verbose="warning")
+
+                data[key] = epochs
+
+            # ----------
+            # Read geom
+            # ----------
+
+            if key.lower() == "con":
+                if dataset == "intra":
+                    file = get_bidspath(
+                        root        = mm_dir,
+                        subject     = subject,
+                        datatype    = "con",
+                        description = "geom",
+                    )
+                    data[key] = np.load(file)
+
+            if key.lower() == "eig":
+                if dataset == "intra":
+                    file = get_bidspath(
+                        root        = mm_dir,
+                        subject     = subject,
+                        datatype    = "eig",
+                        description = "geom",
+                    )
+                    eigvec, eigval = read_eig(file)
+                    data[key]      = {"vec":eigvec, "val":eigval}
+
+        args = list(set(args) - set(data.keys()))    # update missing arguments
+
+        # --------------------------------------------------
+        # Read FreeSurfer derivatives
+        # [t1-fs, t1-brain, white, charm, tkras2ras]
+        # --------------------------------------------------
+
+        fs_data = self.read_freesurfer(subject, *args, mri_dtype=mri_dtype)
+        data.update(fs_data)
+        args = list(set(args) - set(data.keys()))
+
+        # ------------------------------------------------------------------------
+        # Read MindMap derivatives
+        # [parc, ctx, , src, src-raw, bem, bem-sim, fwd, sc-nfiber, sc-length, \\
+        # sc-rb-nfiber, sc-rb-length, eeg, cset, sloreta, wcset, trans]
+        # ------------------------------------------------------------------------
+
+        mm_data = self.read_mindmap(subject, *args, task=task, run=run)
+        data.update(mm_data)
+        args = list(set(args) - set(data.keys()))
+
+        # ------------------------------------------------------------------------
+        # Read Standardized data
+        # [std-ctx, std-thal, std-mni]
+        # ------------------------------------------------------------------------
+
+        std_data = self.read_standards(*args, mri_dtype=mri_dtype)
+        data.update(std_data)
+        args = list(set(args) - set(data.keys()))
+
+        if verbose == 1:
+            self.log(data, args)
+
+        return data
 
 # --------------
 # SPIKE dataset

@@ -165,6 +165,7 @@ def filter_dipoles_by_nifti_mask(
         src["inuse"]  = new_inuse
         src["nuse"]   = nuse
         src["vertno"] = vertno
+        src["pinfo"]  = [patch for i, patch in enumerate(src["pinfo"]) if keep[i]]
 
     return source_space
 
@@ -203,11 +204,13 @@ def filter_dipoles_by_id_list(
         vertno        = list(set(src["vertno"]) & set(vertices))        # vertices that were sampled and are cortical
         inuse         = np.zeros_like(src["inuse"], dtype=bool)
         inuse[vertno] = True
+        keep          = inuse[src["inuse"].astype(bool)]     # dipole list where 1 is keep dipole and 0 is removed dipole
 
         # change object attributes
         src["inuse"]  = inuse
         src["nuse"]   = np.sum(inuse)
         src["vertno"] = vertno
+        src["pinfo"]  = [patch for i, patch in enumerate(src["pinfo"]) if keep[i]]
 
     return source_space
 

@@ -11,6 +11,7 @@ License: MIT
 """
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 from scipy.fft import ifftn
@@ -20,6 +21,7 @@ import mne
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.colors import ListedColormap
+import seaborn as sns
 import plotly.graph_objs as go
 import plotly.express as px
 import pyvista as pv
@@ -27,6 +29,12 @@ import pyvista as pv
 from mindmap.head import mne_to_polydata, nib_to_polydata, get_dipole_positions, surf_to_polydata
 from mindmap.sensor import get_ch_positions
 
+#####################################
+##          Plot functions         ##
+##                                 ##
+##                                 ##
+##                                 ##
+#####################################
 
 def show_slices(
         volume        : np.ndarray | nib.Nifti1Image,
@@ -98,6 +106,7 @@ def plot_segmentation(
 
     subprocess.run(cmd, check=True)
 
+
 def plot_bem(
     fs_dir  : str | Path,
     subject : str,
@@ -158,94 +167,6 @@ def plot_alignment(bem, ave):
     
     return plotter
 
-# I DON'T NEED THIS FUNCTION ANYMORE
-#def plot_sources(
-#        sources: mne.SourceSpaces,
-#        mask: nib.Nifti1Image = None,
-#        cras: np.ndarray = np.array([0,0,0]),
-#        src_size: float = 5,
-#        src_color: str = "red",
-#        src_clut: np.ndarray = None,
-#        brain_color: str = "lightblue",
-#        mask_opacity: float = 0.2,
-#) -> pv.Plotter:
-#    """
-#    Plot source space.
-#
-#    Parameters
-#    ----------
-#    sources: mne.SourceSpaces
-#        Source space.
-
-#    mask: nib.Nifti1Image
-#        Gray matter.
-
-#    ....
-#    """
-#    plotter = pv.Plotter()
-
-#    # sources
-#    points = mm.utils.get_src_position(sources)
-
-#    if mask is None:
-        # surfaces
-#        vertices, faces = sources[0]["rr"], sources[0]["tris"]
-#        surflh = mm.utils.surf_to_polydata(vertices, faces)
-
-#        vertices, faces = sources[1]["rr"], sources[1]["tris"]
-#        surfrh = mm.utils.surf_to_polydata(vertices, faces)
-
-        # plot
-#        plotter.add_mesh(surflh, show_edges=True, color=brain_color)
-#        plotter.add_mesh(surfrh, show_edges=True, color=brain_color)
-        
-#    else: 
-#        if np.all(cras == [0,0,0]):
-#            print("\033[93mNo cras translation applied")
-        
-        # sources
-#        points     = points*1000 + cras
-#        inv_affine = np.linalg.inv(mask.affine)
-#        points     = mne.transforms.apply_trans(inv_affine, points)
-#        points     = pv.PolyData(points)
-
-        # mask
-#        volume = pv.ImageData(dimensions=mask.shape, spacing=(1,1,1), origin=(0,0,0))
-#        volume.point_data["scalars"] = mask.get_fdata().flatten(order="F")
-
-        # plot
-#        plotter.add_mesh(volume.contour(3), color="white", opacity=mask_opacity)
-
-#    if src_clut is None:
-#        plotter.add_mesh(points, src_color, point_size=src_size, render_points_as_spheres=True)
-#    else:
-#        plotter.add_mesh(points, scalars=src_clut, point_size=src_size, render_points_as_spheres=True)
-
-
-#    return plotter
-
-# I DON'T NEED THIS FUNCTION ANYMORE
-#def plot_brain_signal(sources, signal=None, n_points=2, name="signal", cmap="bwr", clim=None, show_max=False):
-
-#    hemiL, hemiR = mm.utils.mne_to_polydata(sources, signal)
-
-#    plotter = pv.Plotter()
-#    plotter.add_mesh(hemiL, cmap=cmap, smooth_shading=True, clim=clim, name="lh")
-#    plotter.add_mesh(hemiR, cmap=cmap, smooth_shading=True, clim=clim, name="rh")
-
-#    if show_max == True:
-#        split = sources[0]["nuse"]
-#        idx_max = np.argmax(np.abs(signal))
-#        if idx_max < split:
-#            map_max = sources[0]["rr"][sources[0]["vertno"]][idx_max]
-#        else:
-#            map_max = sources[1]["rr"][sources[1]["vertno"]][idx_max-split]
-        
-#        plotter.add_mesh(map_max, render_points_as_spheres=True, color="violet", point_size=10)
-
-
-#    return plotter
-
 def plot_brain(
     source_space   : mne.SourceSpaces | list[mne.SourceSpaces],
     signal         : np.ndarray | list[np.ndarray] = None,
@@ -257,7 +178,7 @@ def plot_brain(
     overlay_params : dict = None,
 ) -> pv.Plotter:
     """
-    Docstring pour plot_brain_
+    Plot Brain
     
     Parameters
     ----------
@@ -294,45 +215,9 @@ def plot_brain(
     # Handle inputs as lists
     # -----------------------
 
-    # biggest list size
-    size = 1
-    if not isinstance(source_space, mne.SourceSpaces):
-        if len(source_space) > size:
-             size = len(source_space)
-    for obj in [signal, overlay]:
-        if isinstance(obj, list):
-            size = max(size, len(obj))
-
-    # convert non-lists to lists
-    if isinstance(source_space, mne.SourceSpaces):
-        source_space = [source_space]*size
-
-    if not isinstance(signal, list):
-        if signal is None:
-            signal = [signal]*size
-        else:
-            signal = signal.squeeze()   # avoid dimension (n, 1)
-            if len(signal.shape) == 2:  # multiple brain images, assuming that second axis is number of images
-                signal = [signal[:,i] for i in signal.shape[1]]
-            else:
-                signal = [signal]
-
-    if not isinstance(overlay, list):
-        overlay = [overlay]*size
-
-    if not isinstance(tkras2ras, list):
-        tkras2ras = [tkras2ras]*size
-
-    if not isinstance(title, list):
-        title = [title]*size
-
-    # check if all list sizes are the same
-    lists        = [source_space, signal, overlay, tkras2ras]
-    list_lengths = [len(lst) for lst in lists if lst is not None]
-    if len(list_lengths) > 1:
-        unique_lengths = set(list_lengths)
-        if len(unique_lengths) != 1:
-            raise ValueError("All non-None inputs must have the same length.")
+    source_space, signal, overlay, tkras2ras, title = store_in_lists(
+        source_space, signal, overlay, tkras2ras, title
+    )
 
     # ---------------
     # Process signal
@@ -396,10 +281,11 @@ def plot_brain(
     # Plot brain mesh
     # -----------------
 
-    plotter = pv.Plotter(shape=(1,size))
+    n_plots = len(source_space)
+    plotter = pv.Plotter(shape=(1,n_plots))
 
     # iterate through images
-    for i in range(size):
+    for i in range(n_plots):
         src = source_space[i]
         sig = signal[i]
 
@@ -418,7 +304,7 @@ def plot_brain(
             pos = pv.PolyData(get_dipole_positions(src))
 
             # plot source space
-            plotter.add_mesh(pos, **show_src_parameters)
+            plotter.add_mesh(pos, name="src", **show_src_parameters)
 
         # show max
         if show_max:
@@ -443,9 +329,10 @@ def plot_brain(
                 over = overlay[i]
 
             # plot overlay
-            plotter.add_mesh(over, **overlay_parameters)
+            plotter.add_mesh(over, name="overlay", **overlay_parameters)
 
     return plotter
+
 
 # def plot_brain(
 #     sources         : mne.SourceSpaces | list[mne.SourceSpaces],
@@ -632,176 +519,780 @@ def plot_brain(
 #     return plotter
 
 
+def plot_source_estimate(
+    source_space   : mne.SourceSpaces | list[mne.SourceSpaces],
+    timeseries     : mne.SourceEstimate | list[mne.SourceEstimate] = None,
+    overlay        : np.ndarray | nib.Nifti1Image | list[np.ndarray] | list[nib.Nifti1Image] = None,
+    tkras2ras      : np.ndarray | list[np.ndarray] = None,
+    title          : str | list[str] = "",
+    mesh_params    : dict = None,
+    ts_params      : dict = None,
+    overlay_params : dict = None,
+) -> pv.Plotter:
+    """
+    Plot brain with SourceEstimate
+
+    Parameters
+    ----------
+    source_space: mne.SourceSpaces | list[mne.SourceSpaces] 
+        Source space.
+
+    timeseries: mne.SourceEstimate | list[mne.SourceEstimate]
+        Source values over time.
+
+    overlay: np.ndarray (M,3) | nib.Nifti1Image
+        Overlay defined as point cloud.
+
+    tkras2ras: np.ndarray
+        Affine transform (freesurfer ras -> T1 ras). Necessary to align MRI images with meshes.
+
+    mesh_params: dict
+        key : value
+        key : value
+    
+    ts_params: dict
+        key : value
+        key : value
+    
+    overlay_params: dict
+        key : value
+        key : value
+
+    Returns
+    -------
+    brain: pv.Plotter
+        Brain plot.
+    """
+
+    # -----------------------
+    # Normalize inputs
+    # -----------------------
+
+    source_space, timeseries, overlay, tkras2ras, title = store_in_lists(
+        source_space, timeseries, overlay, tkras2ras, title,
+    )
+
+    mesh_params    = mesh_params or {}
+    overlay_params = overlay_params or {}
+    ts_params      = ts_params or {}
+
+    # work on copies sine MNE modifies in-place
+    timeseries = [ts.copy() for ts in timeseries]
+
+    # --------------------
+    # Process time series 
+    # --------------------
+
+    clim  = find_clim(timeseries)
+
+    if ts_params.get("normalize"):
+        for ts in timeseries:
+            scale = np.nanpercentile(np.abs(ts.data), 99)  # percentile instead of max to resist to outliers
+            if scale > 0:
+                ts.data /= scale
+
+        clim = (-1, 1)
+
+    if ts_params.get("absolute"):
+        for ts in timeseries:
+            ts.data = np.abs(ts.data)
+
+        clim = (0, clim[1] if clim else 1)
+
+    cmap  = default_cmap(clim)
+
+    mesh_params = {
+        "smooth_shading" : True,
+        "clim" : clim,
+        "cmap" : cmap,
+    } | mesh_params
+
+    # ------------------
+    # Process overlays
+    # ------------------
+
+    for i, over in enumerate(overlay):
+        if isinstance(over, nib.Nifti1Image):
+            overlay[i] = nib_to_polydata(over, trans=tkras2ras[i])
+
+    overlay_params = {
+        "color"      : "green",
+        "label"      : None,
+        "point_size" : 1,
+        "opacity"    : 1,
+    } | overlay_params
+
+
+    # ----------------
+    # Create TimeMesh
+    # ----------------
+
+    return TimeMesh(
+        source_space,
+        timeseries,
+        overlay,
+        title,
+        mesh_params=mesh_params,
+        overlay_params=overlay_params,
+    )
+
+
 class TimeMesh:
     """
-    Class to manage temporal brain plots.
+    Interactive visualization of brain source estimates over time using PyVista
+    A slider allows scrolling through time points.
     """
+
     def __init__(
-        self, 
-        sources         : mne.SourceSpaces | list[mne.SourceSpaces], 
-        stc             : mne.SourceEstimate | list[mne.SourceEstimate],
-        overlay         : np.ndarray | nib.Nifti1Image | list[np.ndarray] | list[nib.Nifti1Image] = None,
-        tkras2ras       : np.ndarray | list[np.ndarray] = np.zeros(3),
-        titles          : str | list[str] = "",
-        cmap            : str = None,
-        std             : bool = False,
-        absolute        : bool = False,
-        smooth_shading  : bool = False,
-        overlay_color   : str   = "green",
-        overlay_label   : str   = None,
-        overlay_size    : float = 1,
-        overlay_opacity : float = 1,
+        self,
+        source_spaces  : list[mne.SourceSpaces],
+        timeseries     : list[mne.SourceEstimate],
+        overlays       : Optional[pv.PolyData] = None,
+        titles         : Optional[list[str]] = None,
+        mesh_params    : Optional[dict] = None,
+        overlay_params : Optional[dict] = None,
+        start_time     : Optional[float] = None,
     ):
         """
-        Init
-
         Parameters
         ----------
-        sources: mne.SourceSpace 
-            Source space.
+        source_spaces: list[mne.SourceSpaces]
+            Source spaces.
+        
+        timeseries: list[mne.SourceEstimate]
+            Source estimates (N x T)
 
-        stc: mne.SourceEstimate 
-            Source values over time (data with size N,T)
+        overlays: list[pv.PolyData]
+            Optional overlay meshes
 
-        cmap: Color map 
+        titles: list[str]
+            Titles for each subplot.
 
-        absolute: bool
-            Whether to take absolute values.
+        mesh_params: dict
+            Parameters passed to plotter.add_mesh for brain meshes
+
+        overlay_params: dict
+            Parameters passed to plotter.add_mesh for overlays
+
+        start_time: float
+            Initial time point. Defaults to the midpoint of the times axis.
         """
-        # instanciate objects
-        self.to_self(sources, stc, overlay, tkras2ras)
-        self.select_cmap(cmap, std, absolute)
+        self.src = list(source_spaces)
+        self.ts  = list(timeseries)
 
-        size = len(self.sources)
+        if len(self.src) != len(self.ts):
+            raise ValueError("source_spaces and timeseries must have the same length.")
 
-        # instanciate first plot
-        start      = int(self.stc[0].data.shape[1]/2)
-        signals    = [s.data[:, start] for s in self.stc]
-        self.hemis = [mne_to_polydata(self.sources[i], signals[i]) for i in range(size)]
+        self.n_plots = len(self.src)
 
-        self.plotter = pv.Plotter(shape=(1,size))
+        self.overlays = overlays or [None] * self.n_plots
+        self.titles   = titles or [""] * self.n_plots
 
-        for i in range(size):
+        self.mesh_params    = mesh_params or {}
+        self.overlay_params = overlay_params or {}
+
+        # build plotter
+        self.plotter = pv.Plotter(shape=(1, self.n_plots))
+
+        # prepare meshes and mapping
+        self.hemi_meshes = []
+        self.vertex_maps = []
+        self.splits      = []
+
+        for i in range(self.n_plots):
+            hemi_l, hemi_r, map_l, map_r, nuse_l = self._build_hemi_meshes(i)
+
+            self.hemi_meshes.append((hemi_l, hemi_r))
+            self.vertex_maps.append((map_l, map_r))
+            self.splits.append(nuse_l)
+
             self.plotter.subplot(0,i)
-            self.plotter.add_mesh(self.hemis[i][0], cmap=self.cmap, clim=self.clim, smooth_shading=smooth_shading)
-            self.plotter.add_mesh(self.hemis[i][1], cmap=self.cmap, clim=self.clim, smooth_shading=smooth_shading)
+            self.plotter.add_mesh(hemi_l, **self.mesh_params)
+            self.plotter.add_mesh(hemi_r, **self.mesh_params)
+            self.plotter.add_title(self.titles[i])
 
-            if isinstance(titles, list):
-                self.plotter.add_title(titles[i])
-            else:
-                self.plotter.add_title(titles)
+            if self.overlays[i] is not None:
+                self.plotter.add_mesh(self.overlays[i], **self.overlay_params)
 
-        # overlay
-        if overlay is not None:
-            for i in range(size):
-                if isinstance(self.overlay[i], nib.Nifti1Image):
-                    over = nib_to_polydata(self.overlay[i], trans=self.cras[i])
-                else:
-                    over = self.overlay[i]
+        # slider
+        stc0 = self.ts[0]
+        if start_time is None:
+            start_idx  = stc0.data.shape[1] // 2
+            start_time = stc0.times[start_idx]
+        else:
+            start_idx = stc0.time_as_index(start_time)
 
-                self.plotter.subplot(0,i)
-                self.plotter.add_mesh(over, color=overlay_color, label=overlay_label, point_size=overlay_size, opacity=overlay_opacity)
+        self.times       = stc0.times
+        self.n_times     = len(self.times)
+        self.current_idx = start_idx
 
-        # add time slider
-        self.plotter.add_slider_widget(
-            callback = self.__call__,
-            rng      = [self.stc[0].tmin, self.stc[0].times[-1]],
-            value    = self.stc[0].times[start],
-            title    = "Time [s]",
+        self._update_time_index(start_idx)
+
+        slider = self.plotter.add_slider_widget(
+            callback = self._on_time_change,
+            rng      = [self.times[0], self.times[-1]],
+            value    = start_time,
+            title    = "Time (s)",
             style    = "modern",
+            interaction_event = "always",
+        )
+        self.slider = slider.GetSliderRepresentation()
+
+        self.plotter.add_key_event("Right", lambda: self._step_time(1))
+        self.plotter.add_key_event("Left", lambda: self._step_time(-1))
+
+    # -----------------------
+    # Initialization helpers
+    # -----------------------
+
+    def _build_hemi_meshes(self, idx):
+        """
+        Build left/right hemisphere meshes and pinfo-based vertex mappings.
+        """
+        src = self.src[idx]
+
+        # extract geometry
+        hemi_l = surf_to_polydata(src[0]["rr"], src[0]["tris"])
+        hemi_r = surf_to_polydata(src[1]["rr"], src[1]["tris"])
+
+        # pinfo-based mapping
+        map_l = self._vertex_to_nearest_dipole_map(src[0])
+        map_r = self._vertex_to_nearest_dipole_map(src[1])
+
+        nuse_l = src[0]["nuse"]
+
+        # initialize scalars
+        hemi_l["signal"] = np.zeros(hemi_l.n_points)
+        hemi_r["signal"] = np.zeros(hemi_r.n_points)
+
+        return hemi_l, hemi_r, map_l, map_r, nuse_l
+
+    @staticmethod
+    def _vertex_to_nearest_dipole_map(src_hemi):
+        """
+        Convert src["nearest"] to a vertex -> dipole index map.
+
+        Vertices whose nearest dipole was masked (not in src["vertno"])
+        are assigne -1.
+        """
+        vertno  = np.array(src_hemi["vertno"])
+        nearest = src_hemi["nearest"].copy()
+
+        # initialize all as masked
+        vertex_map = np.full(nearest.shape[0], -1, dtype=int)
+
+        valid = np.isin(nearest, vertno)
+
+        vertno_to_dip = {v: i for i, v in enumerate(vertno)}
+
+        # map only valid entries
+        vertex_map[valid] = np.fromiter(
+            (vertno_to_dip[v] for v in nearest[valid]),
+            dtype = int,
+            count = np.sum(valid),
         )
 
+        return vertex_map
+
+
+    def _step_time(self, delta):
+        """
+        Increment time by 1 idx.
+        """
+        # increment idx
+        self.current_idx = max(0, min(self.current_idx+delta, self.n_times-1))
+
+        # change slider value
+        self.slider.SetValue(self.times[self.current_idx])
+
+        # update image
+        self._update_time_index(self.current_idx)
+        self.plotter.render()
+
+
+    # ---------
+    # Callback
+    # ---------
+
+    def _update_time_index(self, t_idx):
+        """
+        Update all meshes for a given time index
+        """
+        for i in range(self.n_plots):
+            stc = self.ts[i]
+            hemi_l, hemi_r = self.hemi_meshes[i]
+            map_l, map_r   = self.vertex_maps[i]
+            split = self.splits[i]
+
+            signal = stc.data[:, t_idx]
+            sig_l  = signal[:split].squeeze()
+            sig_r  = signal[split:].squeeze()
+
+            # append 0 for vertices mapped to -1
+            sig_l = np.concatenate([sig_l, [0.0]])
+            sig_r = np.concatenate([sig_r, [0.0]])
+
+            hemi_l["signal"][:] = sig_l[map_l]
+            hemi_r["signal"][:] = sig_r[map_r]
+
+    def _on_time_change(self, time_value):
+        """
+        Slider callback
+        """
+        # convert time into index
+        t_idx = self.ts[0].time_as_index(time_value)
+
+        # store new index
+        self.current_idx = int(t_idx)
+
+        # update image
+        self._update_time_index(self.current_idx)
+
+    # -------
+    # API
+    # -------
+
     def show(self):
-        """show plot"""
+        """
+        Show plot.
+        """
         self.plotter.show()
 
-    def __call__(self, time_point):
+
+def plot_eigvec(source_space, eigenvectors, eigenvalues=None):
+    """
+    Plot eigenvectors.
+
+    Parameters
+    ----------
+    source_space: mne.SourceSpaces
+        Source space.
+
+    eigenvectors: np.ndarray
+        Eigenvectors.
+
+    eigenvalues: np.ndarray
+        Eigenvalues.
+    """
+
+    # -------------------
+    # Prepare parameters
+    # -------------------
+
+    clim = find_clim(eigenvectors)
+    cmap = default_cmap(clim)
+
+    mesh_params = {
+        "smooth_shading" : True,
+        "clim" : clim,
+        "cmap" : cmap,
+    }
+
+    return MultiMesh(
+        source_space = source_space,
+        data         = eigenvectors,
+        eigenvalues  = eigenvalues,
+        mesh_params  = mesh_params,
+    )
+
+
+class MultiMesh:
+    """
+    Interactive visualization of brain source estimates over time using PyVista
+    A slider allows scrolling through time points.
+    """
+
+    def __init__(
+        self,
+        source_space : mne.SourceSpaces,
+        data         : np.ndarray,
+        eigenvalues  : Optional[np.ndarray] = None,
+        mesh_params  : Optional[dict] = None,
+        title        : Optional[str] = "",
+        start_image  : Optional[int] = 0,
+    ):
         """
-        Change point of time. 
+        Parameters
+        ----------
+        source_spaces: list[mne.SourceSpaces]
+            Source spaces.
+        
+        data: np.ndarray
+            Brain images (NxM) where N is the number of dipoles
+            and M the number of images.
+
+        titles: list[str]
+            Titles for each subplot.
+
+        mesh_params: dict
+            Parameters passed to plotter.add_mesh for brain meshes
         """
-        idx    = self.stc[0].time_as_index(time_point)
-        signal = [s.data[:,idx] for s in self.stc]
-        size   = len(signal)
+        self.src    = source_space
+        self.data   = data
+        self.eigval = eigenvalues
+        self.title  = title
 
-        # update values (plot update automatically like magic)
-        for i in range(size):
-            hemi_l, hemi_r = mne_to_polydata(self.sources[i], signal[i])
-            self.hemis[i][0]["signal"] = hemi_l["signal"]
-            self.hemis[i][1]["signal"] = hemi_r["signal"]
+        self.n_plots = data.shape[1]
+        self.current_idx = start_image
 
-    def to_self(self, sources, stc, overlay, cras):
-        """basically __init__?"""
-        # Find longest list
-        longest_list = 1
-        if not isinstance(sources, mne.SourceSpaces):
-            longest_list = max(longest_list, len(sources))
-        for obj in [stc, overlay, cras]:
-            if isinstance(obj, list):
-                longest_list = max(longest_list, len(obj))
+        self.mesh_params    = mesh_params or {}
 
-        # Check data and convert to list
-        if isinstance(sources, mne.SourceSpaces):    # sources are list so investigate if element inside is SourceSpace or list
-            sources = [sources]*longest_list
+        # build plotter
+        self.plotter = pv.Plotter()
 
-        if isinstance(stc, list):
-            times = stc[0].times
-            for s in stc:
-                assert len(times) == len(s.times), "Source estimates must have the same time span in TimeMesh"
+        # prepare meshes and mapping
+        self.hemi_l, self.hemi_r, self.map_l, self.map_r, self.nuse_l = self._build_hemi_meshes()
+
+        self.plotter.add_mesh(self.hemi_l, **self.mesh_params)
+        self.plotter.add_mesh(self.hemi_r, **self.mesh_params)
+        self.plotter.add_title(self.title)
+
+        self._update_image_index(start_image)
+
+        # callbacks
+        self.plotter.add_key_event("Right", lambda: self._step(+1))
+        self.plotter.add_key_event("Left", lambda: self._step(-1))
+
+        self.plotter.add_key_event("d", lambda: self._step(+50))
+        self.plotter.add_key_event("a", lambda: self._step(-50))
+
+        self.plotter.add_key_event("c", lambda: self._step(+500))
+        self.plotter.add_key_event("y", lambda: self._step(-500))
+
+    # -----------------------
+    # Initialization helpers
+    # -----------------------
+
+    def _build_hemi_meshes(self):
+        """
+        Build left/right hemisphere meshes and pinfo-based vertex mappings.
+        """
+        src = self.src
+
+        # extract geometry
+        hemi_l = surf_to_polydata(src[0]["rr"], src[0]["tris"])
+        hemi_r = surf_to_polydata(src[1]["rr"], src[1]["tris"])
+
+        # pinfo-based mapping
+        map_l = self._vertex_to_nearest_dipole_map(src[0])
+        map_r = self._vertex_to_nearest_dipole_map(src[1])
+
+        nuse_l = src[0]["nuse"]
+
+        # initialize scalars
+        hemi_l["signal"] = np.zeros(hemi_l.n_points)
+        hemi_r["signal"] = np.zeros(hemi_r.n_points)
+
+        return hemi_l, hemi_r, map_l, map_r, nuse_l
+
+    @staticmethod
+    def _vertex_to_nearest_dipole_map(src_hemi):
+        """
+        Convert src["nearest"] to a vertex -> dipole index map.
+
+        Vertices whose nearest dipole was masked (not in src["vertno"])
+        are assigne -1.
+        """
+        vertno  = np.array(src_hemi["vertno"])
+        nearest = src_hemi["nearest"].copy()
+
+        # initialize all as masked
+        vertex_map = np.full(nearest.shape[0], -1, dtype=int)
+
+        valid = np.isin(nearest, vertno)
+
+        vertno_to_dip = {v: i for i, v in enumerate(vertno)}
+
+        # map only valid entries
+        vertex_map[valid] = np.fromiter(
+            (vertno_to_dip[v] for v in nearest[valid]),
+            dtype = int,
+            count = np.sum(valid),
+        )
+
+        return vertex_map
+    
+    def _label_text(self, idx: int) -> str:
+        if self.eigval is None:
+            return f"Image {idx + 1} / {self.n_plots}"
         else:
-            stc = [stc]*longest_list
+            val = self.eigval[idx]
+            return f"Eigenvalue: {val:.4g}"
 
-        if overlay is not None:
-            if not isinstance(overlay, list):
-                overlay = [overlay]*longest_list
+    # ---------
+    # Callback
+    # ---------
 
-        if not isinstance(cras, list):
-            cras = [cras]*longest_list
+    def _step(self, delta):
+        """
+        Updates current index.
+        """
+        self.current_idx = max(0, min(self.current_idx + delta, self.n_plots-1))
+        self._update_image_index(self.current_idx)
 
-        assert len(sources) == len(stc), "List length of sources and stc must match in TimeMesh"
+    def _update_image_index(self, idx):
+        """
+        Update all meshes for a given image index
+        """
+        image  = self.data[:,int(idx)]
+        sig_l  = image[:self.nuse_l].squeeze()
+        sig_r = image[self.nuse_l:].squeeze()
 
-        self.sources = sources
-        self.stc     = stc
-        self.overlay = overlay
-        self.cras    = cras
+        # append 0 for vertices mapped to -1
+        sig_l = np.concatenate([sig_l, [0.0]])
+        sig_r = np.concatenate([sig_r, [0.0]])
+
+        self.hemi_l["signal"][:] = sig_l[self.map_l]
+        self.hemi_r["signal"][:] = sig_r[self.map_r]
+
+        self.plotter.add_text(
+            self._label_text(idx),
+            name      = "info_text",
+            position  = "upper_left",
+            font_size = 12,
+            color     = "black"
+        )
+
+        self.plotter.render()
 
 
-    def select_cmap(self, cmap=None, std=False, absolute=False):
-        """Select proper colormap"""
-        maxi = -np.inf
-        mini = np.inf
+    # -------
+    # API
+    # -------
 
-        # find max and min amongst all data
-        for stc in self.stc:
+    def show(self):
+        """
+        Show plot.
+        """
+        self.plotter.show()
 
-            if std:
-                stc.data = (stc.data-stc.data.mean())/stc.data.std()
 
-            if absolute:
-                stc.data = np.abs(stc.data)
+def plot_eigval(eigval, subject="unknown"):
+    """
+    Plot eigenvalues.
+    """
+    ax = sns.lineplot(eigval)
+    ax.set_title(f"Eigenvalues sub-{subject}")
+    ax.set_xlabel("Harmonic index")
+    ax.set_ylabel("Eigenvalue")
 
-            stc_max = np.max(stc.data)
-            stc_min = np.min(stc.data)
+    plt.show()
 
-            maxi = max(maxi, stc_max)
-            mini = min(mini, stc_min)
 
-        # clim/cmap when positive values
-        if mini > 0:
-            clim = [0, maxi]
+def plot_ieeg(src, ieeg, subject="unknown"):
+    """
+    Plot iEEG timeseries.
 
-            if cmap is None:
-                cmap = "Reds"
+    Parameters
+    ----------
+    source_space: mne.SourceSpaces
+        Source space.
 
-        # clim/cmap when pos/neg values
+    ieeg: mne.Evoked
+        Intracranial EEGs.
+
+    mesh_params: dict
+        Mesh parameters.
+
+    pc_params:
+        Point cloud parameters.
+
+    subject:
+        Subject id.
+    """
+
+    # -------------------
+    # Prepare parameters
+    # -------------------
+
+    mesh_params = {
+        "smooth_shading" : True,
+        "color" : "skyblue",
+        "opacity" : 0.1,
+    }
+
+    pc_params = {
+        "point_size" : 10,
+        "render_points_as_spheres" : True,
+    }
+
+    return TimePC(
+        source_space = src,
+        timeseries   = [ieeg],
+        title        = f"iEEG measurements sub-{subject}",
+        names        = ["iEEG"],
+        mesh_params  = mesh_params,
+        pc_params    = pc_params,
+    )
+
+
+
+
+class TimePC:
+    """
+    Interactive visualization of point cloud over time.
+    """
+    def __init__(
+        self,
+        source_space : mne.SourceSpaces,
+        timeseries   : list[mne.Evoked],
+        title        : Optional[str] = "Brain Signal Visualization",
+        names        : Optional[str] = None,
+        mesh_params  : Optional[dict] = None,
+        pc_params    : Optional[dict] = None,
+        start_time   : Optional[float] = None,
+    ):
+        """
+        Parameters
+        ----------
+        source_spaces: list[mne.SourceSpaces]
+            Source spaces.
+        
+        timeseries: list[mne.Evoked]
+            Timeseries defined at M points (M x T)
+
+        titles: str
+            Title for plot.
+
+        mesh_params: dict
+            Parameters passed to plotter.add_mesh for brain meshes
+
+        pc_params: dict
+            Parameters passed to plotter.add_mesh for point cloud
+
+        start_time: float
+            Initial time point. Defaults to the midpoint of the times axis.
+        """
+        self.src   = source_space
+        self.ts    = list(timeseries)
+        self.title = title
+
+        self.mesh_params = mesh_params or {"color": "skyblue", "opacity":0.1}
+        self.pc_params   = pc_params or {"point_size": 10.0, "render_points_as_spheres": True}
+
+        # build plotter
+        self.plotter = pv.Plotter()
+        self.plotter.add_title(self.title, font_size=10)
+
+        # build brain meshes
+        self.hemi_l, self.hemi_r = self._build_hemi_meshes()
+        self.plotter.add_mesh(self.hemi_l, **self.mesh_params)
+        self.plotter.add_mesh(self.hemi_r, **self.mesh_params)
+
+        # time logic
+        evoked = self.ts[0]
+        self.times = evoked.times
+        self.n_times = len(self.times)
+
+        if start_time is None:
+            self.current_idx = self.n_times // 2
         else:
-            extremum = np.max([np.abs(mini), np.abs(maxi)])
-            clim     = [-extremum, extremum]
+            self.current_idx = int(evoked.time_as_index(start_time)[0])
 
-            if cmap is None:
-                cmap = "bwr"
+        # prepare point clouds
+        self.pcs = []
+        if names is None:
+            names = [f"Data_{i}" for i in range(len(timeseries))]
+        self.names = names
 
-        self.clim = clim
-        self.cmap = cmap
+        for i, evk in enumerate(self.ts):
+            # extract channel positions
+            pos      = pv.PolyData(get_ch_positions(evk))
+
+            # create polydata
+            point_cloud = pv.PolyData(pos)
+
+            # initialize the data
+            init_data = evk.data[:,self.current_idx]
+            point_cloud[self.names[i]] = init_data
+
+            # add to plotter and store reference
+            self.plotter.add_mesh(point_cloud, scalars=self.names[i], **self.pc_params)
+            self.pcs.append(point_cloud)
+
+        slider = self.plotter.add_slider_widget(
+            callback = self._on_time_change,
+            rng      = [self.times[0], self.times[-1]],
+            value    = self.times[self.current_idx],
+            title    = "Time (s)",
+            style    = "modern",
+            interaction_event = "always",
+        )
+        self.slider = slider.GetSliderRepresentation()
+
+        self.plotter.add_key_event("Right", lambda: self._step_time(1))
+        self.plotter.add_key_event("Left", lambda: self._step_time(-1))
+
+    # -----------------------
+    # Initialization helpers
+    # -----------------------
+
+    def _build_hemi_meshes(self):
+        """
+        Build left/right hemisphere meshes and pinfo-based vertex mappings.
+        """
+        src = self.src
+
+        # extract geometry
+        hemi_l = surf_to_polydata(src[0]["rr"], src[0]["tris"])
+        hemi_r = surf_to_polydata(src[1]["rr"], src[1]["tris"])
+
+        return hemi_l, hemi_r
+
+
+    def _step_time(self, delta):
+        """
+        Increment time by 1 idx.
+        """
+        # increment idx
+        self.current_idx = max(0, min(self.current_idx+delta, self.n_times-1))
+
+        # change slider value
+        self.slider.SetValue(self.times[self.current_idx])
+
+        # update image
+        self._update_time_index(self.current_idx)
+        self.plotter.render()
+
+
+    # ---------
+    # Callback
+    # ---------
+
+    def _update_time_index(self, t_idx):
+        """
+        Updates the scalar values on the point cloud meshes.
+        """
+        for i, pc in enumerate(self.pcs):
+            # update the array inside the PolyData object
+            pc[self.names[i]] = self.ts[i].data[:, t_idx]
+        self.plotter.render()
+
+    def _on_time_change(self, time_value):
+        """
+        Slider callback
+        """
+        # convert time into index
+        t_idx = self.ts[0].time_as_index(time_value).squeeze()
+
+        # store new index
+        self.current_idx = int(t_idx)
+
+        # update image
+        self._update_time_index(self.current_idx)
+
+    # -------
+    # API
+    # -------
+
+    def show(self):
+        """
+        Show plot.
+        """
+        self.plotter.show()
+
+    
+
 
 
 def plot_leadfield(eeg, forward):
@@ -918,6 +1409,79 @@ def plot_dipole_function(source_space, dipole_function, title="Dipole function")
     plotter.enable_point_picking(callback=pick_dipole)
 
     return plotter
+
+def plot_weight_dist(adj_matrix, ax=None, **kwargs):
+    """
+    Plot weight distribution.
+
+    Parameters
+    ----------
+    adj_matrix: np.ndarray
+        Adjacency matrix.
+    """
+
+    # get upper triangle
+    n       = adj_matrix.shape[0]
+    weights = adj_matrix[np.triu_indices(n, k=1)]
+
+    # filter out zero-weight edges
+    weights = weights[weights > 0]
+
+    # If no axis is provided, create a new figure
+    if ax is None:
+        fig, ax = plt.subplots()
+
+    sns.histplot(weights, ax=ax, **kwargs)
+
+    # set default labels
+    ax.set_title("Edge Weight Distribution")
+    ax.set_xlabel("Weigth")
+    ax.set_ylabel("Frequency")
+
+    return ax
+
+def plot_degree_dist(adj_matrix, ax=None, **kwargs):
+    """
+    Plot degree distribution.
+
+    Parameters
+    ----------
+    adj_matrix: np.ndarray
+        Adjacency matrix.
+    """
+
+    # get degrees
+    degrees = np.sum(adj_matrix>0, axis=1)
+
+    # If no axis is provided, create a new figure
+    if ax is None:
+        fig, ax = plt.subplots()
+
+    sns.histplot(degrees, ax=ax, **kwargs)
+
+    # set default labels
+    ax.set_title("Degree Distribution")
+    ax.set_xlabel("Degree")
+    ax.set_ylabel("Frequency")
+    
+def plot_con_summary(adj_matrix, subject="unknown"):
+    """
+    Plot connectome summary.
+
+    Parameters
+    ----------
+    adj_matrix: np.ndarray
+        Adjacency matrix.
+    """
+    fig, axs = plt.subplots(nrows=1, ncols=2)
+    fig.suptitle(f"Connectome summary: sub-{subject}")
+
+    # plots
+    plot_degree_dist(adj_matrix, axs[0])
+    plot_weight_dist(adj_matrix, axs[1])
+    axs[1].set_xlabel("Geodesic Distance (mm)")
+
+    plt.show()
 
 
 
@@ -1084,133 +1648,79 @@ def plot_spectrum(spectrum, times=None):
     return fig
 
 
-def find_clim(data):
-    """
-    Find color limits to account accross all data.
 
-    Parameters
-    ----------
-    data: list[np.ndarray]
-        List of datas.
 
-    Returns
-    -------
-    clim: tuple
-        Value range defined accross all datas.
-    """
-    if not isinstance(data, list):
-        data = [data]
 
-    abs_max       = 0
-    only_positive = True
+# I DON'T NEED THIS PLOT ANYMORE
+# def plot_resection(
+#         sources, 
+#         resection, 
+#         cras=np.zeros(3), 
+#         signal=None, 
+#         show_max=False, 
+#         cmap="reds", 
+#         style="vox", 
+#         color="green"
+# ):
+#     """
+#     Plot resection area. 
 
-    for d in data:
-        if d is None:
-            continue
+#     Parameters
+#     ----------
+#     sources: mne.SourceSpaces
+#         Source space.
 
-        abs_max = max(abs_max, np.max(np.abs(d)))
+#     resection: nib.Nifti1Image
+#         Resection mask.
 
-        if np.any(d < 0):
-            only_positive = False
+#     cras: np.ndarray (3,)
+#         Translation (FreeSurfer -> MRI)
 
-    if abs_max == 0:
-        clim = None
-    elif only_positive:
-        clim = [0, abs_max]
-    else:
-        clim = [-abs_max, abs_max]
+#     signal: np.ndarray (N,)
+#         Brain activity.
 
-    return clim
+#     show_max: bool
+#         Show maximum of brain acitivity.
 
-def default_cmap(clim):
-    """
-    Retrieves default cmap depending on clim.
+#     cmap: str
+#         Color map for brain activity.
+
+#     style: str
+#         Style of resection area:
+#         - cloud: looks like a cloud
+#         - vox: see individual voxels
+
+#     color: str
+#         Color of resection area. 
+#     """
     
-    Parameters
-    ----------
-    clim: tuple
-        Upper and lower values. If values are all above zero, choose
-        'Reds' as cmap. Else, 'bwr'.
-    """
-    if clim is None:
-        cmap = None
-    elif clim[0] < 0:
-        cmap = "bwr"
-    else:
-        cmap = "Reds"
+#     if signal is None:
+#         signal = np.zeros(sources[0]["nuse"]+sources[1]["nuse"])
 
-    return cmap
+#     if style == "cloud":
+#         style = dict(
+#             emissive = True,
+#             style = "points_gaussian",
+#             point_size = 10,
+#         )
+#     elif style == "vox":
+#         style = dict(
+#             point_size=0.1,
+#             opacity=0.3,
+#         )
+#     else:
+#         raise ValueError(f"Unknown style '{style}' for resection plot.")
 
+#     # resection area
+#     #voxels = np.argwhere(resection.get_fdata()>0)
+#     #points = (nib.affines.apply_affine(resection.affine, voxels)-cras)/1000
+#     points = nib_to_polydata(resection, trans=cras)
 
-def plot_resection(
-        sources, 
-        resection, 
-        cras=np.zeros(3), 
-        signal=None, 
-        show_max=False, 
-        cmap="reds", 
-        style="vox", 
-        color="green"
-):
-    """
-    Plot resection area. 
+#      # plotter
+#     plotter = plot_brain_signal(sources, signal, cmap=cmap, show_max=show_max)
+#     plotter.add_mesh(points, color=color, label="Resected Area", **style)
 
-    Parameters
-    ----------
-    sources: mne.SourceSpaces
-        Source space.
-
-    resection: nib.Nifti1Image
-        Resection mask.
-
-    cras: np.ndarray (3,)
-        Translation (FreeSurfer -> MRI)
-
-    signal: np.ndarray (N,)
-        Brain activity.
-
-    show_max: bool
-        Show maximum of brain acitivity.
-
-    cmap: str
-        Color map for brain activity.
-
-    style: str
-        Style of resection area:
-        - cloud: looks like a cloud
-        - vox: see individual voxels
-
-    color: str
-        Color of resection area. 
-    """
-    
-    if signal is None:
-        signal = np.zeros(sources[0]["nuse"]+sources[1]["nuse"])
-
-    if style == "cloud":
-        style = dict(
-            emissive = True,
-            style = "points_gaussian",
-            point_size = 10,
-        )
-    elif style == "vox":
-        style = dict(
-            point_size=0.1,
-            opacity=0.3,
-        )
-    else:
-        raise ValueError(f"Unknown style '{style}' for resection plot.")
-
-    # resection area
-    #voxels = np.argwhere(resection.get_fdata()>0)
-    #points = (nib.affines.apply_affine(resection.affine, voxels)-cras)/1000
-    points = nib_to_polydata(resection, trans=cras)
-
-     # plotter
-    plotter = plot_brain_signal(sources, signal, cmap=cmap, show_max=show_max)
-    plotter.add_mesh(points, color=color, label="Resected Area", **style)
-
-    return plotter
+#     return plotter
 
 
 
@@ -1280,6 +1790,115 @@ def plot_eeg(eeg: mne.Evoked, colorscale="Turbo", title="EEG"):
     )
 
     return fig
+
+
+###############################################
+##                Utilities                  ##
+##                                           ##
+## - store_in_lists()                        ##
+## - find_clim()                             ##
+## - default_cmap()                          ##
+###############################################
+
+def store_in_lists(*args):
+    """
+    Store elements in lists.
+    """
+    # determine target size (longest list)
+    sizes = [
+        len(a) for a in args
+        if isinstance(a, list) and not isinstance(a, mne.SourceSpaces)
+    ]
+    size = max(sizes, default=1)
+
+    # validate list sizes
+    if sizes and any(s != size for s in sizes):
+        raise ValueError("All list inputs must have the same length.")
+
+    # broadcast non-lists
+    new_args = [
+        a if isinstance(a, list) and not isinstance(a, mne.SourceSpaces)
+        else [a] * size
+        for a in args
+    ]
+
+    return new_args
+
+def find_clim(data, percentile=99)-> tuple | None:
+    """
+    Find color limits accross one or multiple datasets.
+
+    Parameters
+    ----------
+    data: np.ndarray, mne.SourceEstimate or list therefof
+        Data arrays or SourceEstimate objects. None entries are ignored.
+    
+    percentile: float, optional
+        Percentile of the data to use for the maximum absolute value.
+
+    Returns
+    -------
+    clim: tuple or None
+        Color limits (vmin, vmax). Returns None if all data is empty or zero.
+    """
+    if not isinstance(data, list):
+        data = [data]
+
+    abs_max = 0
+    only_positive = True
+
+    for d in data:
+        if d is None:
+            continue
+        if isinstance(d, mne.SourceEstimate):
+            d = d.data
+
+        if d.size == 0:
+            continue
+
+        # check if only positive
+        d_min         = np.nanmin(d)
+        only_positive = only_positive and (d_min >= 0)
+
+        # compute absolute max using percentile
+        abs_val = np.nanpercentile(np.abs(d), percentile)
+        abs_max = max(abs_max, abs_val)
+
+    if abs_max == 0:
+        return None
+    elif only_positive:
+        return (0, abs_max)
+    else:
+        return (-abs_max, abs_max)
+
+def default_cmap(clim):
+    """
+    Select a default colormap based on the color limits.
+
+    Parameters
+    ----------
+    clim : tuple of float, optional
+        Color limits (vmin, vmax). If all values are >= 0, choose a sequential
+        colormap ('Reds'). If any values are negative, choose a diverging
+        colormap ('bwr'). If None, returns None.
+
+    Returns
+    -------
+    cmap: str or None
+        Name of the colormap to use.
+    """
+    if clim is None:
+        return None
+
+    if not (isinstance(clim, (tuple, list)) and len(clim) == 2):
+        raise ValueError(f"clim must be a tuple or list of length 2, go {clim}")
+
+    vmin, _ = clim
+    if vmin < 0:
+        return "bwr"     # diverging for signed data
+    else:
+        return "Reds"    # sequential for positive-only data
+
 
 
 #################################################
