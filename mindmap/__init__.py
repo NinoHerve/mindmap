@@ -18,9 +18,11 @@ Example:
     import mindmap as mm
 """
 
-from . import io, viz
-from .inverse import *
-from .forward import *
-from .utilities import *
-from .head import *
-from .simulation import *
+from . import core
+from . import geometry
+from . import anatomy
+from . import analysis
+from . import io
+
+from .viz import *
+

@@ -33,7 +33,8 @@ eval = [
 test = ["pytest>=0.0.1"]
 
 [project.scripts]
-mindmap-viz = "mindmap.cli:main"
+mindmap-viz = "mindmap.cli.viz:main"
+mindmap-config = "mindmap.cli.config:main"
 
 
 [tool.setuptools]
