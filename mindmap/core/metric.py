@@ -89,11 +89,11 @@ def compute_distances(array1, array2, output_type="scalar"):
 
     Parameters:
     ----------
-    array1: np.ndarray
-        Array of shape (N,D) or (N,)
+    array1: np.ndarray of shape (n_starts, n_dimensions)
+        Sarting points.
     
-    array2: np.ndarray
-        Array of shape (M,D) or (M,)
+    array2: np.ndarray of shape (n_ends, n_dimensions)
+        Ending points
 
     output_type: str
         'scalar' (Euclidean) or 'vector' (Displacement)
@@ -101,8 +101,8 @@ def compute_distances(array1, array2, output_type="scalar"):
     Returns
     -------
     dist: np.ndarray
-        If 'scalar': Array of shape (N,M) containing L2 norms
-        If 'vector': Array of shape (N,M,D) containing displacement vectors.
+        If 'scalar': Array of shape (n_starts, n_ends) containing L2 norms
+        If 'vector': Array of shape (n_starts, n_ends, n_dimensions) containing displacement vectors.
     """
     # Ensure inputs are numpy arrays
     a1 = np.atleast_2d(array1)

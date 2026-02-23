@@ -11,6 +11,11 @@ from .metric import (
     get_rising_phase,
     peak_baseline_snr,
     estimate_snr,
+    compute_spatial_correlation,
+    compute_spatial_dispersion,
+    compute_minimum_distance,
+    compute_ratio_spurious,
+    compute_grova_metrics,
 )
 
 from .process import (
@@ -30,4 +35,9 @@ __all__ = [
     "compute_virtual_ieeg",
     "normalize_evoked",
     "build_eeg_template",
+    "compute_spatial_correlation",
+    "compute_spatial_dispersion",
+    "compute_minimum_distance",
+    "compute_ratio_spurious",
+    "compute_grova_metrics",
 ]

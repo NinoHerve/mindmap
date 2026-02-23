@@ -21,6 +21,9 @@ from .sensor import (
     plot_channel_grid,
     plot_gfp_comparison,
     plot_alignment,
+    plot_avg_ref,
+    plot_baseline_topo,
+    create_pipeline_report,
 )
 
 from .graph import (
@@ -40,6 +43,9 @@ __all__ = [
     "plot_ieeg",
     "plot_channel_grid",
     "plot_gfp_comparison",
+    "plot_avg_ref",
+    "plot_baseline_topo",
+    "create_pipeline_report",
     "plot_eigval",
     "plot_leadfield",
     "plot_con_summary",

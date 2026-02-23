@@ -19,10 +19,10 @@ import scipy as sp
 import nibabel as nib
 import mne
 
-from ...anatomy.parcellation import Parcellation
-from ...anatomy.tractogram import tract_endpoints, tract_lengths
-from ...anatomy.utils import align_diffusion2subject, align_freesurfer2subject
-from ...anatomy.source_space import get_ndipole, get_dipole_positions
+from mindmap.anatomy.parcellation.core import Parcellation
+from mindmap.anatomy.tractogram.processing import tract_endpoints, tract_lengths
+from mindmap.anatomy.utils import align_diffusion2subject, align_freesurfer2subject
+from mindmap.anatomy.source_space.io import get_ndipole, get_dipole_positions
 
 
 def connectome_from_tracts(

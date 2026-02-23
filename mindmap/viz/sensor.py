@@ -54,7 +54,13 @@ def plot_alignment(bem, ave):
     return plotter
 
 
-def plot_ieeg(src, ieeg, subject="unknown"):
+def plot_ieeg(
+    src : mne.SourceSpaces,
+    ieeg : mne.Evoked,
+    extent_mask : np.ndarray = None,
+    spurious_mask : np.ndarray = None,
+    subject : str = "unknown"
+):
     """
     Plot iEEG timeseries.
 
@@ -66,11 +72,11 @@ def plot_ieeg(src, ieeg, subject="unknown"):
     ieeg: mne.Evoked
         Intracranial EEGs.
 
-    mesh_params: dict
-        Mesh parameters.
+    extent_mask: np.ndarray of shape (n_channels,)
+        Mask for channels in spike extent area.
 
-    pc_params:
-        Point cloud parameters.
+    spurious_mask: np.ndarray of shape (n_channels,)
+        Mask for channels in spurious area.
 
     subject:
         Subject id.
@@ -96,6 +102,8 @@ def plot_ieeg(src, ieeg, subject="unknown"):
         evoked = ieeg,
         title = f"Intracranial EEG sub-{subject}",
         scalar = "Electric potential [V]",
+        extent_mask = extent_mask,
+        spurious_mask = spurious_mask,
         mesh_params = mesh_params,
         pc_params = pc_params,
     )
@@ -426,3 +434,119 @@ def plot_gfp_comparison(evoked_ref, dict_of_evoked_est):
     ax.legend()
 
     return fig
+
+
+def plot_avg_ref(evoked, title="Average Reference Check"):
+    """
+    Plots the spatial mean over time.
+    For average-referenced data, this should be a flat line at 0 V.
+    """
+    # 1. Copy and apply projectors
+    ev_check = evoked.copy().apply_proj()
+
+    # 2. Extract data (only EEG to avoid mixing units with EOG/Stim)
+    ev_check.pick("eeg")
+    data = ev_check.get_data()  # shape (n_channels, n_time)
+    times = ev_check.times
+
+    # 2. Calculate the mean across channels for every time point
+    spatial_mean = data.mean(axis=0)
+    max_dev = np.max(np.abs(spatial_mean))
+
+    # 3. Plotting
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(times, spatial_mean, color="crimson", label="Residual Spatial Mean")
+    ax.axhline(0, color="black", lw=1, linestyle="--", alpha=0.5)
+    ax.set_title(f"{title}\nMax Deviation after Proj: {max_dev:.2e} V")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Average Amplitude (V)")
+
+    limit = max(max_dev * 2, 1e-15)
+    ax.set_ylim(-limit, limit)
+
+    plt.close("all")  # Prevent Jupyter from auto-rendering
+    return fig
+
+
+def plot_baseline_topo(evoked, tmin, tmax):
+    """
+    Visualizes the spatial distribution of the basline period.
+    Values should be near zero and spatially unorganized.
+    """
+    # We use .copy() to avoid cropping the original evoked object
+    baseline_evoked = evoked.copy().crop(tmin=tmin, tmax=tmax)
+
+    fig = baseline_evoked.plot_topomap(
+        times = (tmin + tmax)/2,
+        average = tmax-tmin,
+        size = 3,
+        colorbar = True,
+        units = "V",
+        show = "False",
+        time_unit = "s",
+        proj = True,
+        extrapolate="local",
+    )
+    
+    fig.suptitle(f"Baseline Topo (Avg: {tmin}s to {tmax}s)")
+    plt.close("all")  # Prevent Jupyter from auto-rendering
+    return fig
+
+
+
+def plot_interpolation(raw_before, raw_after, bads):
+    """Compare PSD of bad channels before and after interpolation."""
+    fig, ax = plt.subplots(2, 1, figsize=(10,8))
+
+    raw_before.plot_psd(picks=bads, ax=ax[0], show=False)
+    ax[0].set_title("Before Interpolation (Bads)")
+
+    raw_after.plot_psd(picks=bads, ax=ax[1], show=False)
+    ax[1].set_title("After Interpolation (Bads)")
+    fig.tight_layout()
+
+    return fig
+
+
+# ------------
+# MNE reports
+# ------------
+
+def create_pipeline_report(evoked, noise_cov, subject_id, fname=None):
+    """MNE report for EEG processing."""
+    # Initialize the report
+    report = mne.Report(title=f"Processing Report: {subject_id}")
+
+    # Use a copy so we don't modify the original 'evoked' object permanently
+    evoked_clean = evoked.copy().apply_proj()
+
+    # ------
+    # plots
+    # ------
+
+    # 1. Evoked Time series
+    report.add_evokeds(
+        evokeds = evoked_clean,
+        noise_cov = noise_cov,
+        titles = "Evoked potentials",
+        topomap_kwargs = {"extrapolate":"local"},
+        #caption = "Butterly plot of all channels after cleaning and projection.",
+        #section = "Preprocessing",
+    )
+
+    # 2. Custom average reference plot
+    fig_ref = plot_avg_ref(evoked)
+    report.add_figure(
+        fig = fig_ref,
+        title = "Average Reference Validation",
+        caption = "The spatial mean across EEG channels after applying SSP projectors.",
+        section = "Preprocessing",
+    )
+
+
+    # Save to HTML
+    if fname is None:
+        fname = f"Report_{subject_id}.html"
+    report.save(fname, overwrite=True, open_browser=False)
+    plt.close("all")  # Essential if running in a loop to save RAM
+    print(f"Report saved for {subject_id}")

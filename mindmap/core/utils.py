@@ -190,7 +190,7 @@ def get_spurious_mask(
     ----------
     extent_mask: np.ndarray
         Boolean mask of channels in the reference set H.
-    coord: np.ndarray of shape (N, 3)
+    coord: np.ndarray of shape (n_points, 3)
         Coordinates of channels (if in meters, spurious_dist should be 0.01).
     spurious_dist: float
         Distance beyond which data is spurious (e.g., 10 for mm).

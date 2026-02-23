@@ -49,13 +49,13 @@ class TutoManager(DatasetManager):
 
         # configure for intra data
         if "intra" in subject_id:
-            subreader.add_datatype("eeg", "raw", build_intra_path, load_eeg)
-            subreader.add_datatype("ieeg", "raw", build_intra_path, load_eeg)
+            subreader.add_datatype("eeg", "spk", build_intra_path, load_eeg)
+            subreader.add_datatype("ieeg", "spk", build_intra_path, load_eeg)
             subreader.add_datatype("eeg-trans", "mm", lambda *_, : Path("."), load_identity_trans)
 
         # configure for simf data
         if "simf" in subject_id:
-            pass
+            subreader.add_datatype("gt", "raw", build_simf_path, mne.read_source_estimate)
 
         # configure for spike data
         if "spike" in subject_id:
@@ -87,21 +87,43 @@ def build_intra_path(root, subject_id, datatype, **kwargs):
         
         # manage bids entities
         task = kwargs.get("task")
-        task = f"_task-{task}_" if task else ""
+        task = f"_task-{task}" if task else ""
 
         run = kwargs.get("run")
-        run = f"_run-{run}_" if run else "_run-*_"
+        run = f"_run-{run}" if run else "_run-*"
 
         # filename
         if datatype == "eeg":
             eeg_dir = root/f"sub-{subject_id}"/"eeg"
-            return eeg_dir/f"sub-{subject_id}{task}{run}eeg.vhdr"
+            return eeg_dir/f"sub-{subject_id}{task}{run}_eeg.vhdr"
         else:
             ieeg_dir = root/f"sub-{subject_id}"/"ieeg"
-            return ieeg_dir/f"sub-{subject_id}_task-spk_*_ieeg.vhdr"
+            return ieeg_dir/f"sub-{subject_id}{task}_*_ieeg.vhdr"
 
     else:
-        raise ValueError(f"Unknown datatype '{datatype}' for build_intra_path.")    
+        raise ValueError(f"Unknown datatype '{datatype}' for build_intra_path.")
+    
+def build_simf_path(root, subject_id, datatype, **kwargs):
+    """
+    Ground truth path for simf dataset.
+    """
+    if datatype in ["gt"]:
+
+        # manage bids entities
+        task = kwargs.get("task")
+        task = f"_task-{task}" if task else ""
+
+        run = kwargs.get("run")
+        run = f"_run-{run}" if run else ""
+
+        desc = kwargs.get("desc")
+        desc = f"_desc-{desc}" if desc else ""
+
+        gt_dir = root/f"sub-{subject_id}"/"stc"
+        return gt_dir/f"sub-{subject_id}{task}{run}{desc}_stc"
+
+    else:
+        raise ValueError(f"Unknown datatype '{datatype}' for build_simf_path.")
 
 #######################
 ##   intra loaders   ##
@@ -120,16 +142,17 @@ def load_eeg(path):
     for f in files:
         spike = mne.io.read_raw_brainvision(f, verbose="warning")
         dat.append(spike["data"][0])
-        dat = np.array(dat)
+        
+    dat = np.array(dat)
 
-        # info & montage
-        info = spike.info
-        montage = mne.channels.read_custom_montage(montage, coord_frame="head")
-        montage = scale_montage(montage, scale=1e-3)
+    # info & montage
+    info = spike.info
+    montage = mne.channels.read_custom_montage(montage, coord_frame="head")
+    montage = scale_montage(montage, scale=1e-3)
 
-        # store in epoch object
-        epochs = mne.EpochsArray(dat, info, verbose="warning")
-        epochs = epochs.set_montage(montage, verbose="warning")
+    # store in epoch object
+    epochs = mne.EpochsArray(dat, info, verbose="warning")
+    epochs = epochs.set_montage(montage, verbose="warning")
 
     return epochs
 

@@ -427,7 +427,7 @@ def compute_grova_metrics(
     peak_idx = get_rising_phase(evoked_ref, ratio=1, as_idx=True)
 
     # 2. Extract 5-point window
-    start, stop = max(0, peak_idx - 2), min(len(evoked_ref.times), peak_idx + 3)
+    start, stop = max(0, peak_idx - 2)[0], min(len(evoked_ref.times), peak_idx + 3)[0]
 
     # Data transposed to (n_timepoints, n_channels)
     win_ref = evoked_ref.data[:, start:stop].T
@@ -437,7 +437,7 @@ def compute_grova_metrics(
     # 3. Determine extent mask and spurious mask.
     if isinstance(true_extent, (float, int)):
         # automatic mode
-        extent_mask = get_spike_extent_mask(evoked_ref.data, perc_max_amp=true_extent)
+        extent_mask = get_spike_extent_mask(win_ref, perc_max_amp=true_extent)
     else:
         # manual mode
         extent_mask = np.isin(evoked_est.ch_names, true_extent)
@@ -454,6 +454,8 @@ def compute_grova_metrics(
     ch_est_peak = coords[np.argmax(np.abs(win_est[rel_peak, :]))]
 
     return {
+        "subject": ...,
+        "method": ...,
         "spatial_correlation": np.mean(calc_spatial_correlation(win_ref, win_est)),
         "min_distance": calc_pairwise_dist(ch_ref_peak, ch_est_peak)[0],
         "spatial_dispersion": np.mean(calc_spatial_dispersion_grova(win_est, dist_to_h)),
