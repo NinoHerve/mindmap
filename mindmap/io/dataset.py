@@ -84,6 +84,7 @@ class SubjectReader:
             "stc": ("mm", build_mm_path),
             "parc": ("mm", self._build_internal_path),
             "eeg-trans": ("mm", self._build_internal_path),
+            "v-ave": ("mm", build_mm_path),
 
             # freesurfer
             "T1"         : ("fs", build_fs_path),
@@ -112,9 +113,10 @@ class SubjectReader:
             "eig": self._load_eig_internal,
             "ave": lambda f: mne.read_evokeds(f, verbose="warning")[0],
             "i-ave": lambda f: mne.read_evokeds(f, verbose="warning")[0],
-            "cov": lambda f: mne.read_cov(f, verbose="warning"),
+            "cov": self._load_cov_internal,
             "stc": mne.read_source_estimate,
             "eeg-trans": lambda f: mne.read_trans(f, verbose="warning"),
+            "v-ave": lambda f: mne.read_evokeds(f, verbose="warning")[0],
 
             # freesurfer
             "T1": read_mri,
@@ -165,25 +167,29 @@ class SubjectReader:
         return {"vec":eigvec, "val":eigval}
 
     def _load_tkras2ras_internal(self, **kwargs):
-        """
-        Load tkras2ras.
-        """
+        """Load tkras2ras."""
         mri = self.load("T1", **kwargs)
 
         vox2ras     = mri.header.get_vox2ras()
         vox2ras_tkr = mri.header.get_vox2ras_tkr()
 
         return vox2ras @ np.linalg.inv(vox2ras_tkr)
+    
+    def _load_cov_internal(self, path):
+        """Load Covariance"""
+        cov = mne.read_cov(path, verbose="warning")
+        cov["data"] = cov["data"].astype("float")
+        return cov
         
 
-    def _build_internal_path(self, root, sub, datatype, **kwargs):
+    def _build_internal_path(self, root, subject, datatype, **kwargs):
         """
         Build special paths.
         """
         if datatype == "eeg-trans":
-            return build_mm_path(root, sub, "ave", suffix="eeg-trans", **kwargs)
+            return build_mm_path(root, subject, "ave", suffix="eeg-trans", **kwargs)
         if datatype == "parc":
-            return build_mm_path(root, sub, "dseg", **kwargs)
+            return build_mm_path(root, subject, "dseg", **kwargs)
         else:
             raise ValueError(f"Datatype '{datatype}' does not have an internal path implementation.")
 
@@ -204,7 +210,7 @@ class SubjectReader:
         """
         if datatype in self.path_registry:
             root_key, builder = self.path_registry[datatype]
-            return builder(self.roots[root_key], self.sub, datatype, **kwargs)
+            return builder(root=self.roots[root_key], subject=self.sub, datatype=datatype, **kwargs)
 
         # Default to raw
         return build_raw_path(self.roots["raw"], self.sub, datatype, **kwargs)

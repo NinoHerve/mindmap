@@ -277,3 +277,5 @@ def compute_virtual_ieeg(
     vieeg.data = vieeg_data
 
     return vieeg
+
+

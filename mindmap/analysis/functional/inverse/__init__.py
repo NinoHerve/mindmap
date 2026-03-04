@@ -7,7 +7,12 @@ from .solvers import (
     wCSET,
 )
 
+from .process import (
+    normalize_source_estimate,
+)
+
 __all__ = [
     "MNE",
     "wCSET",
+    "normalize_source_estimate",
 ]

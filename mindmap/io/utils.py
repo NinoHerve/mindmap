@@ -66,6 +66,7 @@ def build_mm_path(
         "eig"       : ("eig",       "npz"),
         "eeg-trans" : ("eeg-trans", "fif"),
         "anat"      : ("T1w",       "nii.gz"),
+        "v-ave"     : ("v-ave",     "fif"),
     }
 
     if datatype not in MM_DATATYPES:

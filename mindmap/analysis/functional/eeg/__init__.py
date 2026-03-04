@@ -25,6 +25,8 @@ from .process import (
 
 from .simulation import build_eeg_template
 
+from .utils import scale_montage
+
 
 __all__ = [
     "get_ch_positions",
@@ -40,4 +42,5 @@ __all__ = [
     "compute_minimum_distance",
     "compute_ratio_spurious",
     "compute_grova_metrics",
+    "scale_montage",
 ]

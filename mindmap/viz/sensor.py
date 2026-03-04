@@ -30,7 +30,7 @@ import mne
 
 from mindmap.analysis.functional.eeg.io import get_ch_positions
 from mindmap.geometry import surf_to_polydata
-from .utils import BaseBrainPlotter, build_hemi_pair
+from .utils import BaseBrainPlotter, build_hemi_pair, find_clim
 
 def plot_alignment(bem, ave):
     """
@@ -178,9 +178,10 @@ class TimePC(BaseBrainPlotter):
         self.plotter.add_mesh(self.hemi_r, **self.mesh_params)
 
         # build point cloud
+        clim = find_clim(self.evk.data)
         self.pc = pv.PolyData(get_ch_positions(self.evk))
         self.pc[self.scalar] = self.evk.data[:,0]
-        self.plotter.add_mesh(self.pc, scalars=self.scalar, **self.pc_params)
+        self.plotter.add_mesh(self.pc, scalars=self.scalar, clim=clim, **self.pc_params)
 
         # add widgets and events
         self.setup_keys()
@@ -436,13 +437,15 @@ def plot_gfp_comparison(evoked_ref, dict_of_evoked_est):
     return fig
 
 
-def plot_avg_ref(evoked, title="Average Reference Check"):
+def plot_avg_ref(evoked, title="Average Reference Check", apply_proj = True):
     """
     Plots the spatial mean over time.
     For average-referenced data, this should be a flat line at 0 V.
     """
     # 1. Copy and apply projectors
-    ev_check = evoked.copy().apply_proj()
+    ev_check = evoked.copy()
+    if apply_proj:
+        ev_check = ev_check.apply_proj()
 
     # 2. Extract data (only EEG to avoid mixing units with EOG/Stim)
     ev_check.pick("eeg")
@@ -550,3 +553,99 @@ def create_pipeline_report(evoked, noise_cov, subject_id, fname=None):
     report.save(fname, overwrite=True, open_browser=False)
     plt.close("all")  # Essential if running in a loop to save RAM
     print(f"Report saved for {subject_id}")
+
+
+
+def plot_whitened_cov(noise_cov, whitener):
+    """
+    Plot whitened covariance matrix. The whitened covariance matrix should
+    be an identity matrix.
+    """
+    # compute whitened covariance
+    noise_cov = noise_cov.data
+    whitened_cov = whitener @ noise_cov @ whitener.T
+
+    # plot
+    fig, ax = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Calculate scale for consistent visual comparison
+    # For whitened data, we expect values near 1 on diag and 0 off-diag
+    v_max = np.max(np.abs(whitened_cov))
+
+    # Plot 1: Original Covariance
+    im0 = ax[0].imshow(noise_cov, cmap="RdBu_r", interpolation='nearest')
+    ax[0].set_title("Original Covariance ($C$)")
+    plt.colorbar(im0, ax=ax[0])
+
+    # Plot 2: Whitened Covariance
+    # Using vmin/vmax ensures 0 is always the neutral center color
+    im1 = ax[1].imshow(whitened_cov, cmap="RdBu_r", vmin=-v_max, vmax=v_max)
+    ax[1].set_title("Whitened Covariance ($W C W^T$)")
+    plt.colorbar(im1, ax=ax[1])
+
+    # Calculate metrics
+    diag_vals = np.diag(whitened_cov)
+    avg_diag = np.mean(diag_vals[diag_vals > 1e-10])
+
+    # Add text to the plot instead of printing
+    stats_text = f"Mean of Diagonal: {avg_diag:.4f}\n(Target: 1.0)"
+    fig.text(0.5, 0.02, stats_text, ha='center', fontsize=12, 
+             bbox=dict(facecolor='white', alpha=0.5, edgecolor='gray'))
+
+    plt.tight_layout(rect=[0, 0.05, 1, 1]) # Make room for the text at the bottom
+    plt.show()
+
+
+
+def plot_gfp(evoked, whitener=None, title="Global Field Power"):
+    """
+    Plot Global Field Power.
+    If whitener is provided, plot before and after whitening.
+    """
+    fig, ax1 = plt.subplots(figsize=(12,5))
+
+    # GFP - Standard deviation across channels (Volts)
+    gfp_raw = np.std(evoked.data, axis=0)
+
+    # Plotting axis 1 (Raw)
+    color_raw = "tab:gray"
+    ax1.plot(evoked.times, gfp_raw, color=color_raw, alpha=0.5, label="raw GFP")
+    ax1.set_xlabel("Time (s)")
+    ax1.set_ylabel("GFP (V)", color=color_raw)
+    ax1.tick_params(axis="y", labelcolor=color_raw)
+    ax1.set_ylim(bottom=0)
+
+    # Add whitener
+    if whitener is not None:
+        # Calculate Whitened & Scaled GFP
+        data_white = (whitener @ evoked.data) * np.sqrt(evoked.nave)
+        gfp_white = np.std(data_white, axis=0)
+
+        # Plotting axis 2 (Whitened)
+        ax2 = ax1.twinx()
+        color_white = "tab:blue"
+        ax2.plot(evoked.times, gfp_white, color=color_white, linewidth=2, label="Whitened GFP")
+        ax2.set_ylabel("Whitened GFP (Scaled by $\sqrt{N}$)", color=color_white)
+        ax2.tick_params(axis="y", labelcolor=color_white)
+
+        # Add the Ideal Noise Floor line
+        ax2.axhline(1.0, color="crimson", linestyle="--", alpha=0.7, label="Expected Noise Floor")
+        ax2.axhline(0.0, color="black", linewidth=0.8)
+        ax2.set_ylim(bottom=0)
+
+        # Merge legends
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax2.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
+
+        # Textual confirmation
+        baseline_val = np.mean(gfp_white[evoked.times < 0]) if any(evoked.times < 0) else gfp_white[0]
+        print(f"Whitened Baseline GFP: {baseline_val:.4f} (Should be ~1.0)")
+
+    plt.title(title)
+    fig.tight_layout()
+
+    plt.close("all")
+
+    return fig
+

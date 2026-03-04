@@ -58,5 +58,12 @@ def normalize_data(data, strategy="global", method="zscore"):
         denom = d_max - d_min
         return np.divide(data - d_min, denom, out=np.zeros_like(data), where=denom > 1e-12)
     
+    elif method == "robust":
+        # Robust scaling (x - median) / (q75 - q25)
+        median = np.median(data, axis=axis, keepdims=True)
+        q75, q25 = np.percentile(data, [75, 25], axis, keepdims=True)
+        iqr = q75 - q25
+        return np.divide(data - median, iqr, out=np.zeros_like(data), where=iqr > 1e-12)
+    
     else:
         raise ValueError(f"Unknown normalization method: {method}")

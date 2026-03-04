@@ -17,6 +17,11 @@ from .utils import (
     get_spurious_mask,
 )
 
+from .io import (
+    write_eig,
+    write_csv_row,
+)
+
 from .process import normalize_data
 
 
@@ -31,4 +36,6 @@ __all__ = [
     "create_tmp_config",
     "get_spike_extent_mask",
     "get_spurious_mask",
+    "write_eig",
+    "write_csv_row",
 ]

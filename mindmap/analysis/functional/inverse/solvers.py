@@ -16,6 +16,8 @@ import numpy as np
 import scipy.linalg as sla
 
 import mne
+from mne.proj import make_projector
+from mne.cov import prepare_noise_cov, compute_whitener
 
 import pyxu.abc as pxa
 import pyxu.operator as pxo
@@ -23,7 +25,7 @@ import pyxu.opt.stop as pxst
 from pyxu.opt.solver import PGD
 
 from .simulation import make_stc
-from .utils import compute_harmonic_prior
+from .utils import compute_harmonic_prior, compute_depth_prior
 
 
 
@@ -36,8 +38,8 @@ class MNE:
         forward: mne.Forward,
         noise_cov: mne.Covariance,
         depth: float = 0.8,
-        snr: float = 3.0,
-        noise_norm: str = None
+        noise_norm: str = None,
+        verbose: str = "warning",
     ):
         """
         Base class for M/EEG inverse operators.
@@ -56,191 +58,70 @@ class MNE:
         fixed : bool
             If True, use fixed orientations (normal to cortex)
         """
-        self.forward = forward
+        # input data
+        self.forward = mne.convert_forward_solution(forward, force_fixed=True, verbose=verbose)
         self.noise_cov = noise_cov
+        self.gain_raw = self.forward["sol"]["data"]
+
+        # parameters
         self.depth_coeff = depth
-        self.default_snr = snr
         self.noise_norm = noise_norm
 
-        # 1. Fix source orientation
-        fwd = mne.convert_forward_solution(self.forward, force_fixed=True, verbose="warning")
-        self.gain_raw = fwd["sol"]["data"]
+        # variable properties
+        self.rank = self.gain_raw.shape[0]
+        self.lam = None
 
-        # 2. Prepare Projectors (Average Reference, etc.)
-        self.projs = forward.get('projs', [])
+        # others
+        self.verbose = verbose
 
-        # 3. Compute Whitener (W)
-        # W = C^1/2
-        self.whitener = self._compute_whitener(noise_cov)
+    # ------------------
+    # Component modules
+    # ------------------
 
-        # Project and whiten the lead field
-        gain_p = self._apply_projectors(self.gain_raw)
-        self.gain_whitened = self.whitener @ gain_p
-
-        # 4. Compute prior mixing matrix
-        self.source_weighting = self._compute_source_weighting()
-
-        # 5. Prepare gain
-        # self.source_weighting can be a 1D vector (for speed) or a full
-        # Matrix (NxN)
-        if self.source_weighting.ndim == 1:
-            self.gain = self.gain_whitened * self.source_weighting
-        else:
-            self.gain = self.gain_whitened @ self.source_weighting
-
-        # 6. SVD
-        self.u, self.s, self.vh = sla.svd(self.gain, full_matrices=False)
-
-        # 7. Pre-compute the norm once at initlization
-        if noise_norm is not None:
-            lambda2 = 1.0 / (snr**2)
-            self._precomputed_norm = self.compute_noise_norm(lambda2, method=self.noise_norm)
-        else:
-            self._precomputed_norm = None
-
-    def process_gain(self):
-        """Prepare gain matrix."""
-        pass
-
-    def process_data(self):
-        """Prepare data."""
-        pass
-
-    def process_prior(self):
-        """Prepare prior."""
-        pass
-
-
-    def _compute_whitener(self, noise_cov):
-        """Extracts whitener from noise covariance."""
-        scaled_cov = noise_cov["data"] / self.nave
-
-        # If using Average Reference, one eigenvalue will be 0.
-        # We use eigh and set a threshold
-        eigvals, eigvecs = sla.eigh(scaled_cov)
-
-        # Thresholding for rank-deficiency
-        mask = eigvals > 1e-12 * eigvals.max()
-        inv_sqrt_eigvals = np.zeros_like(eigvals)
-        inv_sqrt_eigvals[mask] = 1.0 / np.sqrt(eigvals[mask])
-
-        return eigvecs @ np.diag(inv_sqrt_eigvals) @ eigvecs.T
-
-
-    def _compute_depth_prior(self, gain):
-        """Computes weight for each source based on lead field column norms."""
-        norms = np.linalg.norm(gain, axis=0)
-        depth_prior = np.power(norms, -self.depth_coeff)
-        return depth_prior
-
-
-    def _compute_source_weighting(self):
-        """Compute inverse prior mixing matrix - Base uses depth prior"""
-        return self._compute_depth_prior(self.gain_whitened)
-
-    def _apply_projectors(self, data):
-        """Applies all spatial projectors (like Average Reference)."""
-        if not self.projs:
-            return data
-
-        for p in self.projs:
-            data = p["data"] @ data
-   
-        return data
-
-    def preprocess_data(self, data):
-        """Applies whitener and projectors to sensor data."""
-        # 1. Apply projectors
-        data_p = self._apply_projectors(data)
-        # 2. Apply whitener
-        return self.whitener @ data_p
-
-
-    def solve(self, evoked, snr=None):
-        """Placeholder for child classes to implement. Default solver MNE"""
-        # Use default SNR if none provided
-        current_snr = snr if snr is not None else self.default_snr
-
-        # retrieve data
-        data = evoked.data
-
-        # ---------------
-        # Pre-processing
-        # ---------------
-
-        # Data
-        y_white = self.preprocess_data(data)
-
-        # Regularization parameter
-        lambda2 = 1.0 / (current_snr **2)
-
-        # Re-scaling
-        res_scaling = self.s / (self.s**2 + lambda2)
-
-        # --------------
-        # Apply inverse
-        # --------------
-
-        # Kernel: K = V * diags(s / s^2 + lambda2)) * U.T
-        sol = self.vh.T @ (res_scaling[:,np.newaxis] * (self.u.T @ y_white))
-
-        # Map back to Source Space using mixing matrix
-        if self.source_weighting.ndim == 1:
-            sol = sol * self.source_weighting[:, np.newaxis]
-        else:
-            sol = self.source_weighting @ sol
-        
-        # ---------------------------
-        # Apply source normalization
-        # ---------------------------
-
-        if self._precomputed_norm is not None:
-            # Check if SNR changed: if so, we must re-calculate
-            if snr is not None and snr != self.default_snr:
-                weights = self.compute_noise_norm(lambda2, method=self.noise_norm)
-                sol /= weights[:, np.newaxis]
-            else:
-                sol /= self._precomputed_norm[:, np.newaxis]
-
-        return make_stc(
-            source_space = self.forward["src"],
-            activity = sol,
-            tmin = evoked.times[0],
-            tstep = 1/evoked.info["sfreq"]
-        )
-
-
-    def estimate_lambda2(self, data, snr_fixed=None):
+    def _setup_preprocessor(self, info):
         """
-        Estimates the regularization parameter lambda^2
+        Extracts whitener from noise covariance.
 
         Parameters
         ----------
-        data : array (n_channels, n_times)
-            The raw or evoked sensor data.
-        
-        snr_fixed : float | None
-            If provided, uses this fixed SNR (e.g., 3.0 for Evoked).
-            If None, estimates SNR from the whitened data.
+        noise_cov: mne.Covariance
+            Noise covariance matrix.
+
+        nave: int
+            Number of samples used for averaging.
+
+        include_active: bool
+            Whether to include active projections. Forward model
+            needs all projections, Evoked only needs none active
+            projections.
+
+        Returns
+        -------
+        np.ndarray
+            Whitener.
         """
-        if snr_fixed is not None:
-            return 1.0 / (snr_fixed**2)
+        # projectors
+        projs_gain, _, _ = make_projector(info["projs"], info.ch_names)
+        projs_data, _, _ = make_projector(info["projs"], info.ch_names, include_active=False)
 
-        # Pro-whiten the data
-        y_white = self.preprocess_data(data)
+        # whitener
+        ready_cov = prepare_noise_cov(self.noise_cov, info, verbose=self.verbose)
+        whitener, _ = compute_whitener(self.noise_cov, info, verbose=self.verbose)
 
-        # Calculate Mean Squared Amplitude across sensors
-        # (assuming noise variance is 1 after whitening)
-        ms_amplitude = np.mean(np.square(y_white), axis=0) # Per time point
+        # store rank-related info
+        self.rank = np.sum(ready_cov["eig"] > 0)
 
-        # Average across the time window of interest
-        avg_snr2 = np.mean(ms_amplitude)
-
-        # Ensure we don't divide by zero or negative
-        return 1.0 / max(avg_snr2, 1e-8)
+        return projs_gain, projs_data, whitener
 
 
-    def compute_noise_norm(self, lambda2, method="dSPM"):
+    def compute_source_prior(self, gain_whitened):
+        """
+        Default: standard depth weighting.
+        """
+        return compute_depth_prior(gain_whitened, self.depth_coeff)
+
+
+    def compute_noise_norm(self, lambda2, kernel, method="dSPM"):
         """
         Computes the noise normalization vector (noise sensitivity).
 
@@ -254,32 +135,134 @@ class MNE:
         # estimate sqrt(D)
         if method == "dSPM":
             # Weighting for dSPM: d_kk^2 = s / (s^2 + lambda2)
-            d_vals = self.s / (self.s**2 + lambda2)
+            d_vals = kernel["s"] / (kernel["s"]**2 + lambda2)
         elif method == "sLORETA":
             # Weighting for sLORETA: omega_kk = sqrt(s^2 / (s^2 + lambda2))
-            d_vals = np.sqrt(self.s**2 / (self.s**2 + lambda2))
+            d_vals = np.sqrt(kernel["s"]**2 / (kernel["s"]**2 + lambda2))
         else:
-            return np.ones(self.vh.shape[1])
-        
-        V_weighted = d_vals[:, np.newaxis] * self.vh
+            raise ValueError(f"Noise normalization method {method} is unknown")
+
+        v_weighted = d_vals[:, np.newaxis] * kernel["vh"]
 
         # Project through mixing matrix (M)
-        if self.source_weighting.ndim == 1:
-            K_eff_T = V_weighted * self.source_weighting
+        if kernel["w_source"].ndim == 1:
+            norm_t = v_weighted * kernel["w_source"]
         else:
-            K_eff = self.source_weighting @ V_weighted
-            K_eff_T = K_eff.T
-        
-        # Comptue diagonal of (K_eff @ K_eff.T) efficiently
-        norm_sq = np.sum(K_eff_T**2, axis=0)
+            norm_t = v_weighted @ kernel["w_source"]
+
+        # Comptue diagonal of (norm @ norm.T) efficiently
+        norm_sq = np.sum(norm_t**2, axis=0)
 
         return np.sqrt(norm_sq)
 
+    # ----------------
+    # Inverse modules
+    # ----------------
+
+
+    def prepare_kernel(self, projs, whitener):
+        """Builds kernel for source reconstruction"""
+        # 1. Projectors and whitener
+        gain_white = whitener @ projs @ self.gain_raw
+
+        # 2. Get the prior
+        # This returns either a 1D vector (diagonal) or 2D matrix
+        w_source = self.compute_source_prior(gain_white)
+
+        # 3. Apply prior and SVD
+        if w_source.ndim == 1:
+            gain_weighted = gain_white * w_source
+        else:
+            gain_weighted = gain_white @ w_source
+
+        # 4. Scale source variance (to match EEG noise variance range)
+        trace_GRGT = np.linalg.norm(gain_weighted, ord="fro")**2
+        scale = np.sqrt(self.rank/trace_GRGT)
+
+        gain_scaled = gain_weighted * scale
+        w_source_scaled = w_source * scale
+
+        # SVD decomposition
+        u, s, vh = sla.svd(gain_scaled, full_matrices=False)
+
+        return {
+            "u": u, "s":s, "vh": vh,
+            "w_source": w_source_scaled,
+        }
+
+
+    def solve(self, evoked, lambda2=None):
+        """Solve inverse problem."""
+        # Preprocessors
+        projs_gain, projs_data, whitener = self._setup_preprocessor(evoked.info)
+
+        # 1. Process gain
+        kern = self.prepare_kernel(projs_gain, whitener)
+
+        # 2. Process data
+        y_white = whitener @ projs_data @ evoked.data
+
+        # 3. Inverse logic
+        if lambda2 is None:
+            self.lam = self.estimate_lambda2(y_white, evoked.nave)
+        else:
+            self.lam = lambda2
+
+        res_scaling = kern["s"] / (kern["s"]**2 + self.lam)
+        sol = kern["vh"].T @ (res_scaling[:, np.newaxis] * (kern["u"].T @ y_white))
+
+        # 4. Map back with prior
+        if kern["w_source"].ndim == 1:
+            sol = sol * kern["w_source"][:, np.newaxis]
+        else:
+            sol = kern["w_source"] @ sol
+
+        # 5. Normalize
+        if self.noise_norm is not None:
+            norm = self.compute_noise_norm(
+                self.lam,
+                kernel = kern,
+                method = self.noise_norm,
+            )
+
+            sol /= norm[:, np.newaxis]
+
+        return make_stc(
+            source_space = self.forward["src"],
+            activity = sol,
+            tmin = evoked.times[0],
+            tstep = 1/evoked.info["sfreq"]
+        )
+
+    # ----------------
+    # Utility modules
+    # ----------------
+
+
+    def estimate_lambda2(self, y_white, nave=1):
+        """
+        Estimates the regularization parameter lambda^2
+
+        Parameters
+        ----------
+        ave : array (n_channels, n_times)
+            The whitened sensor data.
+
+        nave
+        """
+        # Total power (signal + noise)
+        ms_amplitude = np.mean(np.square(y_white), axis=0) # Per time point
+
+        # Subtract noise power (1 since data is whitened)
+        signal_power = np.maximum(np.mean(ms_amplitude) - 1.0, 1e-8)
+
+        # Ensure we don't divide by zero or negative
+        return 1.0 / (signal_power*nave)
 
 
 class wCSET(MNE):
-    """Weighted Connectome Spectrum Transform"""
-    def __init__(self, forward, noise_cov, eigenvectors, eigenvalues, depth=0.8, harm=0.7):
+    """weighted Connectome Electromagnetic Tomography"""
+    def __init__(self, eigenvectors, eigenvalues, harm=0.7, **kwargs):
         """
         Parameters
         ----------
@@ -289,16 +272,16 @@ class wCSET(MNE):
         self.e = eigenvalues
         self.harm = harm
 
-        super().__init__(forward, noise_cov, depth)
+        super().__init__(**kwargs)
 
 
-    def _compute_source_weighting(self):
+    def compute_source_prior(self, gain_whitened):
         """
         Override MNE source weighting.
         Compute Connectome Spectrum prior with depth and harmonic weightings.
         """
         # depth weighting
-        w_depth = self._compute_depth_prior(self.gain_whitened)
+        w_depth = compute_depth_prior(gain_whitened, self.depth_coeff)
 
         # harmonic weighting
         w_harm = compute_harmonic_prior(self.e, relaxation=self.harm)

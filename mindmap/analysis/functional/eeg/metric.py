@@ -454,8 +454,6 @@ def compute_grova_metrics(
     ch_est_peak = coords[np.argmax(np.abs(win_est[rel_peak, :]))]
 
     return {
-        "subject": ...,
-        "method": ...,
         "spatial_correlation": np.mean(calc_spatial_correlation(win_ref, win_est)),
         "min_distance": calc_pairwise_dist(ch_ref_peak, ch_est_peak)[0],
         "spatial_dispersion": np.mean(calc_spatial_dispersion_grova(win_est, dist_to_h)),

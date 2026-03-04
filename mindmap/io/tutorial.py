@@ -21,6 +21,7 @@ import mne
 from mindmap.analysis.functional.eeg.utils import scale_montage
 from mindmap.anatomy.parcellation.core import Parcellation
 from .dataset import DatasetManager
+import mne_bids
 
 
 class TutoManager(DatasetManager):
@@ -35,6 +36,7 @@ class TutoManager(DatasetManager):
 
         # add new roots
         self.roots["spk"] = self.config["DIR_SPK"]
+        self.roots["cartool"] = self.config["DIR_CART"]
 
     def get_subject(self, subject_id):
         """
@@ -49,17 +51,18 @@ class TutoManager(DatasetManager):
 
         # configure for intra data
         if "intra" in subject_id:
-            subreader.add_datatype("eeg", "spk", build_intra_path, load_eeg)
-            subreader.add_datatype("ieeg", "spk", build_intra_path, load_eeg)
+            subreader.add_datatype("eeg", "spk", build_intra_path, load_eeg_intra)
+            subreader.add_datatype("ieeg", "spk", build_intra_path, load_eeg_intra)
             subreader.add_datatype("eeg-trans", "mm", lambda *_, : Path("."), load_identity_trans)
 
         # configure for simf data
         if "simf" in subject_id:
+            subreader.add_datatype("eeg", "raw", mne_bids.BIDSPath, lambda f: mne_bids.read_raw_bids(f, verbose="warning").load_data(verbose="warning"))
             subreader.add_datatype("gt", "raw", build_simf_path, mne.read_source_estimate)
 
         # configure for spike data
         if "spike" in subject_id:
-            pass
+            subreader.add_datatype("eeg", "cartool", build_spike_path, load_eeg_spike)
 
         return subreader
 
@@ -79,7 +82,7 @@ class TutoManager(DatasetManager):
 ##   ¨¨¨¨¨¨¨¨¨¨¨¨¨¨   ##
 ########################
 
-def build_intra_path(root, subject_id, datatype, **kwargs):
+def build_intra_path(root, subject, datatype, **kwargs):
     """
     EEG & iEEG path for intra dataset.
     """
@@ -94,16 +97,40 @@ def build_intra_path(root, subject_id, datatype, **kwargs):
 
         # filename
         if datatype == "eeg":
-            eeg_dir = root/f"sub-{subject_id}"/"eeg"
-            return eeg_dir/f"sub-{subject_id}{task}{run}_eeg.vhdr"
+            eeg_dir = root/f"sub-{subject}"/"eeg"
+            return eeg_dir/f"sub-{subject}{task}{run}_eeg.vhdr"
         else:
-            ieeg_dir = root/f"sub-{subject_id}"/"ieeg"
-            return ieeg_dir/f"sub-{subject_id}{task}_*_ieeg.vhdr"
+            ieeg_dir = root/f"sub-{subject}"/"ieeg"
+            return ieeg_dir/f"sub-{subject}{task}_*_ieeg.vhdr"
 
     else:
         raise ValueError(f"Unknown datatype '{datatype}' for build_intra_path.")
     
-def build_simf_path(root, subject_id, datatype, **kwargs):
+
+########################
+##   SPIKE builders   ##
+##   ¨¨¨¨¨¨¨¨¨¨¨¨¨¨   ##
+########################
+
+def build_spike_path(root, subject, datatype):
+    """EEG & iEEG path for spike dataset"""
+    if datatype == "eeg":
+        return root/f"sub-{subject}"/"eeg"/"ses-preop"/f"sub-{subject}_ses-preop_task-rest_desc-spikeerp-204c-interpol-250Hz_eeg.vhdr"
+
+    elif datatype == "resec":
+        return NotImplementedError
+
+    else:
+        raise ValueError(f"Unknown datatype '{datatype}' for build_pike_path.")
+
+
+#######################
+##   SIMF builders   ##
+##   ¨¨¨¨¨¨¨¨¨¨¨¨¨   ##
+#######################
+
+
+def build_simf_path(root, subject, datatype, **kwargs):
     """
     Ground truth path for simf dataset.
     """
@@ -119,8 +146,8 @@ def build_simf_path(root, subject_id, datatype, **kwargs):
         desc = kwargs.get("desc")
         desc = f"_desc-{desc}" if desc else ""
 
-        gt_dir = root/f"sub-{subject_id}"/"stc"
-        return gt_dir/f"sub-{subject_id}{task}{run}{desc}_stc"
+        gt_dir = root/f"sub-{subject}"/"stc"
+        return gt_dir/f"sub-{subject}{task}{run}{desc}_stc"
 
     else:
         raise ValueError(f"Unknown datatype '{datatype}' for build_simf_path.")
@@ -130,7 +157,7 @@ def build_simf_path(root, subject_id, datatype, **kwargs):
 ##   ¨¨¨¨¨¨¨¨¨¨¨¨¨   ##
 #######################
 
-def load_eeg(path):
+def load_eeg_intra(path):
     """
     Load EEGs for intra dataset.
     """
@@ -161,6 +188,28 @@ def load_identity_trans(_):
     Load identity transformation matrix.
     """
     return mne.transforms.Transform(fro="head", to="mri")
+
+
+######################
+##   SIMF loaders   ##
+##   ¨¨¨¨¨¨¨¨¨¨¨¨   ##
+######################
+
+
+#######################
+##   SPIKE loaders   ##
+##   ¨¨¨¨¨¨¨¨¨¨¨¨¨   ##
+#######################
+
+def load_eeg_spike(path):
+    """Load EEGs for spike dataset"""
+    eeg = mne.io.read_raw_brainvision(path, scale=1e-6, misc=[], verbose="warning")
+
+    data = eeg.get_data()
+    info = eeg.info
+
+    return mne.EvokedArray(data, info)
+
 
 ######################
 ##   std loaders    ##

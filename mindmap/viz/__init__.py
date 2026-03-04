@@ -13,7 +13,6 @@ from .volume import (
 from .surface import (
     plot_brain,
     plot_source_estimate,
-    plot_leadfield,
 )
 
 from .sensor import (
@@ -24,12 +23,27 @@ from .sensor import (
     plot_avg_ref,
     plot_baseline_topo,
     create_pipeline_report,
+    plot_whitened_cov,
+    plot_gfp,
 )
 
 from .graph import (
     plot_eigvec,
     plot_eigval,
     plot_con_summary,
+    plot_spectrum,
+)
+
+from .forward import (
+    plot_fwd_avg_ref,
+    plot_fwd_sensitivity,
+    plot_fwd_correlation,
+    plot_fwd_singular_values,
+    plot_leadfield,
+)
+
+from .inverse import(
+    plot_predicted_data_covariance,
 )
 
 __all__ = [
@@ -49,4 +63,12 @@ __all__ = [
     "plot_eigval",
     "plot_leadfield",
     "plot_con_summary",
+    "plot_fwd_avg_ref",
+    "plot_fwd_sensitivity",
+    "plot_fwd_correlation",
+    "plot_fwd_singular_values",
+    "plot_whitened_cov",
+    "plot_gfp",
+    "plot_predicted_data_covariance",
+    "plot_spectrum",
 ]

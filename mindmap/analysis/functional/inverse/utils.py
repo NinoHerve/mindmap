@@ -40,6 +40,15 @@ def compute_harmonic_prior(eigvals : np.ndarray, relaxation : float = 1) -> np.n
     weights[-1] = arr2[-1]
 
     # convert to prior weights and store in prior mixing matrix
-    weights = np.diag(1/weights)**relaxation
+    weights[5000:] = weights[5000]  # high harmonics seems to be problematic ...
+    weights = weights**relaxation
 
     return weights
+
+
+def compute_depth_prior(gain, depth):
+    """Computes weight for each source based on lead field column norms."""
+    norms = np.linalg.norm(gain, axis=0)
+    depth_prior = np.power(norms, -depth)
+
+    return depth_prior

@@ -24,6 +24,7 @@ import pyvista as pv
 import mne
 import nibabel as nib
 
+from mindmap.core.process import normalize_data
 from mindmap.anatomy.source_space.io import mne_to_polydata, get_dipole_positions
 from mindmap.anatomy.mri.io import nib_to_polydata
 from mindmap.analysis.functional.eeg.io import get_ch_positions
@@ -262,23 +263,16 @@ def plot_source_estimate(
     # Process time series
     # --------------------
 
-    clim  = find_clim(timeseries)
-
-    if ts_params.get("normalize"):
+    if norm := ts_params.get("normalize"):
         for ts in timeseries:
-            scale = np.nanpercentile(np.abs(ts.data), 99)  # percentile instead of max to resist to outliers
-            if scale > 0:
-                ts.data /= scale
-
-        clim = (-1, 1)
+            ts.data = normalize_data(ts.data, "global", norm)
 
     if ts_params.get("absolute"):
         for ts in timeseries:
             ts.data = np.abs(ts.data)
 
-        clim = (0, clim[1] if clim else 1)
-
-    cmap  = default_cmap(clim)
+    clim = find_clim(timeseries, percentile=100)
+    cmap = default_cmap(clim)
 
     mesh_params = {
         "smooth_shading" : True,
@@ -386,9 +380,9 @@ class TimeMesh(BaseBrainPlotter):
             self.splits.append(nuse_l)
 
             self.plotter.subplot(0,i)
+            self.plotter.add_title(self.titles[i], font_size=10)
             self.plotter.add_mesh(hemi_l, **self.mesh_params)
             self.plotter.add_mesh(hemi_r, **self.mesh_params)
-            self.plotter.add_title(self.titles[i])
 
             if self.overlays[i] is not None:
                 self.plotter.add_mesh(self.overlays[i], **self.overlay_params)
@@ -438,54 +432,6 @@ class TimeMesh(BaseBrainPlotter):
             hemi_r["signal"][:] = sig_r[map_r]
 
         self.plotter.render()
-
-
-
-def plot_leadfield(eeg, forward):
-    """Plot to interactively look at leadfields"""
-    # get electrode positions
-    points = get_ch_positions(eeg)
-    cap    = pv.PolyData(points)
-    cap["highlight"] = np.zeros(len(points))
-
-    # get leadfield matrix
-    leadfield = mne.convert_forward_solution(
-        forward, surf_ori=True, force_fixed=True, use_cps=True,
-    )
-    leadfield = leadfield["sol"]["data"]
-
-    mesh_params = {
-        "clim"  : find_clim(leadfield),
-        "cmap"  : "bwr",
-        "color" : None,
-    }
-
-    # plot
-    plotter = plot_brain(forward["src"], np.zeros(leadfield.shape[1]), mesh_params=mesh_params)
-    plotter.add_mesh(cap, point_size=10, render_points_as_spheres=True, name="cap")
-    plotter.remove_scalar_bar(title="highlight")
-
-    # callback
-    def pick_electrode(picked_point):
-        if picked_point is not None:
-            # get index of the closest point
-            closest_point_id = cap.find_closest_point(picked_point)
-
-            # change highlighted electrode
-            cap["highlight"] = np.zeros(len(points))
-            cap["highlight"][closest_point_id] = 1
-
-            # change leadfield vector
-            tmp = plot_brain(forward["src"], leadfield[closest_point_id], mesh_params=mesh_params)
-            plotter.meshes[0]["signal"] = tmp.meshes[0]["signal"]
-            plotter.meshes[1]["signal"] = tmp.meshes[1]["signal"]
-
-            # update the plotter
-            plotter.render()
-
-    plotter.enable_point_picking(callback=pick_electrode)
-
-    return plotter
 
 
 def plot_dipole_function(source_space, dipole_function, title="Dipole function"):

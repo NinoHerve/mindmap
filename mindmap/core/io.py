@@ -16,6 +16,7 @@ import os
 
 import yaml
 import numpy as np
+import pandas as pd
 
 
 def read_config(file: str | Path, env: bool = True) -> dict[str, Any]:
@@ -77,3 +78,54 @@ def write_eig(fname, eigvec, eigval):
     Write eigendecomposition.
     """
     np.savez(fname, eigvec=eigvec, eigval=eigval)
+
+
+def write_csv_row(filename, data, index_cols, write_new=False):
+    """
+    Saves or updates rows in a CSV file.
+
+    Parameters
+    ----------
+    filename: str | Path
+        Path to the CSV file.
+    data: dict | pd.Series | pd.DataFrame
+        Data to write.
+    write_new: bool
+        If True, creates the file if it doesn't exist.
+    """
+    # Standardize input to a DataFrame
+    if isinstance(data, dict):
+        new_df = pd.DataFrame([data])
+    elif isinstance(data, pd.Series):
+        new_df = data.to_frame().T
+    elif isinstance(data, pd.DataFrame):
+        new_df = data
+    else:
+        raise TypeError("Data must be a dict, Series, or DataFrame")
+
+    # Ensure index_cols is a list
+    if isinstance(index_cols, str):
+        index_cols = [index_cols]
+
+    # Ensure filename is a Path
+    filename = Path(filename)
+
+    # Check file existence
+    if not filename.exists():
+        if write_new:
+            new_df.to_csv(filename, index=False)
+            print(f"Created new file: {filename}")
+            return
+        else:
+            raise FileNotFoundError(f"The file '{filename}' does not exist and write_new is False.")
+
+    # Load existing data
+    existing_df = pd.read_csv(filename)
+    new_df = new_df.reindex(columns=existing_df.columns, fill_value=None)
+
+    # Merge
+    combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+    final_df = combined_df.drop_duplicates(subset=index_cols, keep="last")
+
+    # save
+    final_df.to_csv(filename, index=False)
