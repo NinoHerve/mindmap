@@ -9,6 +9,9 @@ License: MIT
 """
 
 import numpy as np
+from scipy.ndimage import shift
+
+from mindmap.core.metric import compute_correlation
 
 
 def normalize_data(data, strategy="global", method="zscore"):
@@ -44,26 +47,121 @@ def normalize_data(data, strategy="global", method="zscore"):
         # Dividing by max absolute value
         denom = np.max(np.abs(data), axis=axis, keepdims=True)
         return np.divide(data, denom, out=np.zeros_like(data), where=denom > 1e-12)
-    
+
     elif method == "zscore":
         # Subtract mean and divide by standard deviation
         mu = np.mean(data, axis=axis, keepdims=True)
         sigma = np.std(data, axis=axis, keepdims=True)
         return np.divide(data - mu, sigma, out=np.zeros_like(data - mu), where=sigma > 1e-12)
-    
+
     elif method == "minmax":
         # Traditional 0 to 1 scaling
         d_min = np.min(data, axis=axis, keepdims=True)
         d_max = np.max(data, axis=axis, keepdims=True)
         denom = d_max - d_min
         return np.divide(data - d_min, denom, out=np.zeros_like(data), where=denom > 1e-12)
-    
+
     elif method == "robust":
         # Robust scaling (x - median) / (q75 - q25)
         median = np.median(data, axis=axis, keepdims=True)
         q75, q25 = np.percentile(data, [75, 25], axis, keepdims=True)
         iqr = q75 - q25
         return np.divide(data - median, iqr, out=np.zeros_like(data), where=iqr > 1e-12)
-    
+
     else:
         raise ValueError(f"Unknown normalization method: {method}")
+
+
+
+def align_timeseries(ref, target, max_lag=20, window=None):
+    """
+    Finds a global shift for 'target' based on a specific window.
+
+    Parameters:
+    ----------
+    ref: np.ndarray of shape (N_regions, T_time)
+        Reference timeseries.
+
+    target: np.ndarray of shape (N_regions, T_time)
+        Target timeseries
+
+    max_lag: int
+        Search range for the shift.
+
+    window: tuple(int, int)
+        (start, end) tuple of indices. If None, uses the whole series.
+
+
+    Returns
+    -------
+    aligned_target: np.ndarray of shape (N_regions, T_time)
+        The full target array shifted by the best lag.
+
+    best_lag: int
+        The integer lag found.
+    """
+    if window is None:
+        start, end = max_lag, ref.shape[1] - max_lag
+    else:
+        start, end = window
+
+    lags = np.arange(-max_lag, max_lag + 1)
+    scores = []
+
+    for lag in lags:
+        # Shift target by 'lag' on the time axis (axis 1)
+        shifted = shift(target, (0, lag), mode="nearest")
+
+        # Calculate mean spatial correlation within window
+        ref_win = ref[:, start:end]
+        target_win = shifted[:, start:end]
+
+        r_per_timepoint = compute_correlation(ref_win, target_win, axis=0)
+        scores.append(np.mean(r_per_timepoint))
+
+    best_lag = lags[np.argmax(scores)]
+    aligned_target = shift(target, (0, best_lag), mode='nearest')
+
+    return aligned_target, best_lag
+
+
+def normalize_timeserie_by_baseline(
+    timeserie: np.ndarray,
+    baseline: tuple[int, int],
+    epsilon: float = 1e-15,
+) -> np.ndarray:
+    """
+    Normalize timeserie by the standard deviation of the baseline.
+
+    Parameters
+    ----------
+    timeserie: np.ndarray of shape (n_samples, n_timepoints)
+        Timeserie.
+
+    baseline: tuple[int, int]
+        (idx_min, idx_max) defining the baseline period.
+
+    epsilon: float
+        Small number to check for zeros.
+
+    Returns
+    -------
+    np.ndarray of shape (n_samples, n_timepoints)
+        Baseline normalized timeseries.
+    """
+    timeserie = np.atleast_2d(timeserie)
+
+    # extract baseline
+    idx_min, idx_max = baseline
+    baseline_data = timeserie[:, idx_min:idx_max]
+
+    # calculate SD across baseline for each sample
+    baseline_std = np.std(baseline_data, axis=1, keepdims=True)
+    baseline_mean = np.mean(baseline_data, axis=1, keepdims=True)
+
+    # avoid division by zero flat/bad samples
+    baseline_std[baseline_std < epsilon] = 1.0
+
+    # apply z-score
+    return (timeserie - baseline_mean) / baseline_std
+

@@ -204,8 +204,8 @@ def compute_spatial_correlation(
         raise ValueError("Evokeds must have same channels and timepoints.")
 
     # extract data
-    data_ref = evoked_ref.data
-    data_est = evoked_est.data
+    data_ref = evoked_ref.data.T
+    data_est = evoked_est.data.T
 
     # spatial correlation
     sp_cor = calc_spatial_correlation(data_ref, data_est)

@@ -288,3 +288,33 @@ def calc_ratio_spurious_activity(map_est, is_distant_mask):
     rsa = np.divide(spurious_energy, total_energy, out=np.zeros_like(spurious_energy), where=total_energy>1e-12)
 
     return rsa if rsa.size > 1 else rsa[0]
+
+
+def compute_correlation(data1, data2, axis=0):
+    """
+    !!!! I have two compute correlation :( Try fusing them !!!!
+    Computes Pearson correlation between two arrays along a specific axis.
+
+    Parameters
+    ----------
+    data1, data2: np.ndarray of shapes (M,N)
+        Data.
+    
+    axis: int
+        Axis along which to compute correlation. If None, compute
+        a global correlation.
+
+    Returns:
+    -------
+    corr: np.ndarray
+        Pearson correlation.
+    """
+    # 1. Center the data
+    d1_mean = data1 - np.mean(data1, axis=axis, keepdims=True)
+    d2_mean = data2 - np.mean(data2, axis=axis, keepdims=True)
+
+    # 2. Normalize
+    d1_norm = d1_mean / np.linalg.norm(d1_mean, axis=axis, keepdims=True)
+    d2_norm = d2_mean / np.linalg.norm(d2_mean, axis=axis, keepdims=True)
+
+    return np.sum(d1_norm * d2_norm, axis=axis)

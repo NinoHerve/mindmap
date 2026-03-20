@@ -23,6 +23,7 @@ from mindmap.core.io import read_config, read_eig
 from mindmap.anatomy.utils import read_cortex_label
 from mindmap.anatomy.mri.io import read_mri
 from mindmap.anatomy.parcellation.core import Parcellation
+from mindmap.anatomy.forward.io import read_bem_labels, make_volume_info
 from .utils import build_raw_path, build_mm_path, build_fs_path, build_charm_path
 
 class DatasetManager:
@@ -39,6 +40,7 @@ class DatasetManager:
             'raw': config["DIR_RAW"],
             'mm' : config["DIR_MM"],
             'fs' : config["DIR_FS"],
+            "charm": config["DIR_CHARM"],
         }
 
         self.stds = {k : v for k, v in config.items() if "STD" in k}
@@ -53,13 +55,24 @@ class DatasetManager:
             raise KeyError(f"Subject {subject_id} not in config list.")
 
         return SubjectReader(subject_id, self.roots)
-    
+
     def get_standards(self):
         """
         Returns a reader for standardized data (templates, atlases, ...)
         """
 
         return StandardReader(self.stds)
+
+    def get_bem_labels(self):
+        """
+        Parses YAML config and resolves inheritance to return
+        a dictionary of {layer_name: [list_of_ids]}
+        """
+        config = self.config.get("BEM_CONFIG")
+        if config is None:
+            raise KeyError("Missing BEM configuration in configuration file.")
+
+        return read_bem_labels(config)
 
 
 class SubjectReader:
@@ -94,11 +107,10 @@ class SubjectReader:
             "pial"       : ("fs", build_fs_path),
             "inflated"   : ("fs", build_fs_path),
             "vertex-ctx" : ("fs", build_fs_path),
+            "vol-info"   : ("fs", self._build_internal_path),
 
             # charm
             "seg" : ("charm", build_charm_path),
-
-            # default fallback is build_raw_path
         }
 
         self.loader_registry = {
@@ -126,7 +138,8 @@ class SubjectReader:
             "pial": nib.freesurfer.io.read_geometry,
             "inflated": nib.freesurfer.io.read_geometry,
             "vertex-ctx": read_cortex_label,
-            "tkras2ras": self._load_tkras2ras_internal,
+            "ras2tkras": self._load_ras2tkras_internal,
+            "vol-info": make_volume_info,
 
             # charm
             "seg": self._load_seg_internal,
@@ -166,14 +179,14 @@ class SubjectReader:
         eigvec, eigval = read_eig(path)
         return {"vec":eigvec, "val":eigval}
 
-    def _load_tkras2ras_internal(self, **kwargs):
-        """Load tkras2ras."""
+    def _load_ras2tkras_internal(self, **kwargs):
+        """Load ras2tkras."""
         mri = self.load("T1", **kwargs)
 
         vox2ras     = mri.header.get_vox2ras()
         vox2ras_tkr = mri.header.get_vox2ras_tkr()
 
-        return vox2ras @ np.linalg.inv(vox2ras_tkr)
+        return vox2ras_tkr @ np.linalg.inv(vox2ras)
     
     def _load_cov_internal(self, path):
         """Load Covariance"""
@@ -190,6 +203,8 @@ class SubjectReader:
             return build_mm_path(root, subject, "ave", suffix="eeg-trans", **kwargs)
         if datatype == "parc":
             return build_mm_path(root, subject, "dseg", **kwargs)
+        if datatype == "vol-info":
+            return build_fs_path(root, subject, "T1", **kwargs)
         else:
             raise ValueError(f"Datatype '{datatype}' does not have an internal path implementation.")
 
@@ -230,8 +245,8 @@ class SubjectReader:
             return self.loader_registry["ctx"](**kwargs)
         
         # Exception 2: tkras2ras
-        if datatype == "tkras2ras":
-            return self.loader_registry["tkras2ras"](**kwargs)
+        if datatype == "ras2tkras":
+            return self.loader_registry["ras2tkras"](**kwargs)
 
         # Exception 2: Double hemispheres
         if datatype in ["white", "pial", "inflated", "vertex-ctx"] and "hemi" not in kwargs:

@@ -156,7 +156,7 @@ def build_charm_path(
     """
      # 1. Cleanup inputs (ensure no redundant 'sub-')
     sub_id = str(subject).replace("sub-", "")
-    sub_dir = Path(root) / f"m2m_sub-{sub_id}"
+    sub_dir = Path(root) / f"sub-{sub_id}"
 
     CHARM_MAP = {
         "seg" : ("segmentation", "labeling.nii.gz"),

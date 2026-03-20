@@ -16,7 +16,7 @@ import mne
 
 from mindmap.anatomy.source_space.io import get_dipole_positions, get_dipole_directions
 from mindmap.core.metric import compute_distances
-from mindmap.core.process import normalize_data
+from mindmap.core.process import normalize_data, align_timeseries, normalize_timeserie_by_baseline
 from .io import get_ch_positions
 
 
@@ -146,3 +146,80 @@ def normalize_evoked(
     ave_norm.comment = f"{ave.comment or 'Evoked'} | {strategy}-{method}"
 
     return ave_norm
+
+
+
+def align_eeg_timeseries(
+    ref: mne.Evoked,
+    target: mne.Evoked,
+    max_lag: float = 20,
+    window: tuple[float,float] = None,
+) -> mne.Evoked:
+    """
+    Finds a global shift for 'target' that maximizes spatial correlation 
+    based on a specific window.
+
+    Parameters:
+    ----------
+    ref: mne.Evoked
+        Reference EEG.
+    
+    target: mne.Evoked
+        Target EEG.
+
+    max_lag: float
+        Maximum lag shift in [ms].
+
+    window: (float, float)
+        (start, end) tuple of timepoints. If None, uses the whole series.
+    """
+    # recording parameters
+    if not np.allclose(ref.times, target.times):
+        raise ValueError("Time acquisitions do not match.")
+
+    # convert timepoints to indices
+    max_lag_idx = int((max_lag / 1000.0) * ref.info["sfreq"])
+
+    if window is not None:
+        start_idx, end_idx = ref.time_as_index(window)
+        window_idx = (start_idx, end_idx)
+    else:
+        window_idx = None
+
+    # align timeseries
+    aligned_data, best_lag = align_timeseries(
+        ref.data, target.data, max_lag=max_lag_idx, window=window_idx
+    )
+
+    aligned_evoked = target.copy()
+    aligned_evoked.data = aligned_data
+    best_lag = best_lag/ref.info["sfreq"] * 1000
+
+    return aligned_evoked, best_lag
+
+
+def normalize_evoked_by_baseline(
+    evoked: mne.Evoked,
+    baseline: tuple[float, float],
+ ) -> mne.Evoked:
+    """
+    Normalizes evoked data by the standard deviation of the baseline.
+
+    Parameters
+    ----------
+    evoked: mne.Evoked
+        Evoked object.
+
+    baseline: tuple[float, float]
+        (tmin, tmax) defining the basline period in seconds.
+    """
+    # create copy to avoid modifying original object in-place
+    norm_evoked = evoked.copy()
+
+    # select the baseline time indices
+    idx_min, idx_max = evoked.time_as_index(baseline)
+
+    # apply normalization
+    norm_evoked.data = normalize_timeserie_by_baseline(evoked.data, (idx_min, idx_max))
+
+    return norm_evoked

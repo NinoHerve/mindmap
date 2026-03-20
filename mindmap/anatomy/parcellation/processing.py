@@ -106,3 +106,36 @@ def get_position(parcel : Parcellation, rois : int | list[int] = None):
         positions.append(pos)
 
     return np.vstack(positions)
+
+
+def create_mask(
+    parc: Parcellation,
+    regions: list[str] | list[int] = None
+) -> nib.Nifti1Image:
+    """
+    Create mask from parcellation labels.
+
+    Parameters
+    ----------
+    parc: Parcellation
+        Parcellation.
+
+    labels: list[str] | list[int]
+        Region labels or ID to keep in mask. If regions is None, all regions
+        will be used to generate mask.
+
+    Returns
+    -------
+    nifti: nib.nifti1Image
+        Mask of selected labels.
+    """
+    if regions is None:
+        regions = parc.clut["#No."]
+    if (not isinstance(regions, list)) and (not isinstance(regions, np.ndarray)):
+        regions = [regions]
+    if isinstance(regions[0], str):
+        regions = parc.name2id(regions)
+
+    mask = np.isin(parc.volume, regions)
+
+    return nib.Nifti1Image(mask.astype(float), parc.affine)

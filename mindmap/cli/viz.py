@@ -94,6 +94,8 @@ def main():
 
         extent_mask = get_spike_extent_mask(iave.data.T, perc_max_amp=0.7)
         spurious_mask = get_spurious_mask(extent_mask, get_ch_positions(iave), spurious_dist=0.01)
+        import numpy as np
+        iave.data = np.abs(iave.data)
         plot_ieeg(src, iave, subject=args.subject, extent_mask=extent_mask, spurious_mask=spurious_mask).show()
 
     elif args.target == "vave":

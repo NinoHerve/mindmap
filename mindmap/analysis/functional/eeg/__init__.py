@@ -21,6 +21,7 @@ from .metric import (
 from .process import (
     compute_virtual_ieeg,
     normalize_evoked,
+    align_eeg_timeseries,
 )
 
 from .simulation import build_eeg_template
@@ -43,4 +44,5 @@ __all__ = [
     "compute_ratio_spurious",
     "compute_grova_metrics",
     "scale_montage",
+    "align_eeg_timeseries",
 ]
