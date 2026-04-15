@@ -12,6 +12,11 @@ License: MIT
 """
 
 import numpy as np
+from scipy.stats import rankdata
+from sklearn.metrics import (
+    confusion_matrix, accuracy_score, precision_score, recall_score, f1_score,
+    matthews_corrcoef, roc_curve, precision_recall_curve, auc, average_precision_score,
+)
 
 def avg_power(signal: np.ndarray) -> np.ndarray:
     """
@@ -33,6 +38,46 @@ def avg_power(signal: np.ndarray) -> np.ndarray:
     avg_pow = np.sum(avg_pow**2, axis=1)/signal.shape[-1]
 
     return avg_pow
+
+
+def estimate_snr(
+    timeserie: np.ndarray,
+    baseline: tuple[int, int],
+    method: str="power",
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Computes time-varying SNR relative to a baseline window.
+
+    Parameters
+    ----------
+    timeserie: np.ndarray of shape (n_samples, n_timepoints)
+        Timeseries.
+
+    baseline: tuple[int,int]
+        Indices [start, stop) for the noise window.
+
+    method: str ['power', 'variance']
+        Whether to use power-based or variance-based 
+        estimate.
+
+    Returns
+    -------
+    snr, snr_db: tuple[np.ndarray, np.ndarray] of shapes (n_times,)
+    """
+    b_start, b_stop = baseline
+
+    if method == "power":
+        noise_power = np.mean(timeserie[:, b_start:b_stop] ** 2)
+        signal_power = np.mean(timeserie ** 2, axis=0)
+    elif method == "variance":
+        noise_power = np.var(timeserie[:, b_start:b_stop])
+        signal_power = np.var(timeserie, axis=0)
+    else:
+        raise ValueError(f"Unknown method '{method}'. Expected 'power' or 'variance'.")
+
+    snr = signal_power / noise_power
+    snr_db = 10 * np.log10(snr)
+    return snr, snr_db
 
 
 def point_to_area_distance(
@@ -117,7 +162,6 @@ def compute_distances(array1, array2, output_type="scalar"):
         return np.linalg.norm(diff, axis=2)
     else:
         raise ValueError("output_type must be 'scalar' or 'vector'")
-    
 
 
 def extract_voxel_volume(affine: np.ndarray):
@@ -135,46 +179,129 @@ def extract_voxel_volume(affine: np.ndarray):
     return volume
 
 
-def calc_spatial_correlation(map_ref, map_est):
+def calc_correlation(
+    arr1: np.ndarray,
+    arr2: np.ndarray,
+    method: str = "pearson",
+    axis: int = None,
+    eps: float = 1e-8,
+) -> np.ndarray | float:
     """
-    Pearson correlation between reference and estimated spatial maps.
-
-    Ths function performs a vectorized calculation of the spatial correlation
-    for each observation (e.g. timepoint or trial) independently.
+    Correlation between two arrays.
 
     Parameters
     ----------
-    map_ref: np.ndarray of shape (n_observations, n_channels)
-        The ground truth of reference spatial maps (e.g., actual iEEG).
+    arr1: np.ndarray of shape (n_samples, n_timepoints)
 
-    map_est: np.ndarray of shape (n_observations, n_channels)
-        The estimated spatial maps (e.g., virtual iEEG from EEG)
+    arr2: np.ndarray of shape (n_samples, n_timepoints)
+
+    method: str ['pearson', 'spearman', 'log-envelope']
+        Correlation method.
+
+    axis: int or None
+        Axis along which to compute correlation
+        - None: spatio-temporal correlation (flatten both dims) -> scalar
+        - 0: along samples at each timepoint -> (n_timepoints,)
+        - 1: along timepoints for each sample -> (n_samples,)
+
+    eps: float
+        Small constant added before log to avoid log(0)
 
     Returns
     -------
-    sp_cor: np.ndarray of shape (n_observations,)
-        The spatial correlation coefficient for every observation.
-        Returns 0 where a map has zero variance.
+    corr: np.ndarray | float
+        Returns 0 where an array has zero variance.
     """
-    # ensure inputs are at least 2D: (n_observations, n_channels)
-    # if input is (M,), it becomes (1,M)
-    map_ref = np.atleast_2d(map_ref)
-    map_est = np.atleast_2d(map_est)
+    if arr1.shape != arr2.shape:
+        raise ValueError(
+            f"Shape mismatch: arr1 {arr1.shape} and arr2 {arr2.shape} must be identical."
+        )
+    if method not in ("pearson", "spearman", "log-envelope"):
+        raise ValueError(f"Unknown method '{method}'. Expected 'pearson', 'spearman' or 'log-envelope'.")
 
-    if map_ref.shape != map_est.shape:
-        raise ValueError(f"Shape mismatch: map_ref {map_ref.shape} and map_est {map_est.shape} must be identical.")
+    # compute correlation
+    if method == "log-envelope":
+        arr1 = np.log(np.abs(arr1) + eps)
+        arr2 = np.log(np.abs(arr2) + eps)
+        method = "pearson"
 
-    # center data
-    ref_c = map_ref - map_ref.mean(axis=1, keepdims=True)
-    est_c = map_est - map_est.mean(axis=1, keepdims=True)
+    if method == "pearson":
+        arr1_c = arr1 - arr1.mean(axis=axis, keepdims=True)
+        arr2_c = arr2 - arr2.mean(axis=axis, keepdims=True)
 
-    # cacluate correlation
-    upper = np.sum(ref_c * est_c, axis=1)
-    lower = np.sqrt(np.sum(ref_c**2, axis=1) * np.sum(est_c**2, axis=1))
+    elif method == "spearman":
+        arr1_c = rankdata(arr1, axis=axis).astype(float)
+        arr2_c = rankdata(arr2, axis=axis).astype(float)
+        arr1_c -= arr1_c.mean(axis=axis, keepdims=True)
+        arr2_c -= arr2_c.mean(axis=axis, keepdims=True)
 
-    sp_cor = np.divide(upper, lower, out=np.zeros_like(upper), where=lower > 1e-12)
+    upper = np.sum(arr1_c * arr2_c, axis=axis)
+    lower = np.sqrt(np.sum(arr1_c**2, axis=axis) * np.sum(arr2_c**2, axis=axis))
+    corr = np.divide(upper, lower, out=np.zeros_like(upper), where=lower > 1e-12)
     
-    return sp_cor if sp_cor.size > 1 else sp_cor[0]
+    return corr
+
+
+def calc_correlation_matrix(
+    arr1: np.ndarray,
+    arr2: np.ndarray,
+    method: str = "pearson",
+    eps: float = 1e-8,
+) -> np.ndarray:
+    """
+    Computes a correlation matrix where result[i, j] is the correlation
+    between arr1[i] and arr2[j].
+
+    Parameters
+    ----------
+    arr1: np.ndarray of shape (n_samples_1, n_timepoints)
+    
+    arr2: np.ndarray of shape (n_samples_2, n_timepoints)
+
+    method: str ['pearson', 'spearman', 'log-envelope]
+    
+    eps: float
+        Small constant for log-envelope or to avoid division by zero.
+
+    Returns
+    -------
+    corr_matrix: np.ndarray of shape (n_samples_1, n_samples_2)
+    """
+    if arr1.shape[1] != arr2.shape[1]:
+        raise ValueError(
+            f"Timepoint mismatch: arr1 {arr1.shape[1]} and arr2 {arr2.shape[1]} must match."
+        )
+    
+    # Pre-process for Log-Envelope
+    if method == "log-envelope":
+        arr1 = np.log(np.abs(arr1) + eps)
+        arr2 = np.log(np.abs(arr2) + eps)
+        method = "pearson"
+
+    # Transform to Rank for spearman
+    if method == "spearman":
+        # rankdata returns flattened array if axis=None, so we specify axis=1
+        arr1 = rankdata(arr1, axis=1).astype(float)
+        arr2 = rankdata(arr2, axis=1).astype(float)
+        method = "pearson"
+
+    # Standardize and Compute Pearson via Matrix Multiplication
+    if method == "pearson":
+        # center across timepoint (axis=1)
+        arr1_c = arr1 - arr1.mean(axis=1, keepdims=True)
+        arr2_c = arr2 - arr2.mean(axis=1, keepdims=True)
+
+        # compute denominators (L2 norms)
+        norm1 = np.sqrt(np.sum(arr1_c**2, axis=1, keepdims=True))
+        norm2 = np.sqrt(np.sum(arr2_c**2, axis=1, keepdims=True))
+
+        # normalize the centere arrays
+        arr1_n = np.divide(arr1_c, norm1, out=np.zeros_like(arr1_c), where=norm1 > 1e-12)
+        arr2_n = np.divide(arr2_c, norm2, out=np.zeros_like(arr2_c), where=norm2 > 1e-12)
+
+        return arr1_n @ arr2_n.T
+    
+    raise ValueError(f"Unknown method '{method}'")
 
 
 def calc_pairwise_dist(array1, array2, output_type="scalar"):
@@ -318,3 +445,193 @@ def compute_correlation(data1, data2, axis=0):
     d2_norm = d2_mean / np.linalg.norm(d2_mean, axis=axis, keepdims=True)
 
     return np.sum(d1_norm * d2_norm, axis=axis)
+
+
+def get_gfp(data, axis=0):
+    """Global Field Power (GFP) is the spatial standard deviation at each time point"""
+    return np.std(data, axis=axis)
+
+
+def compute_cog_trajectory(data:np.ndarray, pos:np.ndarray) -> np.ndarray:
+    """
+    Compute the 3D Center of Gravity trajectory over time.
+
+    Parameters
+    ----------
+    data: np.ndarray of shape (n_samples, n_timepoints)
+
+    pos: np.ndarray of shape (n_samples, 3)
+        The 3D coordinates (x,y,z) for each sample.
+
+    Returns
+    -------
+    cog_trajectory: np.ndarray of shape (n_timepoints, 3)
+        The (x,y,z) coordinates of the CoG at each timepoint.
+    """
+    if data.shape[0] != pos.shape[0]:
+        raise ValueError(f"Channel mismatch: data has {data.shape[0]} but pos has {pos.shape[0]}")
+    
+    # Use absolute values because negative potential/current and positive
+    # potential/current both represent acitvity "mass"
+    weights = np.abs(data)
+
+    # total "mass"
+    total_mass = np.sum(weights, axis=0)
+
+    # avoid division by zero in baseline noise
+    total_mass[total_mass == 0] = 1e-15
+
+    # compute weighted average for X, Y, and Z
+    cog_trajectory = (pos.T @ weights) / total_mass
+
+    return cog_trajectory.T
+
+
+def calc_rem(
+    data_ref: np.ndarray,
+    data_est: np.ndarray,
+    axis: int = 0,
+    epsilon: float = 1e-12,
+) -> np.ndarray:
+    """
+    Compute Relative Energy Map along a specific axis.
+
+    Formula: (data_est^2) / sum(data_ref^2) along the axis
+    """
+    if data_ref.shape != data_est.shape:
+        raise ValueError("Arrays must have the same shape to compute REM.")
+    
+    # Calculate energy (squared magnitude)
+    energy_ref = data_ref**2
+    energy_est = data_est**2
+
+    # Sum of reference energy for nomalization
+    total_ref_energy = np.sum(energy_ref, axis=axis, keepdims=True)
+
+    # avoid division by zero
+    total_ref_energy[total_ref_energy < epsilon] = 1.0
+
+    # return the relative map
+    return energy_est / total_ref_energy
+
+
+def calc_confusion_matrix(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    threshold: float = 0.5,
+    relative: bool = False,
+) -> dict:
+    """
+    Calculates the confusion matrix between a binarized ground truth and 
+    a binarized or continuous signal.
+
+    Parameters:
+    ----------
+    y_true: np.ndarray
+        Binary ground truth.
+
+    y_pred: np.ndarray
+        Binary or continuous prediction.
+
+    threshold: float [0-1]
+        Scalar value to binarize y_pred.
+
+    relative: bool
+        If True, threshold is treated as a percentage of the max value.
+
+    Returns:
+    -------
+    dict
+        A dictionary containing Accuracy, Precision, Recall, F1-score, and specificity
+    """
+    # flatten arrays
+    yt = y_true.ravel()
+    yp = y_pred.ravel()
+
+    # threshold
+    t_pred = (np.max(yp) * threshold) if relative else threshold
+
+    # binarize
+    yp_bin = (yp >= t_pred).astype(int)
+
+    # counts
+    tn, fp, fn, tp = confusion_matrix(yt, yp_bin).ravel()
+
+    return {"tp": tp, "tn": tn, "fp":fp, "fn":fn}
+
+
+def calc_activity_scores(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    threshold: float = 0.5,
+    relative: bool = False
+) -> dict:
+    """
+    Computes classification metrics for activity data.
+
+    Parameters:
+    ----------
+    y_true: np.ndarray of shape (samples,) or (samples, time) 
+        Ground truth array.
+
+    y_pred: np.ndarray of shape (samples,) or (samples, time)
+        Estimated activity array.
+
+    threshold: float [0-1]
+        Scalar value to binarize y_pred.
+
+    Returns:
+    -------
+    dict
+        A dictionary containing Accuracy, Precision, Recall, F1-score, and specificity.
+    """
+    # flatten arrays
+    yt = y_true.ravel()
+    yp = y_pred.ravel()
+
+    # threshold
+    t_pred = (np.max(yp) * threshold) if relative else threshold
+
+    # binarize
+    yp_bin = (yp >= t_pred).astype(int)
+
+    # scores
+    return {
+        "accuracy": accuracy_score(yt, yp_bin),
+        "precision": precision_score(yt, yp_bin, zero_division=np.nan),
+        "recall": recall_score(yt, yp_bin, zero_division=np.nan),
+        "f1": f1_score(yt, yp_bin, zero_division=np.nan),
+        "mcc": matthews_corrcoef(yt, yp_bin),
+    }
+
+def calc_performance_curves(
+    y_true,
+    y_pred,
+) -> dict:
+    """
+    Computes data for ROC and PR curves.
+
+    Parameters:
+    ----------
+    y_true: np.ndarray
+        Binarized ground truth.
+
+    y_pred: np.ndarray
+        Continuous estimate.
+    """
+    # flatten
+    yt = y_true.ravel()
+    yp = y_pred.ravel()
+
+    # compute ROC
+    fpr, tpr, _ = roc_curve(yt, yp)
+    roc_auc = auc(fpr, tpr)
+
+    # compute precision recall
+    precision, recall, _ = precision_recall_curve(yt, yp)
+    ap = average_precision_score(yt, yp)
+
+    return {
+        "roc": {"fpr": fpr, "tpr":tpr, "auc":roc_auc},
+        "pr": {"precision": precision, "recall": recall, "ap": ap}
+    }

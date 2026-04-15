@@ -53,12 +53,13 @@ class TutoManager(DatasetManager):
         if "intra" in subject_id:
             subreader.add_datatype("eeg", "spk", build_intra_path, load_eeg_intra)
             subreader.add_datatype("ieeg", "spk", build_intra_path, load_eeg_intra)
-            subreader.add_datatype("eeg-trans", "mm", lambda *_, : Path("."), load_identity_trans)
+            subreader.add_datatype("eeg-trans", "mm", lambda *_, **__, : Path("."), load_identity_trans)
 
         # configure for simf data
         if "simf" in subject_id:
             subreader.add_datatype("eeg", "raw", mne_bids.BIDSPath, lambda f: mne_bids.read_raw_bids(f, verbose="warning").load_data(verbose="warning"))
             subreader.add_datatype("gt", "raw", build_simf_path, mne.read_source_estimate)
+            subreader.add_datatype("eeg-trans", "mm", lambda *_, **__, : Path("."), load_identity_trans)
 
         # configure for spike data
         if "spike" in subject_id:
@@ -87,7 +88,7 @@ def build_intra_path(root, subject, datatype, **kwargs):
     EEG & iEEG path for intra dataset.
     """
     if datatype in ["eeg", "ieeg"]:
-        
+
         # manage bids entities
         task = kwargs.get("task")
         task = f"_task-{task}" if task else ""
@@ -169,7 +170,7 @@ def load_eeg_intra(path):
     for f in files:
         spike = mne.io.read_raw_brainvision(f, verbose="warning")
         dat.append(spike["data"][0])
-        
+
     dat = np.array(dat)
 
     # info & montage

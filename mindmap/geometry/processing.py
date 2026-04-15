@@ -202,6 +202,7 @@ def fit_surface_to_volume(
     z_floor: int = None,
     outer_interpolator: RegularGridInterpolator = None,
     min_buffer: float = 3.0,
+    sphere: pv.PolyData = None, # In order to use MNE's icosahedron (for tri ordering)
 ):
     """
     Fit a 5th order icosahedron with Z-capping and containment constraints.
@@ -236,11 +237,15 @@ def fit_surface_to_volume(
     # initialize 5th order icosahedron (~5k vertices)
     # start with a large sphere outside the mask
     com = center_of_mass(solid_mask)
-    sphere = pv.Icosphere(radius=120, center=com, nsub=5)
-    
+
+    if sphere is None:
+        sphere = pv.Icosphere(radius=120, center=com, nsub=5)
+    else:
+        sphere.points = (sphere.points * 120) + com
+
     for i in range(iterations):
         # calculate surface normals
-        sphere.compute_normals(inplace=True)
+        sphere.compute_normals(inplace=True, consistent_normals=False)
         vertices = sphere.points
         normals = sphere.point_data["Normals"]
 
@@ -257,23 +262,19 @@ def fit_surface_to_volume(
             combined_d = d_target
 
         # define movement
-        move = np.clip(combined_d, -2, 2)    
+        move = np.clip(combined_d, -2, 2)
 
         # damping to prevent jitter
         dampening = np.clip(np.abs(combined_d) / 5.0, 0.2, 1.0)
         sphere.points += normals * (move[:, np.newaxis] * step_size * dampening[:, np.newaxis])
 
         # smooth at each iteration to preserve manifold
-        sphere = sphere.smooth(
-            n_iter = n_smooth,
-            relaxation_factor = 0.05,
-            #feature_smoothing = True,
-            #feature_angle = 45,
-            #boundary_smoothing = True,
-        )
+        smoothed = sphere.smooth(n_iter=n_smooth, relaxation_factor=0.05)
+        sphere.points = smoothed.points        # ensures thate sphere.faces remains untouched
 
         if i % 10 == 0:
             # prevent triangle stretching in complex area like the skull base
-            sphere = sphere.smooth_taubin(n_iter=5, pass_band=0.1)
+            taubin = sphere.smooth_taubin(n_iter=5, pass_band=0.1)
+            sphere.points = taubin.points
 
     return sphere, interpolator

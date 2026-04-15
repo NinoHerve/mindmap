@@ -28,9 +28,18 @@ import pyvista as pv
 
 import mne
 
+from mindmap.core.metric import get_gfp
+from mindmap.core.process import normalize_timeserie_by_baseline
 from mindmap.analysis.functional.eeg.io import get_ch_positions
+from mindmap.analysis.functional.eeg.process import normalize_evoked
+from mindmap.analysis.functional.eeg.metric import (
+    compute_evoked_cog, compute_evoked_rem,
+)
 from mindmap.geometry import surf_to_polydata
-from .utils import BaseBrainPlotter, build_hemi_pair, find_clim
+from mindmap.viz.utils import BaseBrainPlotter, build_hemi_pair, find_clim, store_in_lists
+from mindmap.viz.core import (
+    plot_multi_scatterplots, plot_cog_trajectories, plot_rem,
+)
 
 def plot_alignment(bem, ave):
     """
@@ -53,12 +62,73 @@ def plot_alignment(bem, ave):
 
     return plotter
 
+def plot_ieeg_static(
+    src: mne.SourceSpaces,
+    ieeg: mne.Evoked,
+    signals: np.ndarray | list[np.ndarray],
+    titles: str | list[str] = "",
+    mesh_params: dict = None,
+    pc_params: dict = None,
+) -> pv.Plotter:
+    """
+    Static multi-window plot for iEEG channel metrics (e.g., scores)
+    """
+    # Handle inputs as lists for multi-window support
+    signals, titles = store_in_lists(signals, titles)
+
+    n_plots = len(signals)
+    plotter = pv.Plotter(shape=(1, n_plots))
+
+    # Setup default parameters
+    mesh_parameters = {
+        "smooth_shading": True,
+        "color": "skyblue",
+        "opacity": 0.1,
+    } | (mesh_params or {})
+
+    # Use a fixed clim [0, 1] for scores, or dynamic for raw potential
+    clim = find_clim(np.array(signals))
+
+    pc_parameters = {
+        "point_size": 12,
+        "render_points_as_spheres": True,
+        "cmap": "viridis",
+        "clim": clim,
+    } | (pc_params or {})
+
+    # Build brain geometry
+    hemi_l, hemi_r, _, __, ___ = build_hemi_pair(src)
+    ch_pos = get_ch_positions(ieeg)
+
+    # Iterate through subplots
+    for i in range(n_plots):
+        plotter.subplot(0, i)
+
+        # Add Brain Meshes
+        plotter.add_mesh(hemi_l, name=f"lh_{i}", **mesh_parameters)
+        plotter.add_mesh(hemi_r, name=f"rh_{i}", **mesh_parameters)
+
+        # Add title
+        if i < len(titles):
+            plotter.add_title(titles[i], font_size=10)
+
+        # Create Point Cloud for this signal
+        sig = signals[i]
+        pc = pv.PolyData(ch_pos)
+        pc["metric"] = sig
+
+        plotter.add_mesh(pc, scalars="metric", **pc_parameters)
+
+    return plotter
+
+
 
 def plot_ieeg(
     src : mne.SourceSpaces,
     ieeg : mne.Evoked,
     extent_mask : np.ndarray = None,
     spurious_mask : np.ndarray = None,
+    ts_params: dict = None,
     subject : str = "unknown"
 ):
     """
@@ -81,10 +151,29 @@ def plot_ieeg(
     subject:
         Subject id.
     """
+    ts_params = ts_params or {}
 
-    # -------------------
-    # Prepare parameters
-    # -------------------
+    # work on copies sine MNE modifies in-place
+    timeseries = ieeg.copy()
+
+    # --------------------
+    # Process time series
+    # --------------------
+
+    if norm := ts_params.get("normalize"):
+        timeseries = normalize_evoked(timeseries, "global", norm)
+
+    if ts_params.get("absolute"):
+        timeseries.data = np.abs(timeseries.data)
+
+    if np.all(timeseries.data > 0):
+        cmap = "kr"
+    else:
+        cmap = "bkr"
+
+    # ------------------------
+    # Prepare plot parameters
+    # ------------------------
 
     mesh_params = {
         "smooth_shading" : True,
@@ -95,11 +184,12 @@ def plot_ieeg(
     pc_params = {
         "point_size" : 10,
         "render_points_as_spheres" : True,
+        "cmap" : cmap,
     }
 
     return TimePC(
         source_space = src,
-        evoked = ieeg,
+        evoked = timeseries,
         title = f"Intracranial EEG sub-{subject}",
         scalar = "Electric potential [V]",
         extent_mask = extent_mask,
@@ -414,19 +504,34 @@ def plot_channel_grid(
     return slider   # keep reference to prevent garbage collection
 
 
-def plot_gfp_comparison(evoked_ref, dict_of_evoked_est):
+def plot_gfp_comparison(evoked_ref, dict_of_evoked_est, norm_baseline=None):
     """
     Plot global field power (gfp) of the true iEEG against each 
     reconstruction method.
     """
     fig, ax = plt.subplots(figsize=(10,4))
 
+    if norm_baseline is not None:
+        normalize = True
+        t_start, t_end = evoked_ref.time_as_index(norm_baseline)
+    else:
+        normalize = False
+        t_start, t_end = None, None
+
+    ref_gfp = get_gfp(evoked_ref.data)
+    if normalize:
+        ref_gfp = normalize_timeserie_by_baseline(ref_gfp, baseline=(t_start, t_end))
+
     # plot true iEEG GFP
-    ax.plot(evoked_ref.times, evoked_ref.data.std(axis=0), color="black", linewidth=2, label="True iEEG")
+    ax.plot(evoked_ref.times, ref_gfp, color="black", linewidth=2, label="True iEEG")
 
     # plot each estimation method
     for name, evoked_est in dict_of_evoked_est.items():
-        ax.plot(evoked_est.times, evoked_est.data.std(axis=0),
+        gfp = get_gfp(evoked_est.data)
+        if normalize:
+            gfp = normalize_timeserie_by_baseline(gfp, baseline=(t_start, t_end))
+
+        ax.plot(evoked_est.times, gfp,
                 label=f"Virtual: {name}", linestyle="--")
 
     ax.set_title("Global Field Power Comparison")
@@ -648,4 +753,141 @@ def plot_gfp(evoked, whitener=None, title="Global Field Power"):
     plt.close("all")
 
     return fig
+
+
+
+
+
+def plot_evoked_scatterplots(
+    evoked_ref: mne.Evoked,
+    other_evokeds: dict[str, mne.Evoked],
+    compare_by: str = "space",
+) -> go.Figure:
+    """
+    Plots scatter plots.
+
+    Parameters
+    ----------
+    evoked_ref: mne.Evoked
+
+    other_evokeds: dict[str,mne.Evoked]
+        Dictionary of evokeds to compare to. Key will be
+        used as labels for the plot.
+
+    compare_by: str
+        - compare_by='space': Dots are channels, Slider moves through time.
+        - compare_by='time': Dots are timepoints, Slider moves through channels.
+
+    Returns
+    -------
+    fig: go.Figure
+    """
+    # extract raw numpy
+    ref_matrix = evoked_ref.data
+    cmp_matrices = {name: evk.data for name, evk in other_evokeds.items()}
+
+    if compare_by == "time":
+        # transpose to (Time x Channels)
+        ref_matrix = ref_matrix.T
+        cmp_matrices = {k: v.T for k, v in cmp_matrices.times()}
+
+        point_labels = [f"{t*1000:1f} ms" for t in evoked_ref.times]
+        frame_labels = [f"Channel: {ch}" for ch in evoked_ref.ch_names]
+        slider_name = "Channel"
+    else:
+        # keep (Channels x Time)
+        point_labels = evoked_ref.ch_names
+        frame_labels = [f"Time: {t*1000:.1f} ms" for t in evoked_ref.times]
+        slider_name = "Time"
+
+    return plot_multi_scatterplots(
+        data_ref=ref_matrix,
+        other_datasets=cmp_matrices,
+        point_labels=point_labels,
+        frame_labels=frame_labels,
+        slider_name=slider_name,
+    )
+
+
+def plot_evoked_cog(
+    dict_of_evk: dict[str:mne.Evoked],
+    ref_name: str = None,
+    rng: tuple = (None, None),
+    source_space: mne.SourceSpaces = None,
+    center_ref: bool = None,
+    colors = None,
+    units: str = "mm",
+):
+    """
+    Plot center of gravity for evoked objects.
+    """
+    # colors
+    if colors is None:
+        colors = ["firebrick", "dodgerblue", "goldenrod", "darkorchid"]
+
+    # units
+    scale = 1000.0 if units == "mm" else 1.0
+
+    # center of gravities
+    dict_of_traj = {}
+    for k, evk in dict_of_evk.items():
+        evk_crop = evk.copy().crop(tmin=rng[0], tmax=rng[1])
+        dict_of_traj[k] = compute_evoked_cog(evk_crop) * scale
+
+    # electrode positions
+    pos = get_ch_positions(evk_crop) * scale
+
+    # times
+    times = evk_crop.times
+
+    # brain mesh
+    brain_mesh = None
+    if source_space is not None:
+        hemi_l = surf_to_polydata(source_space[0]["rr"]*scale, source_space[0]["tris"])
+        hemi_r = surf_to_polydata(source_space[1]["rr"]*scale, source_space[1]["tris"])
+
+        brain_mesh = hemi_l + hemi_r
+
+    return plot_cog_trajectories(
+        dict_of_traj,
+        times = times,
+        ref_name = ref_name,
+        electrode_pos = pos,
+        brain_mesh = brain_mesh,
+        center_ref = center_ref,
+        colors = colors,
+        units = units,
+    )
+
+
+def plot_evoked_rem(
+    evoked_ref: mne.Evoked,
+    evoked_est: mne.Evoked,
+    mode: str = "spatial",
+    rng: tuple[float, float] = (None, None),
+):
+    """
+    Plots a heatmap of the Relative Energy Map.
+    """
+    # comptue REM
+    rem_map = compute_evoked_rem(evoked_ref, evoked_est, mode=mode, rng=rng)
+
+    # extent
+    times = evoked_ref.times
+    mask = (times >= (rng[0] or times[0])) & (times <= (rng[1] or times[-1]))
+    crop_times = times[mask]
+
+    extent = [crop_times[0], crop_times[-1], 0, rem_map.shape[0]]
+
+    fig, ax = plot_rem(
+        rem_map,
+        extent = extent,
+        title = f"Relative Energy Map - {mode.capitalize()} Normalization",
+        label = f"Relative Energy ({mode} normalized)",
+    )
+
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Channels (Index)")
+
+    return fig, ax
 

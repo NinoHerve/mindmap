@@ -20,6 +20,7 @@ from .utils import (
 from .io import (
     write_eig,
     write_csv_row,
+    get_config,
 )
 
 from .process import normalize_data
@@ -38,4 +39,5 @@ __all__ = [
     "get_spurious_mask",
     "write_eig",
     "write_csv_row",
+    "get_config",
 ]

@@ -11,6 +11,9 @@ License: MIT
 import mne
 
 from mindmap.core.process import normalize_data
+from mindmap.analysis.functional.common.process import (
+    binarize_mne_object,
+)
 
 def normalize_source_estimate(
     stc: mne.SourceEstimate,
@@ -51,3 +54,46 @@ def normalize_source_estimate(
     stc_norm.comment = f"{old_comment} | {strategy}-{method}"
 
     return stc_norm
+
+
+def binarize_stc(
+    stc: mne.SourceEstimate,
+    threshold: float = 0.5,
+    method: str = "max",
+    absolute: bool = True,
+    baseline: tuple = (None, None),
+) -> mne.SourceEstimate:
+    """
+    Binarize source time currents.
+
+    Parameters:
+    stc: mne.SourceEstimate
+        Source time currents.
+    
+    threshold: float
+        Threshold for binarization.
+
+    method: str [none, 'max', 'std']
+        Method for thresholding:
+        - none: Considers threshold raw.
+        - max: Considers threshold as a percentage [0-1] of maximum value.
+        - std: Considers threshold as a multiple of standard deviation (requires noise baseline).
+
+    absolute: bool
+        If True, apply thresholding on absolute value of signal.
+
+    baseline: tuple (float, float)
+        Range in [ms] for the noise baseline.
+
+    Returns:
+    -------
+    stc_bin: mne.SourceEstimate
+        Binarized source time currents.
+    """
+    return binarize_mne_object(
+        obj = stc,
+        threshold = threshold,
+        method = method,
+        absolute = absolute,
+        baseline = baseline,
+    )

@@ -78,7 +78,7 @@ class MNE:
     # Component modules
     # ------------------
 
-    def _setup_preprocessor(self, info):
+    def _setup_preprocessor(self, info, nave=1):
         """
         Extracts whitener from noise covariance.
 
@@ -106,6 +106,8 @@ class MNE:
 
         # whitener
         ready_cov = prepare_noise_cov(self.noise_cov, info, verbose=self.verbose)
+        ready_cov["data"] = ready_cov["data"]/nave  # scale according to number of trials
+        ready_cov["eig"] = ready_cov["eig"]/nave
         whitener, _ = compute_whitener(self.noise_cov, info, verbose=self.verbose)
 
         # store rank-related info
@@ -194,7 +196,7 @@ class MNE:
     def solve(self, evoked, lambda2=None):
         """Solve inverse problem."""
         # Preprocessors
-        projs_gain, projs_data, whitener = self._setup_preprocessor(evoked.info)
+        projs_gain, projs_data, whitener = self._setup_preprocessor(evoked.info, evoked.nave)
 
         # 1. Process gain
         kern = self.prepare_kernel(projs_gain, whitener)

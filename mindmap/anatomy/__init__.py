@@ -8,3 +8,4 @@ from . import source_space
 from . import parcellation
 from . import tractogram
 from . import forward
+from . import segmentation

@@ -19,7 +19,7 @@ import h5py
 import nibabel as nib
 import mne
 
-from mindmap.core.io import read_config, read_eig
+from mindmap.core.io import read_config, read_eig, get_config
 from mindmap.anatomy.utils import read_cortex_label
 from mindmap.anatomy.mri.io import read_mri
 from mindmap.anatomy.parcellation.core import Parcellation
@@ -72,6 +72,8 @@ class DatasetManager:
         if config is None:
             raise KeyError("Missing BEM configuration in configuration file.")
 
+        config = get_config(config)
+
         return read_bem_labels(config)
 
 
@@ -100,7 +102,7 @@ class SubjectReader:
             "v-ave": ("mm", build_mm_path),
 
             # freesurfer
-            "T1"         : ("fs", build_fs_path),
+            "t1.mgz"     : ("fs", build_fs_path),
             "brain"      : ("fs", build_fs_path),
             "orig"       : ("fs", build_fs_path),
             "white"      : ("fs", build_fs_path),
@@ -115,31 +117,31 @@ class SubjectReader:
 
         self.loader_registry = {
             # mindmap
-            "dseg": read_mri,
-            "parc": self._load_parc_internal,
-            "ctx" : self._load_ctx_internal,
-            "src": lambda f: mne.read_source_spaces(f, verbose="warning"),
-            "bem": lambda f: mne.read_bem_solution(f, verbose="warning"),
-            "fwd": lambda f: mne.read_forward_solution(f, verbose="warning"),
-            "con": np.load,
-            "eig": self._load_eig_internal,
-            "ave": lambda f: mne.read_evokeds(f, verbose="warning")[0],
-            "i-ave": lambda f: mne.read_evokeds(f, verbose="warning")[0],
-            "cov": self._load_cov_internal,
-            "stc": mne.read_source_estimate,
-            "eeg-trans": lambda f: mne.read_trans(f, verbose="warning"),
-            "v-ave": lambda f: mne.read_evokeds(f, verbose="warning")[0],
+            "dseg"      : read_mri,
+            "parc"      : self._load_parc_internal,
+            "ctx"       : self._load_ctx_internal,
+            "src"       : lambda f: mne.read_source_spaces(f, verbose="warning"),
+            "bem"       : lambda f: mne.read_bem_solution(f, verbose="warning"),
+            "fwd"       : lambda f: mne.read_forward_solution(f, verbose="warning"),
+            "con"       : np.load,
+            "eig"       : self._load_eig_internal,
+            "ave"       : lambda f: mne.read_evokeds(f, verbose="warning")[0],
+            "i-ave"     : lambda f: mne.read_evokeds(f, verbose="warning")[0],
+            "cov"       : self._load_cov_internal,
+            "stc"       : mne.read_source_estimate,
+            "eeg-trans" : lambda f: mne.read_trans(f, verbose="warning"),
+            "v-ave"     : lambda f: mne.read_evokeds(f, verbose="warning")[0],
 
             # freesurfer
-            "T1": read_mri,
-            "brain": read_mri,
-            "orig": read_mri,
-            "white": nib.freesurfer.io.read_geometry,
-            "pial": nib.freesurfer.io.read_geometry,
-            "inflated": nib.freesurfer.io.read_geometry,
-            "vertex-ctx": read_cortex_label,
-            "ras2tkras": self._load_ras2tkras_internal,
-            "vol-info": make_volume_info,
+            "t1.mgz"     : read_mri,
+            "brain"      : read_mri,
+            "orig"       : read_mri,
+            "white"      : nib.freesurfer.io.read_geometry,
+            "pial"       : nib.freesurfer.io.read_geometry,
+            "inflated"   : nib.freesurfer.io.read_geometry,
+            "vertex-ctx" : read_cortex_label,
+            "ras2tkras"  : self._load_ras2tkras_internal,
+            "vol-info"   : make_volume_info,
 
             # charm
             "seg": self._load_seg_internal,
@@ -181,7 +183,7 @@ class SubjectReader:
 
     def _load_ras2tkras_internal(self, **kwargs):
         """Load ras2tkras."""
-        mri = self.load("T1", **kwargs)
+        mri = self.load("t1.mgz", **kwargs)
 
         vox2ras     = mri.header.get_vox2ras()
         vox2ras_tkr = mri.header.get_vox2ras_tkr()
@@ -204,7 +206,7 @@ class SubjectReader:
         if datatype == "parc":
             return build_mm_path(root, subject, "dseg", **kwargs)
         if datatype == "vol-info":
-            return build_fs_path(root, subject, "T1", **kwargs)
+            return build_fs_path(root, subject, "t1.mgz", **kwargs)
         else:
             raise ValueError(f"Datatype '{datatype}' does not have an internal path implementation.")
 

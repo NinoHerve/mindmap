@@ -9,10 +9,21 @@ from .solvers import (
 
 from .process import (
     normalize_source_estimate,
+    binarize_stc,
+)
+
+from .metric import (
+    compute_stc_confusion,
+    compute_stc_scores,
+    compute_stc_curves,
 )
 
 __all__ = [
     "MNE",
     "wCSET",
     "normalize_source_estimate",
+    "binarize_stc",
+    "compute_stc_confusion",
+    "compute_stc_scores",
+    "compute_stc_curves",
 ]

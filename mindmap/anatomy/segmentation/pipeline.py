@@ -10,17 +10,17 @@ Last Modified: 2025-10-24
 License: MIT
 """
 
-from pathlib import Path
+import os
 import shutil
 import subprocess
-
-from mindmap.io import check_file
+from pathlib import Path
 
 def run_charm(
-        subject   : str,
-        t1_file   : str | Path,
-        t2_file   : str | Path = None,
-        overwrite : bool = False
+        subject: str,
+        t1_file: str | Path,
+        t2_file: str | Path = None,
+        charm_dir: str | Path = None,
+        overwrite: bool = False
         ):
     """
     Run the charm command line. The charm comand line generates a head
@@ -28,9 +28,6 @@ def run_charm(
 
     Parameters
     ----------
-    folder: Path | str
-        Folder in which to generate the output.
-
     subject: str
         Subject ID.
 
@@ -40,6 +37,9 @@ def run_charm(
     t2_file: Path | str
         Path to T2 image.
 
+    charm_dir: Path | str
+        CHARM output directory.
+
     overwrite: bool
         Overwrite existing files if True.
 
@@ -47,49 +47,55 @@ def run_charm(
     ------
     m2m_subID: folder
         Folder containing charm segmentation.
-        - m2m_subId/segmentation/labeling.nii.gz: Segemented image.
-        - m2m_subId/segmentation/labeling_LUT.txt: CLUT of image.
+        - {output_dir}/segmentation/labeling.nii.gz: Segemented image.
+        - {output_dir}/segmentation/labeling_LUT.txt: CLUT of image.
         - ...
     """
-    # check files
-    t1 = check_file(t1_file, extension = [".nii",".gz"], instance = "path")
+    t1 = Path(t1_file).resolve()
+    t2 = Path(t2_file).resolve() if t2_file else None
 
-    if t2_file is not None:
-        t2 = check_file(t2_file, extension = [".nii", ".gz"], instance = "path")
-    else:
-        t2 = None
+    # Define where output should go (default to T1 folder)
+    work_dir = Path(charm_dir).resolve()/f"sub-{subject}" if charm_dir else t1.parent
+    m2m_folder = work_dir/f"m2m_sub-{subject}"
 
-    output = t1.parent/f"m2m_sub-{subject}"/"segmentation"/"labeling.nii.gz"
-    if output.exists():
+    # Handle overwrite
+    if m2m_folder.exists():
         if overwrite:
-            shutil.rmtree(t1.parent/f"m2m_sub-{subject}")
+            shutil.rmtree(m2m_folder)
         else:
-            raise FileExistsError(f"The file '{output}' already exists.")
+            raise FileExistsError(f"SimNIBS output {m2m_folder} already exists.")
 
-    # command line for charm using T1 and T2
-    if t2 is not None:
-        assert t1.parent == t2.parent, "T1 and T2 must be in the same folder to run charm."
+    work_dir.mkdir(parents=True, exist_ok=True)
 
-        cml = [
-            "charm",
-            f"sub-{subject}",
-            t1.name,
-            t2.name,
-            "--segment",
-            "--initatlas",
-        ]
+    # Create Symlinks inside the workspace
+    # SimNIBS needs the files in the CWD to find them
+    t1_sym = work_dir/t1.name
+    if t1_sym.exists():
+        t1_sym.unlik()
+    os.symlink(t1, work_dir/t1.name)
 
-    # command line for charm using T1
-    else:
-        cml = [
-            "charm",
-            f"sub-{subject}",
-            t1.name,
-            "--segment",
-            "--initatlas",
-        ]
+    if t2:
+        t2_sym = work_dir/t2.name
+        if t2_sym.exists():
+            t2_sym.unlink()
+        os.symlink(t2, work_dir/t2.name)
 
-    # run subprocess
-    result = subprocess.run(cml, cwd=str(t1.parent), check=True, capture_output=True)
+    # build the command
+    cml = ["charm", f"sub-{subject}", t1.name]
+    if t2:
+        cml.append(t2.name)
+    cml.extend(["--segment", "--initatlas"])
 
-    return result
+    # run subprocess inside the work_dir
+    try:
+        result = subprocess.run(
+            cml,
+            cwd = str(work_dir),
+            check = True,
+            capture_output = True,
+            text = True,
+        )
+        return result
+    except subprocess.CalledProcessError as e:
+        print(f"CHARM failed with error:\n{e.stderr}")
+        raise

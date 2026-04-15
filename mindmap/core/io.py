@@ -11,6 +11,7 @@ License: MIT
 """
 
 from pathlib import Path
+from importlib import resources
 from typing import Any
 import os
 
@@ -129,3 +130,25 @@ def write_csv_row(filename, data, index_cols, write_new=False):
 
     # save
     final_df.to_csv(filename, index=False)
+
+
+def get_config(config_input):
+    """
+    Handles types of input for the config argument.
+    """
+    # Handle "Keywords" for internal library configs
+    if config_input == "charm":
+        # accessing the file inside the package
+        with resources.path("mindmap.resources", "bem_charm_config.yml") as p:
+            config_input = p
+
+    # Handle File Paths (String or Path object)
+    if isinstance(config_input, (str, Path)):
+        return read_config(config_input)
+
+    # Handle Dictionary
+    if isinstance(config_input, dict):
+        return config_input
+
+    raise ValueError("Invalid config input. Provide a path, 'charm', or a dict")
+

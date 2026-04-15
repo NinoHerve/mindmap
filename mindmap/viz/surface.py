@@ -18,7 +18,10 @@ License: MIT
 from typing import Optional
 
 import numpy as np
+import pandas as pd
 
+import matplotlib.pyplot as plt
+import seaborn as sns
 import pyvista as pv
 
 import mne
@@ -27,7 +30,7 @@ import nibabel as nib
 from mindmap.core.process import normalize_data
 from mindmap.anatomy.source_space.io import mne_to_polydata, get_dipole_positions
 from mindmap.anatomy.mri.io import nib_to_polydata
-from mindmap.analysis.functional.eeg.io import get_ch_positions
+from mindmap.viz.sensor import plot_ieeg_static
 from .utils import store_in_lists, find_clim, default_cmap, BaseBrainPlotter, build_hemi_pair
 
 
@@ -501,3 +504,113 @@ def plot_dipole_function(source_space, dipole_function, title="Dipole function")
     plotter.enable_point_picking(callback=pick_dipole)
 
     return plotter
+
+
+
+def plot_confusion(
+    confusion: dict | pd.DataFrame,
+    src: mne.SourceSpaces = None,
+    sensors: mne.Evoked = None,
+    title: str = "Confusion Matrix",
+    **kwargs,
+):
+    """Unified plotter for confusion results."""
+
+    # global
+    if isinstance(confusion, dict):
+        fig, ax = plt.subplots(figsize=(5,4))
+        cm = [[confusion["tn"], confusion["fp"]],
+              [confusion["fn"], confusion["tp"]]]
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax,
+                    xticklabels=["Pred 0", "Pred 1"],
+                    yticklabels=["True 0", "True 1"])
+        ax.set_title(title)
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("True")
+        return fig
+
+    # spatial (a value per timepoint)
+    if confusion.index.name == "time":
+        fig, ax = plt.subplots(figsize=(10, 4))
+        for col in ["tp", "fp", "fn"]:
+            if col in confusion.columns:
+                ax.plot(confusion.index, confusion[col], label=col, lw=2)
+
+        ax.set_title(f"{title} Trends over Time")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Count")
+        ax.legend(loc="upper right")
+        ax.grid(alpha=0.3)
+        return fig
+
+    # temporal
+    if confusion.index.name in ["channel", "dipole_index"]:
+        if src is None:
+            raise ValueError("Source Space (src) required for spatial plotting.")
+
+        # Focus on spatial distribution of TP, FP and FN
+        # TN is usually omitted in spatial plots as it dominates the background
+        targets = ["tp", "fp", "fn"]
+        titles = ["True Positives (Hits)", "False Positives (Ghosts)", "False Negatives (Misses)"]
+        values = [confusion[t].fillna(0).values for t in targets]
+
+        if confusion.index.name == "channel":
+            if sensors is None:
+                raise ValueError("mne.Evoked object (sensors) required for iEEG plotting.")
+            return plot_ieeg_static(src, sensors, values, titles=titles, **kwargs)
+
+        else:
+            return plot_brain(src, values, title=titles, **kwargs)
+
+    raise ValueError(f"Could not determine plotting mode for index: {confusion.index.name}")
+
+
+def plot_scores(
+    scores: dict | pd.DataFrame,
+    src: mne.SourceSpaces = None,
+    sensors: mne.Evoked = None,
+    title: str = "Activity Scores",
+    **kwargs,
+):
+    """Unified plotter for activity scores."""
+    # global
+    if isinstance(scores, dict):
+        fig, ax = plt.subplots(figsize=(6,4))
+        clean = {k: v for k, v in scores.items() if not np.isnan(v)}
+        ax.bar(clean.keys(), clean.values(), color="skyblue", edgecolor="navy")
+        ax.set_title(title)
+        ax.set_ylim(0, 1.1)
+        return fig
+
+    # spatial scores (a value per time point)
+    if scores.index.name == "time":
+        fig, ax = plt.subplots(figsize=(10,4))
+        metrics = [m for m in ["precision", "recall", "f1", "accuracy"] if m in scores.columns]
+        for m in metrics:
+            ax.plot(scores.index, scores[m], label=m, lw=2)
+        ax.set_title(f"{title} over Time")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Score")
+        ax.legend(loc="upper right")
+        ax.grid(alpha=0.3)
+        ax.set_ylim(-0.05, 1.05)
+        return fig
+
+    # temporal scores (a value per channel/dipole)
+    if scores.index.name in ["channel", "dipole_index"]:
+        if src is None:
+            raise ValueError("Source Space (src) required for spatial plotting.")
+
+        metrics = [m for m in ["precision", "recall", "f1", "accuracy"] if m in scores.columns]
+        values = [scores[m].fillna(0).values for m in metrics]
+
+        # evoked like object
+        if scores.index.name == "channel":
+            if sensors is None:
+                raise ValueError("mne.Evoked object (sensors) required for iEEG plotting.")
+            return plot_ieeg_static(src, sensors, values, titles=metrics, **kwargs)
+
+        else:
+            return plot_brain(src, values, title=metrics, **kwargs)
+        
+    raise ValueError(f"Could not determine plotting mode for index: {scores.index.name}")

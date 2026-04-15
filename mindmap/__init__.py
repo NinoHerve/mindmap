@@ -23,6 +23,7 @@ from . import geometry
 from . import anatomy
 from . import analysis
 from . import io
+from . import metric
 
 from .viz import *
 

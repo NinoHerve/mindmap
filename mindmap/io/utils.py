@@ -15,6 +15,7 @@ def build_raw_path(
     space     : str = None,
     desc      : str = None,
     suffix    : str = None,
+    extension : str = None,
 ) -> Path:
     """
     Build BIDS path for raw data.
@@ -30,6 +31,7 @@ def build_raw_path(
         space       = space,
         description = desc,
         suffix      = suffix,
+        extension   = extension,
     )
 
     return fname.fpath
@@ -126,7 +128,7 @@ def build_fs_path(
     sub_dir = Path(root) / f"sub-{sub_id}"
 
     FS_MAP = {
-        "T1"         : ("mri", "T1.mgz"),
+        "t1.mgz"     : ("mri", "T1.mgz"),
         "brain"      : ("mri", "brain.mgz"),
         "orig"       : ("mri", "orig.mgz"),
         "white"      : ("surf", "{hemi}.white"),
@@ -147,16 +149,16 @@ def build_fs_path(
 
 
 def build_charm_path(
-        root     : str | Path,
-        subject  : str,
-        datatype : str,
+        root: str | Path,
+        subject: str,
+        datatype: str,
 ) -> Path:
     """
     Build CHARM paths to objects.
     """
      # 1. Cleanup inputs (ensure no redundant 'sub-')
     sub_id = str(subject).replace("sub-", "")
-    sub_dir = Path(root) / f"sub-{sub_id}"
+    sub_dir = Path(root) / f"sub-{sub_id}" / f"m2m_sub-{subject}"
 
     CHARM_MAP = {
         "seg" : ("segmentation", "labeling.nii.gz"),

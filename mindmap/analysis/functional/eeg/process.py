@@ -17,6 +17,7 @@ import mne
 from mindmap.anatomy.source_space.io import get_dipole_positions, get_dipole_directions
 from mindmap.core.metric import compute_distances
 from mindmap.core.process import normalize_data, align_timeseries, normalize_timeserie_by_baseline
+from mindmap.analysis.functional.common.process import binarize_mne_object
 from .io import get_ch_positions
 
 
@@ -223,3 +224,46 @@ def normalize_evoked_by_baseline(
     norm_evoked.data = normalize_timeserie_by_baseline(evoked.data, (idx_min, idx_max))
 
     return norm_evoked
+
+def binarize_evoked(
+    evoked: mne.Evoked,
+    threshold: float = 0.5,
+    method: str = "max",
+    absolute: bool = True,
+    baseline: tuple = (None, None),
+) -> mne.Evoked:
+    """
+    Binarize Evoked.
+
+    Parameters:
+    ----------
+    evoked: mne.Evoked
+        Evoked.
+    
+    threshold: float
+        Threshold for binarization.
+
+    method: str [none, 'max', 'std']
+        Method for thresholding:
+        - none: Considers threshold raw.
+        - max: Considers threshold as a percentage [0-1] of maximum value.
+        - std: Considers threshold as a multiple of standard deviation (requires noise baseline).
+
+    absolute: bool
+        If True, apply thresholding on absolute value of signal.
+
+    baseline: tuple (float, float)
+        Range in [ms] for the noise baseline.
+
+    Returns:
+    -------
+    evoked_bin: mne.Evoked
+        Binarized evoked.
+    """
+    return binarize_mne_object(
+        obj = evoked,
+        threshold = threshold,
+        method = method,
+        absolute = absolute,
+        baseline = baseline,
+    )

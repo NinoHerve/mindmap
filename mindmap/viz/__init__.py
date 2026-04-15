@@ -4,6 +4,14 @@ Visualization tools for the MindMap package.
 This sub-package contains plots for visualization outputs.
 """
 
+from .dispatch import (
+    plot_brain_activity,
+)
+
+from .core import (
+    plot_multi_scatterplots,
+)
+
 from .volume import (
     show_slices,
     plot_segmentation,
@@ -17,6 +25,7 @@ from .surface import (
 
 from .sensor import (
     plot_ieeg,
+    plot_ieeg_static,
     plot_channel_grid,
     plot_gfp_comparison,
     plot_alignment,
@@ -25,6 +34,8 @@ from .sensor import (
     create_pipeline_report,
     plot_whitened_cov,
     plot_gfp,
+    plot_evoked_cog,
+    plot_evoked_rem,
 )
 
 from .graph import (
@@ -47,6 +58,7 @@ from .inverse import(
 )
 
 __all__ = [
+    "plot_brain_activity",
     "show_slices",
     "plot_segmentation",
     "plot_bem",
@@ -55,6 +67,7 @@ __all__ = [
     "plot_source_estimate",
     "plot_eigvec",
     "plot_ieeg",
+    "plot_ieeg_static",
     "plot_channel_grid",
     "plot_gfp_comparison",
     "plot_avg_ref",
@@ -67,8 +80,11 @@ __all__ = [
     "plot_fwd_sensitivity",
     "plot_fwd_correlation",
     "plot_fwd_singular_values",
-    "plot_whitened_cov",
+    "plot_whitened_cov",  
     "plot_gfp",
     "plot_predicted_data_covariance",
     "plot_spectrum",
+    "plot_multi_scatterplots",
+    "plot_evoked_cog",
+    "plot_evoked_rem",
 ]

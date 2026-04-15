@@ -1,17 +1,20 @@
 NAME: TUTO
 DIR_RAW: /home/nino/Code/mindmap/data
 DIR_FS: /home/nino/Code/mindmap/data/derivatives/freesurfer
+DIR_CHARM: /home/nino/Code/mindmap/data/derivatives/charm
 DIR_MM: /home/nino/Code/mindmap/data/derivatives/mindmap
 DIR_SPK: /home/nino/Code/mindmap/data/derivatives/intra_spike_trials
+DIR_CART: /home/nino/Code/mindmap/data/derivatives/cartool-v3.80
 STD_LAUSL: /media/nino/DATA/atlas/laus2018/lh.atlas-laus2018_desc-scale4.annot
 STD_LAUSR: /media/nino/DATA/atlas/laus2018/rh.atlas-laus2018_desc-scale4.annot
 STD_MNI: /media/nino/DATA/templates/mni_icbm152_nlin_asym_09c_nifti/mni_icbm152_nlin_asym_09c/mni_icbm152_t1_tal_nlin_asym_09c.nii
 STD_THAL: /media/nino/DATA/atlas/Thalamic_Nuclei/Thalamus_Nuclei-HCP-4DSPAMs.nii.gz
 STD_THALclut: /media/nino/DATA/atlas/Thalamic_Nuclei/Thalamic_Nuclei-ColorLUT.txt
+BEM_CONFIG: charm
 FS_HOME: null
 SUBS:
-- intra-12
-- simf-10
+- intra12
+- simf10
 - spike11
 - vep10
 DATATYPES:

@@ -12,15 +12,23 @@ License: MIT
 
 
 import numpy as np
+from scipy import ndimage
 
 import mne
 
 from mindmap.core.metric import (
-    avg_power, calc_spatial_correlation, calc_pairwise_dist,
+    calc_correlation, calc_pairwise_dist,
     calc_spatial_dispersion_grova, calc_ratio_spurious_activity,
-    compute_distances,
+    compute_distances, estimate_snr, calc_correlation_matrix,
+    get_gfp, compute_cog_trajectory, calc_rem,
 )
+
 from mindmap.core.utils import get_spike_extent_mask, get_spurious_mask
+
+from mindmap.analysis.functional.common.metric import (
+    compute_mne_confusion, compute_mne_scores, compute_mne_curves,
+)
+
 from .io import get_ch_positions
 from .utils import same_evoked
 
@@ -56,7 +64,7 @@ def get_rising_phase(
     out: float
         Time of peak or idx of peak if `as_idx` is True. 
     """
-    data = eeg.copy() 
+    data = eeg.copy()
 
     # get peak
     channel, peak_time, peak_value = data.get_peak(tmin=tmin, tmax=tmax, return_amplitude=True)
@@ -80,47 +88,114 @@ def get_rising_phase(
 
     return out
 
-def estimate_snr(
-        eeg      : mne.Evoked,
-        baseline : list[float] = None,
-        signal   : list[float] = None
-        ) -> np.ndarray:
+def find_spike_window(
+    evoked: mne.Evoked,
+    baseline: tuple = (None, 0),
+    threshold_sd: float = 3.0,
+    gap_fill_ms: float = 100.0,
+    min_duration_ms: float = 20.0,
+):
     """
-    Estimate SNR from EEG. 
+    Finds the continuous time window of a spike based on Global Filed Power (GFP).
 
     Parameters
     ----------
-    eeg: mne.Evoked
-        EEG
+    evoked: mne.Evoked
+        Evoked response.
 
-    baseline: list[float]
-        tmin and tmax of baseline. If `[]` then first 30% of time serie will be considered as 
-        baseline.
+    baseline: tuple[float, float]
+        Basline range in [ms].
+    
+    threshold_sd: float
+        Threshold in standard deviation above which to consider
+        signal as spike.
 
-    signal: list[float]
-        tmin and tmax of signal. If `[]` then only the max of recordings will be taken.
+    gap_fill_ms: float
+        Maximum gap between events before considering different
+        events.
+
+    min_duration_ms: float
+        Minimum duration to consider event as signal.
 
     Returns
     -------
-        Estimated SNR at each electrode. 
+    tmin, tmax: float
+        Starting/Ending time of spike.
     """
-    if baseline is None:
-        tmax     = int(0.3*len(eeg.times))
-        baseline = [eeg.times[0], eeg.times[tmax]]
+    times = evoked.times
+    sfreq = evoked.info["sfreq"]
 
-    eeg_      = eeg.copy()
-    baseline  = eeg_.crop(tmin=baseline[0], tmax=baseline[1])
-    pow_noise = avg_power(baseline.data)
+    # compute GFP
+    gfp = get_gfp(evoked.data, axis=0)
 
-    if signal is None:
-        pow_sig = eeg.data.max(axis=1)**2
+    # baseline stats
+    b_mask = (times >= (baseline[0] or times[0])) & (times <= (baseline[1] or 0))
+    b_mean = np.mean(gfp[b_mask])
+    b_std = np.std(gfp[b_mask])
 
-    else:
-        eeg_    = eeg.copy()
-        signal  = eeg_.crop(tmin=signal[0], tmax=signal[1])
-        pow_sig = avg_power(signal.data)
+    # create initial binary mask
+    spike_mask = gfp > (b_mean + threshold_sd * b_std)
 
-    return 10*np.log10(pow_sig/pow_noise)
+    # fill crevasses (morphological closing)
+    gap_samples = int((gap_fill_ms / 1000.0) * sfreq)
+    spike_mask = ndimage.binary_closing(spike_mask, structure=np.ones(gap_samples))
+
+    # remove short bursts (morphological opening)
+    min_samples = int((min_duration_ms / 1000.0) * sfreq)
+    spike_mask = ndimage.binary_opening(spike_mask, structure=np.ones(min_samples))
+
+    # extract start and end of largest continuous segment
+    label_mask, num_labels = ndimage.label(spike_mask)
+    if num_labels == 0:
+        print("Warning: No spike detected above threshold.")
+        return times[0], times[-1]
+
+    sizes = ndimage.sum(spike_mask, label_mask, range(1, num_labels + 1))
+    main_label = np.argmax(sizes) + 1
+
+    main_spike_indices = np.where(label_mask == main_label)[0]
+    tmin, tmax = times[main_spike_indices[0]], times[main_spike_indices[-1]]
+
+    return tmin, tmax
+
+
+def estimate_evoked_snr(
+    evoked: mne.Evoked,
+    baseline: tuple[float, float],
+    noise_cov: mne.Covariance=None,
+    method: str="power",
+)-> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute sensor-space SNR time course from an evoked response.
+
+    Parameters
+    ----------
+    evoked: mne.Evoked
+        Evoked data.
+
+    baseline: tuple[float, float]
+        Time window (s) for noise estimate.
+
+    noise_cov: mne.Covariance, optional
+        If provided, data is whitened before SNR estimation, making 
+        the result consistent with MNE's regularization framework.
+    
+    method: str ['power', 'variance']
+        Whether to use power-based or variance-based 
+        estimate.
+
+    Returns
+    -------
+    snr, snr_db: tuple[np.ndarray, np.ndarray] of shapes (n_times,)
+    """
+    data = evoked.data
+    if noise_cov is not None:
+        whitener, _ = mne.cov.compute_whitener(noise_cov, evoked.info, pca=False)
+        data = whitener @ data
+
+    b_start, b_stop = evoked.time_as_index(baseline)
+    return estimate_snr(data, (b_start, b_stop), method=method)
+
 
 
 def peak_baseline_snr(
@@ -174,43 +249,120 @@ def peak_baseline_snr(
     return snr
 
 
-def compute_spatial_correlation(
-    evoked_ref : mne.Evoked,
-    evoked_est : mne.Evoked,
-    average    : bool = False,
+def compute_evoked_correlation(
+    evoked_ref: mne.Evoked,
+    evoked_est: mne.Evoked,
+    mode: str = "temporal",
+    method: str = "pearson",
+    threshold: float | None = None,
+    average: bool = False,
 ) -> np.ndarray | float:
     """
-    Computes spatial correlation between evoked objects.
-    Assumes objects have the same channels and timepoints.
+    Compute correlation between two evoked objects.
 
     Parameters
     ----------
     evoked_ref: mne.Evoked
-        Reference activity (e.g. true iEEG)
+        Reference activity (e.g. True iEEG).
 
     evoked_est: mne.Evoked
-        Estimated activity (e.g. virtual iEEG)
+        Estimated activity (e.g. virtual iEEG).
 
-    average: bool defaults to True
-        Whether to compute average spatial correlation over time points.
+    mode: str ['spatial', 'temporal', 'spatio-temporal']
+        - 'spatial': Correlation across channels at each timepoint -> (n_timepoints,)
+        - 'temporal': Correlation across time for each channel -> (n_channels,)
+        - 'sptio-temporal': Flattened correlation -> scalar
+
+    method: str ['pearson', 'spearman', 'log-envelope']
+        Correlation method.
+
+    threshold: float | None
+        If provided, only timepoints where Ground Truth GFP is above this 
+        value are included in the calculation.
+    
+    average: bool
+        If True, return the mean over the result vector.
 
     Returns
     -------
-    sp_cor: float or np.ndarray of size (n_timepoints,)
-        Average spatial correlation (if average is True) or spatial 
-        correlation per timepoint.
+    corr: float or np.ndarray
+        Correlation value(s). Shape depends on axis and average.
     """
     if not same_evoked(evoked_ref, evoked_est):
         raise ValueError("Evokeds must have same channels and timepoints.")
 
-    # extract data
-    data_ref = evoked_ref.data.T
-    data_est = evoked_est.data.T
+    # mapping mode to axis
+    mode_map = {"spatial":0, "temporal":1, "spatio-temporal":None}
+    if mode not in mode_map:
+        raise ValueError(f"Unknown mode '{mode}'. Use 'spatial', 'temporal', or 'spatio-temporal'.")
 
-    # spatial correlation
-    sp_cor = calc_spatial_correlation(data_ref, data_est)
+    axis = mode_map[mode]
 
-    return np.mean(sp_cor) if average else sp_cor
+    # handle thresholding (Masking)
+    if threshold is not None:
+        # calculate GFP of the reference to find "active" timepoints
+        gfp_ref = get_gfp(evoked_ref.data, axis=0)
+        mask = gfp_ref > threshold
+
+        # slice the data to only include active timepoints
+        # Note: this only makes sense for 'spatial' or 'spatio-temporal' modes
+        ref_data = evoked_ref.data[:, mask]
+        est_data = evoked_est.data[:, mask]
+
+        if ref_data.shape[1] == 0:
+            print("Warning: No timepoints exceed the threshold. Returning 0.")
+            return 0.0
+    else:
+        ref_data = evoked_ref.data
+        est_data = evoked_est.data
+
+    corr = calc_correlation(
+        ref_data, est_data, method=method, axis=axis,
+    )
+    corr = np.mean(corr) if average else corr
+
+    if threshold is not None:
+        return corr, evoked_ref.times[mask]
+
+    return corr
+
+
+def compute_evoked_corr_matrix(
+    evoked1: mne.Evoked, 
+    evoked2: mne.Evoked,
+    window: tuple[float, float]=(None, None),
+    method: str = "pearson",
+) -> np.ndarray:
+    """
+    Compute a correlation matrix where result[i, j] is the correlation
+    between channel i and channel j.
+
+    Parameters
+    ----------
+    evoked1: mne.Evoked
+
+    evoked2: mne.Evoked
+
+    method: str ['pearson', 'spearman', 'log-envelope']
+
+    Returns
+    -------
+    corr_matrix: np.ndarry of shape (n_channels_1, n_channels_2)
+    """
+    # time window defaults
+    tmin = window[0] if window[0] is not None else evoked1.tmin
+    tmax = window[1] if window[1] is not None else evoked1.tmax
+
+    # crop copies to the desired window
+    evk1 = evoked1.copy().crop(tmin=tmin, tmax=tmax)
+    evk2 = evoked2.copy().crop(tmin=tmin, tmax=tmax)
+
+    data1 = evk1.data
+    data2 = evk2.data
+
+    # compute correlation matrix
+    return calc_correlation_matrix(data1, data2, method=method, eps=1e-8)
+
 
 
 def compute_minimum_distance(
@@ -454,8 +606,181 @@ def compute_grova_metrics(
     ch_est_peak = coords[np.argmax(np.abs(win_est[rel_peak, :]))]
 
     return {
-        "spatial_correlation": np.mean(calc_spatial_correlation(win_ref, win_est)),
+        "spatial_correlation": np.mean(calc_correlation(win_ref, win_est, axis=0, method="pearson")),
         "min_distance": calc_pairwise_dist(ch_ref_peak, ch_est_peak)[0],
         "spatial_dispersion": np.mean(calc_spatial_dispersion_grova(win_est, dist_to_h)),
         "ratio_spurious": np.mean(calc_ratio_spurious_activity(win_est, is_distant_mask)),
     }
+
+
+def compute_evoked_cog(evoked: mne.Evoked) -> np.ndarray:
+    """
+    Extracts channel positions and computes CoG trajectory.
+    """
+    pos = get_ch_positions(evoked)
+
+    if np.allclose(pos, 0):
+        raise ValueError("Channel positions are missing. Please set a montage.")
+
+    return compute_cog_trajectory(evoked.data, pos)
+
+def compute_evoked_rem(
+    evoked_ref: mne.Evoked,
+    evoked_est: mne.Evoked,
+    mode: str = "spatial",
+    rng: tuple[float, float] = (None, None),
+) -> np.ndarray:
+    """
+    Compute REM for Evoked data.
+
+    Parameters:
+    ----------
+    evoked_ref: mne.Evoked
+        Reference evoked.
+
+    evoked_est: mne.Evoked
+        Estimated evoked.
+
+    mode: str ['spatial', 'temporal']
+        'spatial' -> Energy of each channel relative to total spatial energy
+                     at that timepoint. Result: (n_channels, n_timepoints)
+        'temporal' -> Energy at each timepoint relative to total temporal energy
+                      for that channel. Result: (n_channels, n_timepoints)
+    """
+    # crop
+    evk_ref = evoked_ref.copy().crop(tmin=rng[0], tmax=rng[1])
+    evk_est = evoked_est.copy().crop(tmin=rng[0], tmax=rng[1])
+
+    # map mode to the axis we want to normalize
+    mode_map = {"spatial":0, "temporal":1}
+
+    if mode not in mode_map:
+        raise ValueError("Mode must be 'spatial' or 'temporal'")
+
+    return calc_rem(
+        evk_ref.data,
+        evk_est.data,
+        axis = mode_map[mode],
+    )
+
+
+def compute_evoked_confusion(
+    evoked_true: mne.Evoked,
+    evoked_pred: mne.Evoked,
+    mode: str = "spatio-temporal",
+    rng: tuple = (None, None),
+) -> dict:
+    """
+    Wrapper for `compute_mne_confusion`
+
+    Parameters
+    ----------
+    evoked_true: mne.Evoked | mne.SourceEstimate
+        Ground truth activity.
+    
+    evoked_pred: mne.Evoked | mne.SourceEstimate
+        Estimated activity.
+
+    mode: str ['spatial', 'temporal', 'spatio-temporal']
+        - 'spatial': compute scores for each time point.
+        - 'temporal': compute scores for each channel.
+        - 'spatio-temporal': compute scores overall.
+
+    true_threshold: dict
+        Keyword arguments for `binarize_mne_object`.
+    
+    threshold:
+        Relative maximum threshold for binarization.
+
+    rng: tuple (float, float)
+        Range of data to consider for scoring.
+    
+    Returns
+    -------
+    dict
+        Dictionary of True/False Positive/Negative.
+    """
+    return compute_mne_confusion(
+        obj_true = evoked_true,
+        obj_pred = evoked_pred,
+        mode = mode,
+        rng = rng,
+    )
+
+
+def compute_evoked_scores(
+    evoked_true: mne.Evoked,
+    evoked_pred: mne.Evoked,
+    mode: str = "spatio-temporal",
+    rng: tuple = (None, None),
+) -> dict:
+    """
+    Wrapper for `compute_mne_scores`
+
+    Parameters
+    ----------
+    evoked_true: mne.SourceEstimate
+        Ground truth activity.
+    
+    evoked_pred: mne.SourceEstimate
+        Estimated activity.
+
+    mode: str ['spatial', 'temporal', 'spatio-temporal']
+        - 'spatial': compute scores for each time point.
+        - 'temporal': compute scores for each channel.
+        - 'spatio-temporal': compute scores overall.
+
+    true_threshold: dict
+        Keyword arguments for `binarize_mne_object`.
+    
+    threshold:
+        Relative maximum threshold for binarization.
+
+    rng: tuple (float, float)
+        Range of data to consider for scoring.
+    
+    Returns
+    -------
+    dict
+        Dictionary of scores.
+    """
+    return compute_mne_scores(
+        obj_true = evoked_true,
+        obj_pred = evoked_pred,
+        mode = mode,
+        rng = rng,
+    )
+
+
+def compute_evoked_curves(
+    evoked_true: mne.Evoked,
+    evoked_pred: mne.Evoked,
+    rng: tuple = (None, None),
+) -> dict:
+    """
+    Wrapper for `compute_mne_curves`.
+
+    Parameters
+    ----------
+    evoked_true: mne.Evoked | mne.SourceEstimate
+        Ground truth activity.
+    
+    evoked_pred: mne.Evoked | mne.SourceEstimate
+        Estimated activity.
+
+    true_threshold: dict
+        Keyword arguments for `binarize_mne_object`.
+
+    rng: tuple (float, float)
+        Range of data to consider for scoring.
+    
+    Returns
+    -------
+    dict
+        Dictionary of True/False Positive/Negative.
+    """
+    return compute_mne_curves(
+        obj_true = evoked_true,
+        obj_pred = evoked_pred,
+        rng = rng,
+    )

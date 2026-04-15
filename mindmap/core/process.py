@@ -163,5 +163,63 @@ def normalize_timeserie_by_baseline(
     baseline_std[baseline_std < epsilon] = 1.0
 
     # apply z-score
-    return (timeserie - baseline_mean) / baseline_std
+    normalized = (timeserie - baseline_mean) / baseline_std
 
+    return normalized.squeeze()
+
+
+def binarize_signal(
+    signal: np.ndarray,
+    threshold: float = 0.5,
+    method: str = "max",
+    absolute: bool = False,
+    baseline: tuple = (0, -1)
+) -> np.ndarray:
+    """
+    Binarize numpy array.
+
+    Parameters
+    ----------
+    signal: np.ndarray of shape (samples, time points)
+        Signal array.
+
+    threshold: float
+        Threshold for binarization.
+
+    method: str [none, ''max', 'std']
+        Method for thresholding:
+        - none: Consider threshold raw.
+        - max: Considers threshold as a percentage [0-1] of maximum value.
+        - std: Considers threshold as a multiple of standard deviation (requires noise baseline).
+
+    absolute: bool
+        If true, apply thresholding on absolute value of signal.
+
+    Returns:
+    -------
+    signal_bin: np.ndarray
+        Binarized array.
+    """
+
+    # absolute
+    if absolute:
+        signal = np.abs(signal)
+
+    # thresholding
+    if method is None:
+        return signal > threshold
+
+    if method == "max":
+        thresh = np.max(signal) * threshold
+        return signal > thresh
+
+    if method == "std":
+        # baseline stats
+        start, stop = baseline
+        baseline_period = signal[:, start:stop]
+        b_mean = np.mean(baseline_period)
+        b_std = np.std(baseline_period)
+
+        return signal > (b_mean + threshold * b_std)
+
+    raise ValueError(f"Unknown binarization method {method}")

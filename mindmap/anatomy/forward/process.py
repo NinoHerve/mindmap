@@ -18,10 +18,11 @@ import pyvista as pv
 
 import nibabel as nib
 import ants
+from mne.bem import _get_ico_surface
 
 from mindmap.geometry.io import surf_to_polydata
 from mindmap.geometry.processing import surf_correction, fit_surface_to_volume
-from mindmap.anatomy.mri.io import get_affine
+from mindmap.anatomy.mri.io import get_affine, nibabel_to_ants
 from mindmap.anatomy.parcellation.core import Parcellation
 from mindmap.anatomy.parcellation.processing import create_mask
 
@@ -125,8 +126,12 @@ def fit_surface_to_mri_mask(
     else:
         raise TypeError("MRI mask type needs to be nib.Nifti1Image or ants.ANTsImage")
 
+    # use MNE's icosahedron
+    template_ico = _get_ico_surface(grade=5)
+    template_ico = surf_to_polydata(template_ico["rr"], template_ico["tris"])
+
     # fit surface
-    sphere, interp = fit_surface_to_volume(volume, **kwargs)
+    sphere, interp = fit_surface_to_volume(volume, sphere=template_ico, **kwargs)
 
     # move to [mm] space
     sphere.transform(affine, inplace=True)
@@ -135,7 +140,9 @@ def fit_surface_to_mri_mask(
     if np.linalg.det(affine) < 0:
         sphere.flip_faces(inplace=True)
 
-    sphere.compute_normals(inplace=True, consistent_normals=True, auto_orient_normals=True)
+    sphere.compute_normals(inplace=True, consistent_normals=False, auto_orient_normals=False)
+
+    assert np.array_equal(template_ico.faces, sphere.faces), "Topology was corrupted during fitting!"
 
     return sphere, interp
 
@@ -155,16 +162,22 @@ def build_bem_layers(
     iskull_mask = create_mask(seg, regions=bem_labels["inner_skull"])
 
     # skin
+    skin_mask = nibabel_to_ants(skin_mask)
+    skin_mask = skin_mask.morphology("close", radius=10)
     skin_mesh, skin_interp = fit_surface_to_mri_mask(
         skin_mask, z_floor = 20, **kwargs,
     )
 
     # outer skull
+    oskull_mask = nibabel_to_ants(oskull_mask)
+    oskull_mask = oskull_mask.morphology("close", radius=10)
     oskull_mesh, oskull_interp = fit_surface_to_mri_mask(
         oskull_mask, outer_interpolator=skin_interp, z_floor = 35, **kwargs,
     )
 
     # inner skull
+    iskull_mask = nibabel_to_ants(iskull_mask)
+    iskull_mask = iskull_mask.morphology("close", radius=10)
     iskull_mesh, _ = fit_surface_to_mri_mask(
         iskull_mask, outer_interpolator=oskull_interp, z_floor=45, **kwargs,
     )
@@ -195,5 +208,11 @@ def bem_transform(bem, trans):
     """
     for k in bem.keys():
         bem[k].transform(trans, inplace=True)
+
+        # fix the winding order and normals
+        if np.linalg.det(trans) < 0:
+            bem[k].flip_faces(inplace=True)
+
+        bem[k].compute_normals(inplace=True, consistent_normals=False, auto_orient_normals=False)
 
     return bem

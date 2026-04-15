@@ -21,6 +21,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
+
 def plot_predicted_data_covariance(inverse, evoked):
     """
     Plot expected variance.
@@ -57,3 +58,4 @@ def plot_predicted_data_covariance(inverse, evoked):
     plt.close("all")
 
     return fig
+

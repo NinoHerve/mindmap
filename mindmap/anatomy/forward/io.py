@@ -20,12 +20,13 @@ import mne
 
 from mindmap.core.io import read_config
 
-def read_bem_labels(config: str | Path) -> dict[str, list[int]]:
+def read_bem_labels(config: str | Path | dict) -> dict[str, list[int]]:
     """
     Parses YAML config and resolves inheritance to return
     a dictionary of {layer_name: [list_of_ids]}
     """
-    config = read_config(config)
+    if isinstance(config, (str, Path)):
+        config = read_config(config)
 
     label_map = config.get("label_map", {})
     layers_def = config.get("layers", {})
