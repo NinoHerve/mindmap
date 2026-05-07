@@ -5,7 +5,7 @@ import pandas as pd
 import nibabel as nib
 import mne
 
-from .core import Parcellation
+from .base import Parcellation
 from ...core import extract_voxel_volume
 
 def prob2dseg(

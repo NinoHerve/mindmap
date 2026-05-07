@@ -16,6 +16,7 @@ License: MIT
 """
 
 import numpy as np
+import pandas as pd
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -527,3 +528,61 @@ def metric_heatmap(df, title="", **kwargs):
     plt.title(f"{title} Overview")
 
     return plt.gca()
+
+
+def metric_relational(df, coords, hue=None, kind="line", **kwargs):
+    """
+    Relational plot that automatically detect the correct X-axis per metric
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The tidy dataframe.
+
+    coords: list
+        List of all potential coordinate columns (e.g., ['time', 'freq'])
+
+    hue : str
+        The column for color encoding (e.g. 'Lable')
+    """
+    def _sub_plotter(data, **inner_kwargs):
+        valid_coords = [c for c in coords if data[c].notna().any()]
+
+        if not valid_coords:
+            return
+
+        x_col = valid_coords[0] if valid_coords else None
+
+        # check if coordinate is numerical or categorical (strings)?
+        is_numeric = pd.api.types.is_numeric_dtype(data[x_col])
+
+        # select plot type
+        if not is_numeric:
+            data = data.sort_values(x_col)
+            plot_func = sns.lineplot if kind == "line" else sns.scatterplot
+        else:
+            plot_func = sns.lineplot if kind == "line" else sns.scatterplot
+
+        # plot using the detected x_col
+        ax = plot_func(data=data, x=x_col, y="Value", **inner_kwargs)
+
+        if not is_numeric:
+            plt.xticks(rotation=45, ha="right")
+
+        plt.gca().set_xlabel(x_col)
+
+    # Initialize the Grid
+    g = sns.FacetGrid(
+        df,
+        col = "Metric",
+        hue = hue,
+        sharex = False,
+        sharey = False,
+        col_wrap = 3,
+    )
+
+    # map the internal plotter to the grid
+    g.map_dataframe(_sub_plotter, **kwargs)
+    g.add_legend()
+
+    return g

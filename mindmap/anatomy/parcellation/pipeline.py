@@ -21,7 +21,7 @@ import ants
 from mindmap.io.dataset import DatasetManager
 from mindmap.anatomy.mri.io import ants_to_nibabel
 from .io import read_clut
-from .core import Parcellation
+from .base import Parcellation
 from .processing import prob2dseg
 
 

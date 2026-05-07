@@ -184,6 +184,7 @@ def calc_correlation(
     arr2: np.ndarray,
     method: str = "pearson",
     axis: int = None,
+    center_axis: str | int | None = "default",
     eps: float = 1e-8,
 ) -> np.ndarray | float:
     """
@@ -204,6 +205,10 @@ def calc_correlation(
         - 0: along samples at each timepoint -> (n_timepoints,)
         - 1: along timepoints for each sample -> (n_samples,)
 
+    center_axis: str | int | None
+        Axis along which to average reference. Default chooses the same as the 
+        'axis' argument.
+
     eps: float
         Small constant added before log to avoid log(0)
 
@@ -219,6 +224,13 @@ def calc_correlation(
     if method not in ("pearson", "spearman", "log-envelope"):
         raise ValueError(f"Unknown method '{method}'. Expected 'pearson', 'spearman' or 'log-envelope'.")
 
+    # determine how to center
+    if center_axis == "default":
+        c_axis = axis
+    else:
+        c_axis = center_axis
+
+
     # compute correlation
     if method == "log-envelope":
         arr1 = np.log(np.abs(arr1) + eps)
@@ -226,8 +238,8 @@ def calc_correlation(
         method = "pearson"
 
     if method == "pearson":
-        arr1_c = arr1 - arr1.mean(axis=axis, keepdims=True)
-        arr2_c = arr2 - arr2.mean(axis=axis, keepdims=True)
+        arr1_c = arr1 - arr1.mean(axis=c_axis, keepdims=True)
+        arr2_c = arr2 - arr2.mean(axis=c_axis, keepdims=True)
 
     elif method == "spearman":
         arr1_c = rankdata(arr1, axis=axis).astype(float)
@@ -238,8 +250,45 @@ def calc_correlation(
     upper = np.sum(arr1_c * arr2_c, axis=axis)
     lower = np.sqrt(np.sum(arr1_c**2, axis=axis) * np.sum(arr2_c**2, axis=axis))
     corr = np.divide(upper, lower, out=np.zeros_like(upper), where=lower > 1e-12)
+
+    return corr.item() if corr.size == 1 else corr
+
+def calc_cosine(
+    arr1: np.ndarray,
+    arr2: np.ndarray,
+    axis: int = None,
+) -> np.ndarray | float:
+    """
+    Compute Cosine Similarity between two arrays.
+
+    Parameters
+    ----------
+    arr1, arr2: np.ndarray
+        Input arrays of identical shape.
     
-    return corr
+    axis: int or None
+        Axis along which to compute similarity.
+        None flattens arrays (global similarity).
+
+    Returns
+    -------
+    cos: np.ndarray | float
+        Cosine similarity range [-1, 1]. Returns 0 for zero-norm vectors.
+    """
+    if arr1.shape != arr2.shape:
+        raise ValueError("Shapes must match.")
+    
+    dot_product = np.sum(arr1 * arr2, axis=axis)
+
+    # norms
+    norm1 = np.linalg.norm(arr1, axis=axis)
+    norm2 = np.linalg.norm(arr2, axis=axis)
+
+    lower = norm1 * norm2
+
+    cos = np.divide(dot_product, lower, out=np.zeros_like(dot_product), where=lower > 1e-12)
+
+    return cos.item() if cos.size == 1 else cos
 
 
 def calc_correlation_matrix(
@@ -518,8 +567,6 @@ def calc_rem(
 def calc_confusion_matrix(
     y_true: np.ndarray,
     y_pred: np.ndarray,
-    threshold: float = 0.5,
-    relative: bool = False,
 ) -> dict:
     """
     Calculates the confusion matrix between a binarized ground truth and 
@@ -531,13 +578,7 @@ def calc_confusion_matrix(
         Binary ground truth.
 
     y_pred: np.ndarray
-        Binary or continuous prediction.
-
-    threshold: float [0-1]
-        Scalar value to binarize y_pred.
-
-    relative: bool
-        If True, threshold is treated as a percentage of the max value.
+        Binary prediction.
 
     Returns:
     -------
@@ -548,23 +589,16 @@ def calc_confusion_matrix(
     yt = y_true.ravel()
     yp = y_pred.ravel()
 
-    # threshold
-    t_pred = (np.max(yp) * threshold) if relative else threshold
-
-    # binarize
-    yp_bin = (yp >= t_pred).astype(int)
-
     # counts
-    tn, fp, fn, tp = confusion_matrix(yt, yp_bin).ravel()
+    cm = confusion_matrix(yt, yp, labels=[0,1])
+    tn, fp, fn, tp = cm.ravel()
 
-    return {"tp": tp, "tn": tn, "fp":fp, "fn":fn}
+    return {"tn":tn, "fp":fp, "fn":fn, "tp":tp}
 
 
 def calc_activity_scores(
     y_true: np.ndarray,
     y_pred: np.ndarray,
-    threshold: float = 0.5,
-    relative: bool = False
 ) -> dict:
     """
     Computes classification metrics for activity data.
@@ -589,19 +623,13 @@ def calc_activity_scores(
     yt = y_true.ravel()
     yp = y_pred.ravel()
 
-    # threshold
-    t_pred = (np.max(yp) * threshold) if relative else threshold
-
-    # binarize
-    yp_bin = (yp >= t_pred).astype(int)
-
     # scores
     return {
-        "accuracy": accuracy_score(yt, yp_bin),
-        "precision": precision_score(yt, yp_bin, zero_division=np.nan),
-        "recall": recall_score(yt, yp_bin, zero_division=np.nan),
-        "f1": f1_score(yt, yp_bin, zero_division=np.nan),
-        "mcc": matthews_corrcoef(yt, yp_bin),
+        "accuracy": accuracy_score(yt, yp),
+        "precision": precision_score(yt, yp, zero_division=np.nan, labels=[0,1]),
+        "recall": recall_score(yt, yp, zero_division=np.nan, labels=[0,1]),
+        "f1": f1_score(yt, yp, zero_division=np.nan, labels=[0,1]),
+        #"mcc": matthews_corrcoef(yt, yp),
     }
 
 def calc_performance_curves(

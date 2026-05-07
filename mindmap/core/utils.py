@@ -11,6 +11,8 @@ License: MIT
 """
 
 from pathlib import Path
+import json
+import re
 
 import numpy as np
 
@@ -207,3 +209,82 @@ def get_spurious_mask(
     dist_to_h   = np.min(dist_matrix, axis=1)
 
     return dist_to_h > spurious_dist
+
+
+def create_dataset_description(
+    bids_root,
+    name = "Unknown dataset",
+    bids_version = "1.8.0",
+    dataset_type = "raw",
+    authors = None,
+    generated_by = None,
+    how_to_acknowledge = None,
+    overwrite = False,
+):
+    """
+    Create a minimal dataset_descritpion.json in a BIDS root directory.
+    
+    Parameters
+    ----------
+    bids_root: str or Path
+        Path to the root of the BIDS dataset.
+
+    name: str
+        Dataset name.
+
+    bids_version: str
+        BIDS version string.
+    
+    dataset_type: str
+        Usually "raw" or "derivative".
+
+    authors: list of str or None
+        Optional list of authors.
+
+    generated_by: list of dict or None
+        For derivatives. List of dictionaries containing 'Name', 'Version', etc.
+
+    how_to_acknowledge: str or None
+        Optional text on how to cite the dataset.
+
+    overwrite: bool
+        If False, will not overwrite an existing file.
+    """
+    bids_root = Path(bids_root)
+    bids_root.mkdir(parents=True, exist_ok=True)
+
+    desc_path = bids_root / "dataset_description.json"
+
+    if desc_path.exists() and not overwrite:
+        print(f"{desc_path} already exists. Use overwrite=True to replace it.")
+        return desc_path
+
+    description = {
+        "Name": name,
+        "BIDSVersion": bids_version,
+        "DatasetType": dataset_type,
+    }
+
+    if authors:
+        description["Authors"] = authors if isinstance(authors, list) else [authors]
+    else:
+        description["Authors"] = ["Unknown"]
+
+    if dataset_type == "derivative":
+        if generated_by is None:
+            description["GeneratedBy"] = [{
+                "Name": "Custom Pipeline",
+                "Version": "1.0.0",
+            }]
+        else:
+            description["GeneratedBy"] = generated_by
+
+    if how_to_acknowledge:
+        description["HowToAcknowledge"] = generated_by
+
+    with open(desc_path, "w", encoding="utf-8") as f:
+        json.dump(description, f, indent=4, ensure_ascii=False)
+
+    print(f"Created {desc_path}")
+    return desc_path
+

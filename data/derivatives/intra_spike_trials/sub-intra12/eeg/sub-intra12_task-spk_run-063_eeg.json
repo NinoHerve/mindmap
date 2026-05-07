@@ -1,0 +1,6 @@
+{
+	"EEGReference": "average",
+	"PowerLineFrequency": 50,
+	"SamplingFrequency": 200,
+	"TaskName": "ActTimelocked2Spk"
+}

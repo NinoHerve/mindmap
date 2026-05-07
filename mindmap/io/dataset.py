@@ -11,24 +11,29 @@ License: MIT
 """
 
 from pathlib import Path
+import importlib.resources
 
 import numpy as np
 import pandas as pd
 import h5py
 
+from bids import BIDSLayout
 import nibabel as nib
 import mne
 
 from mindmap.core.io import read_config, read_eig, get_config
 from mindmap.anatomy.utils import read_cortex_label
 from mindmap.anatomy.mri.io import read_mri
-from mindmap.anatomy.parcellation.core import Parcellation
+from mindmap.anatomy.parcellation.base import Parcellation
 from mindmap.anatomy.forward.io import read_bem_labels, make_volume_info
-from .utils import build_raw_path, build_mm_path, build_fs_path, build_charm_path
+from .utils import build_fs_path, build_charm_path
+
+
+CURRENT_DIR = Path(__file__).parent
 
 class DatasetManager:
     """
-    Managers the dataset context and spawns SubjectReaders.
+    Manages the dataset context and spawns SubjectReaders.
     """
     def __init__(self, config : str | Path | dict):
         # store configuration
@@ -37,11 +42,15 @@ class DatasetManager:
         self.config = config
 
         self.roots = {
-            'raw': config["DIR_RAW"],
-            'mm' : config["DIR_MM"],
-            'fs' : config["DIR_FS"],
+            "raw": config["DIR_RAW"],
+            "mm" : config["DIR_MM"],
+            "fs" : config["DIR_FS"],
             "charm": config["DIR_CHARM"],
         }
+
+        pybids_config = importlib.resources.files("mindmap.resources").joinpath("pybids_config.json")
+        self.layout = BIDSLayout(self.roots["raw"])
+        self.layout.add_derivatives(self.roots["mm"], config=pybids_config)
 
         self.stds = {k : v for k, v in config.items() if "STD" in k}
 
@@ -54,7 +63,7 @@ class DatasetManager:
         if subject_id not in self.subjects:
             raise KeyError(f"Subject {subject_id} not in config list.")
 
-        return SubjectReader(subject_id, self.roots)
+        return SubjectReader(subject_id, self.roots, self.layout)
 
     def get_standards(self):
         """
@@ -81,91 +90,85 @@ class SubjectReader:
     """
     Reader to extract specific data from subject.
     """
-    def __init__(self, subject_id, roots):
+    def __init__(self, subject_id, roots, bidslayout):
         self.sub   = str(subject_id).replace("sub-", "")
         self.roots = roots
+        self.layout = bidslayout
 
-        self.path_registry = {
-            # mindmap
-            "dseg": ("mm", build_mm_path),
-            "src": ("mm", build_mm_path),
-            "bem": ("mm", build_mm_path),
-            "fwd": ("mm", build_mm_path),
-            "con": ("mm", build_mm_path),
-            "eig": ("mm", build_mm_path),
-            "ave": ("mm", build_mm_path),
-            "i-ave": ("mm", build_mm_path),
-            "cov": ("mm", build_mm_path),
-            "stc": ("mm", build_mm_path),
-            "parc": ("mm", self._build_internal_path),
-            "eeg-trans": ("mm", self._build_internal_path),
-            "v-ave": ("mm", build_mm_path),
+        self.fs_keys = [
+            "t1.mgz", "brain", "orig", "white", "pial", "inflated",
+            "inflated", "vertex-ctx", "vol_info",
+        ]
 
-            # freesurfer
-            "t1.mgz"     : ("fs", build_fs_path),
-            "brain"      : ("fs", build_fs_path),
-            "orig"       : ("fs", build_fs_path),
-            "white"      : ("fs", build_fs_path),
-            "pial"       : ("fs", build_fs_path),
-            "inflated"   : ("fs", build_fs_path),
-            "vertex-ctx" : ("fs", build_fs_path),
-            "vol-info"   : ("fs", self._build_internal_path),
+        self.charm_keys = ["seg"]
 
-            # charm
-            "seg" : ("charm", build_charm_path),
-        }
+        # -----------------------
+        # Build default registry
+        # -----------------------
 
-        self.loader_registry = {
-            # mindmap
-            "dseg"      : read_mri,
-            "parc"      : self._load_parc_internal,
-            "ctx"       : self._load_ctx_internal,
-            "src"       : lambda f: mne.read_source_spaces(f, verbose="warning"),
-            "bem"       : lambda f: mne.read_bem_solution(f, verbose="warning"),
-            "fwd"       : lambda f: mne.read_forward_solution(f, verbose="warning"),
-            "con"       : np.load,
-            "eig"       : self._load_eig_internal,
-            "ave"       : lambda f: mne.read_evokeds(f, verbose="warning")[0],
-            "i-ave"     : lambda f: mne.read_evokeds(f, verbose="warning")[0],
-            "cov"       : self._load_cov_internal,
-            "stc"       : mne.read_source_estimate,
-            "eeg-trans" : lambda f: mne.read_trans(f, verbose="warning"),
-            "v-ave"     : lambda f: mne.read_evokeds(f, verbose="warning")[0],
+        self.registry = {}
 
-            # freesurfer
-            "t1.mgz"     : read_mri,
-            "brain"      : read_mri,
-            "orig"       : read_mri,
-            "white"      : nib.freesurfer.io.read_geometry,
-            "pial"       : nib.freesurfer.io.read_geometry,
-            "inflated"   : nib.freesurfer.io.read_geometry,
-            "vertex-ctx" : read_cortex_label,
-            "ras2tkras"  : self._load_ras2tkras_internal,
-            "vol-info"   : make_volume_info,
+        # add bids registry
 
-            # charm
-            "seg": self._load_seg_internal,
-        }
+        # add mindmap registry
+        def build_mm_path(subject, suffix, **kwargs):
+            entities = {
+                "subject": subject,
+                "suffix": suffix,
+                **kwargs,
+            }
+
+            path = self.layout(entities, scope="mindmap", absolute_path=False, validate=False)
+            return self.roots["mm"]/path
+
+        self.add_datatype("", "mm", build_mm_path, ...)
+        self.add_datatype("dseg", "mm", build_mm_path, read_mri)
+        self.add_datatype("parc", "mm", build_mm_path, self._load_parc)
+        self.add_datatype("ctx", "mm", build_mm_path, self._load_ctx)
+        self.add_datatype("src", "mm", build_mm_path, lambda f: mne.read_source_spaces(f, verbose="warning"))
+        self.add_datatype("bem", "mm", build_mm_path, lambda f: mne.read_bem_solution(f, verbose="warning"))
+        self.add_datatype("fwd", "mm", build_mm_path, lambda f: mne.read_forward_solution(f, verbose="warning"))
+        self.add_datatype("con", "mm", build_mm_path, np.load)
+        self.add_datatype("eig", "mm", build_mm_path, self._load_eig)
+        self.add_datatype("ave", "mm", build_mm_path, lambda f: mne.read_evokeds(f, verbose="warning")[0])
+        self.add_datatype("i-ave", "mm", build_mm_path, lambda f: mne.read_evokeds(f, verbose="warning")[0])
+        self.add_datatype("v-ave", "mm", build_mm_path, lambda f: mne.read_evokeds(f, verbose="warning")[0])
+        self.add_datatype("cov", "mm", build_mm_path, ...)
+        self.add_datatype("stc", "mm", build_mm_path, mne.read_source_estimate)
+
+        # add FreeSurfer registry
+        self.add_datatype("t1.mgz", "fs", build_fs_path, read_mri)
+        self.add_datatype("brain", "fs", build_fs_path, read_mri)
+        self.add_datatype("orig", "fs", build_fs_path, read_mri)
+        self.add_datatype("white", "fs", build_fs_path, nib.freesurfer.io.read_geometry)
+        self.add_datatype("pial", "fs", build_fs_path, nib.freesurfer.io.read_geometry)
+        self.add_datatype("inflated", "fs", build_fs_path, nib.freesurfer.io.read_geometry)
+        self.add_datatype("vertex-ctx", "fs", build_fs_path, read_cortex_label)
+        self.add_datatype("vol-info", "fs", lambda root, subject, _, **kwargs: build_fs_path(root, subject, "t1.mgz", **kwargs), make_volume_info)
+        self.add_datatype("ras2tkras", "fs", lambda root, subject, _, **kwargs: build_fs_path(root, subject, "t1.mgz", **kwargs), self._load_ras2tkras)
+
+        # add Charm registry
+        self.add_datatype("seg", "charm", build_charm_path, self._load_seg)
 
     # -----------------------------------
     # Internal Logic for Complex Objects
     # -----------------------------------
 
-    def _load_parc_internal(self, path):
+    def _load_parc(self, path):
         """
         Load parcellation.
         """
         clut_path = Path(str(path).replace(".nii.gz", ".txt"))
         return Parcellation(path, clut_path)
 
-    def _load_seg_internal(self, path):
+    def _load_seg(self, path):
         """
         Load segmentation.
         """
         clut_path = Path(str(path).replace(".nii.gz", "_LUT.txt"))
         return Parcellation(path, clut_path)
 
-    def _load_ctx_internal(self, **kwargs):
+    def _load_ctx(self, **kwargs):
         """
         Load cortical mask.
         """
@@ -174,14 +177,14 @@ class SubjectReader:
         ctx_labels = clut[clut["Label name"].str.startswith("ctx")]["#No."].values
         return parc.create_mask(ctx_labels)
 
-    def _load_eig_internal(self, path):
+    def _load_eig(self, path):
         """
         Load eigenvalues and eigenvectors.
         """
         eigvec, eigval = read_eig(path)
         return {"vec":eigvec, "val":eigval}
 
-    def _load_ras2tkras_internal(self, **kwargs):
+    def _load_ras2tkras(self, **kwargs):
         """Load ras2tkras."""
         mri = self.load("t1.mgz", **kwargs)
 
@@ -189,26 +192,13 @@ class SubjectReader:
         vox2ras_tkr = mri.header.get_vox2ras_tkr()
 
         return vox2ras_tkr @ np.linalg.inv(vox2ras)
-    
-    def _load_cov_internal(self, path):
+
+    def _load_cov(self, path):
         """Load Covariance"""
         cov = mne.read_cov(path, verbose="warning")
         cov["data"] = cov["data"].astype("float")
         return cov
-        
 
-    def _build_internal_path(self, root, subject, datatype, **kwargs):
-        """
-        Build special paths.
-        """
-        if datatype == "eeg-trans":
-            return build_mm_path(root, subject, "ave", suffix="eeg-trans", **kwargs)
-        if datatype == "parc":
-            return build_mm_path(root, subject, "dseg", **kwargs)
-        if datatype == "vol-info":
-            return build_fs_path(root, subject, "t1.mgz", **kwargs)
-        else:
-            raise ValueError(f"Datatype '{datatype}' does not have an internal path implementation.")
 
     # -----------
     # Public API
@@ -218,50 +208,49 @@ class SubjectReader:
         """
         Add new non-BIDS or derivative objects for reading.
         """
-        self.path_registry[datatype] = (root_key, builder_func)
-        self.loader_registry[datatype] = loader_func
+        self.registry[datatype] = (root_key, builder_func, loader_func)
 
-    def get_path(self, datatype, **kwargs):
+    def get_path(self, suffix, **kwargs):
         """
-        Dspatches to the correct builder based on datatype.
+        Dispatches to the correct builder based on datatype.
         """
-        if datatype in self.path_registry:
-            root_key, builder = self.path_registry[datatype]
-            return builder(root=self.roots[root_key], subject=self.sub, datatype=datatype, **kwargs)
+        if suffix not in self.registry:
+            raise KeyError(
+                f"No registry entry for datatype '{suffix}'"
+                f"Use reader.add_datatype() to register a custom datatype."
+            )
 
-        # Default to raw
-        return build_raw_path(self.roots["raw"], self.sub, datatype, **kwargs)
+        root_key, builder, _ = self.registry[suffix]
 
-    def load(self, datatype, **kwargs):
+        return builder(
+            self.roots[root_key],
+            self.sub,
+            suffix,
+            **kwargs,
+        )
+
+    def load(self, suffix, **kwargs):
         """
         The main entry point with logic for expressions.
         """
-        if datatype not in self.loader_registry:
+        if suffix not in self.registry:
             raise KeyError(
-                f"No loader reistered for datatype '{datatype}'."
+                f"No registry for datatype '{suffix}'."
                 f"Use reader.add_datatype() to register a custom loader."
             )
 
-        # Exception 1: The cortex mask
-        if datatype == "ctx":
-            return self.loader_registry["ctx"](**kwargs)
-        
-        # Exception 2: tkras2ras
-        if datatype == "ras2tkras":
-            return self.loader_registry["ras2tkras"](**kwargs)
-
-        # Exception 2: Double hemispheres
-        if datatype in ["white", "pial", "inflated", "vertex-ctx"] and "hemi" not in kwargs:
-            path_lh = self.get_path(datatype, hemi="lh")
-            path_rh = self.get_path(datatype, hemi="rh")
+        # Exception 1: Double hemispheres
+        if suffix in ["white", "pial", "inflated", "vertex-ctx"] and "hemi" not in kwargs:
+            path_lh = self.get_path(suffix, hemi="lh")
+            path_rh = self.get_path(suffix, hemi="rh")
 
             if not path_lh.exists() or not path_rh.exists():
-                raise FileNotFoundError(f"Missing one or both hemisphere files for {datatype} at: {path_lh} or {path_rh}")
+                raise FileNotFoundError(f"Missing one or both hemisphere files for {suffix} at: {path_lh} or {path_rh}")
 
-            lh = self.loader_registry[datatype](path_lh)
-            rh = self.loader_registry[datatype](path_rh)
+            lh = self.registry[suffix][2](path_lh)
+            rh = self.registry[suffix][2](path_rh)
 
-            if datatype == "vertex-ctx":
+            if suffix == "vertex-ctx":
                 lh["hemisphere"] = "L"
                 rh["hemisphere"] = "R"
                 return pd.concat([lh, rh], ignore_index=True)
@@ -269,12 +258,13 @@ class SubjectReader:
             return lh, rh
 
         # Standard registry loading
-        path = self.get_path(datatype, **kwargs)
+        path = self.get_path(suffix, **kwargs)
+
         # Put file exists in readers!!! Issues with "filenaming_*_.nii.gz"
         #if not path.exists():
         #    raise FileNotFoundError(f"File not found: {path}")
 
-        return self.loader_registry[datatype](path)
+        return self.registry[suffix][2](path)
 
 
 class StandardReader:

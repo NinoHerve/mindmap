@@ -6,6 +6,8 @@ This sub-package contains plots for visualization outputs.
 
 from .dispatch import (
     plot_brain_activity,
+    plot_signal,
+    plot_source,
 )
 
 from .core import (
@@ -87,4 +89,5 @@ __all__ = [
     "plot_multi_scatterplots",
     "plot_evoked_cog",
     "plot_evoked_rem",
+    "plot_signal",
 ]

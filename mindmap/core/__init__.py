@@ -15,6 +15,7 @@ from .utils import (
     create_tmp_config,
     get_spike_extent_mask,
     get_spurious_mask,
+    create_dataset_description,
 )
 
 from .io import (
@@ -40,4 +41,5 @@ __all__ = [
     "write_eig",
     "write_csv_row",
     "get_config",
+    "create_dataset_description",
 ]

@@ -19,7 +19,7 @@ import scipy as sp
 import nibabel as nib
 import mne
 
-from mindmap.anatomy.parcellation.core import Parcellation
+from mindmap.anatomy.parcellation.base import Parcellation
 from mindmap.anatomy.tractogram.processing import tract_endpoints, tract_lengths
 from mindmap.anatomy.utils import align_diffusion2subject, align_freesurfer2subject
 from mindmap.anatomy.source_space.io import get_ndipole, get_dipole_positions

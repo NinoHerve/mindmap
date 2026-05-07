@@ -1,0 +1,14 @@
+{
+    "Name": "mindmap",
+    "BIDSVersion": "1.8.0",
+    "DatasetType": "derivative",
+    "Authors": [
+        "Nino"
+    ],
+    "GeneratedBy": [
+        {
+            "Name": "mindmap",
+            "Version": "0.1.2"
+        }
+    ]
+}

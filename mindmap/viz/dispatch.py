@@ -24,6 +24,8 @@ import pyvista as pv
 from mindmap.core.process import normalize_data
 from mindmap.anatomy.mri.io import nib_to_polydata
 from mindmap.analysis.functional.eeg.process import normalize_evoked
+from mindmap.analysis.simulation.signals import Signal
+from mindmap.analysis.simulation.components import Source
 from mindmap.viz.utils import (
     store_in_lists, find_clim, default_cmap,
     BrainMesh, SourceMesh, ChannelMesh, OverlayMesh
@@ -279,3 +281,51 @@ def plot_ieeg(
         tm.plotter.add_text("Show spurious mask", position=(40, 35), font_size=8)
 
     return tm.plotter
+
+import seaborn as sns
+
+def plot_signal(
+    times,
+    signal,
+    show_events = False,
+    title = None,
+):
+    """
+    Plots the signal's waveform.
+    """
+    waveform = signal.generate(times)
+    title = title or f"Waveform: {signal.name}"
+
+    ax = sns.lineplot(x=times, y=waveform["data"])
+    ax.set(title=title, xlabel="Time [s]", ylabel="Dipole activity [A]")
+    ax.grid(True, which="both")
+    ax.axhline(y=0, color="k", linewidth=1)
+
+    if show_events:
+        # Get indices where events occur (1 or -1)
+        event_indices = np.where(waveform["events"] != 0)[0]
+        event_times = times[event_indices]
+
+        # Determine height of the lines
+        v_height = np.max(np.abs(waveform["data"])) * 1.1 if np.any(waveform["data"]) else 1
+
+        # Plot onset/offset lines
+        # Blue for onset (1), Red for offset (-1)
+        colors = ['#1f77b4' if val > 0 else '#d62728' for val in waveform["events"][event_indices]]
+        ax.vlines(event_times, -v_height, v_height, colors=colors, linestyles='--', alpha=0.7)
+
+    return ax
+
+
+def plot_source(head_model, source):
+    """
+    Plots brain mesh with highlighted source.
+    """
+
+    targets = source.select_targets(
+        head_model.src,
+        head_model.parc,
+        head_model.tkras2ras
+    )
+
+    plot_brain_activity(head_model.src, targets.astype(int), func_params={"absolute":True})

@@ -17,17 +17,86 @@ import mne
 
 from mindmap.core.metric import (
     calc_confusion_matrix, calc_activity_scores,
-    calc_performance_curves,
+    calc_performance_curves, calc_correlation,
+    calc_cosine,
 )
 from mindmap.analysis.functional.common.utils import (
     is_binary_mne,
 )
 
+
+def compute_mne_correlation(
+    obj_true: mne.Evoked | mne.SourceEstimate,
+    obj_pred: mne.Evoked | mne.SourceEstimate,
+    mode: str = "spatio-temporal",
+    method: str = "pearson",
+) -> float | np.ndarray:
+    """
+    Compute correlation.
+    
+    Parameters
+    ----------
+    obj_true: mne.Evoked | mne.SourceEstimate
+        Ground truth activity.
+
+    obj_pred: mne.Evoked | mne.SourceEstimate
+        Estimated activity.
+
+    mode: str ['spatial', 'temporal', 'spatio-temporal']
+
+    Returns
+    -------
+    corr: float | np.ndarray
+        Correlation.
+    """
+    y_true = obj_true.data
+    y_pred = obj_pred.data
+
+    # map mode to axis
+    axis_map = {"spatio-temporal": None, "spatial": 0, "temporal": 1}
+    target_axis = axis_map[mode]
+    center_axis = axis_map["temporal"] if target_axis is None else target_axis
+
+    return calc_correlation(y_true, y_pred, method, target_axis, center_axis)
+
+
+def compute_mne_cosine(
+    obj_true: mne.Evoked | mne.SourceEstimate,
+    obj_pred: mne.Evoked | mne.SourceEstimate,
+    mode: str = "spatio-temporal",
+) -> float | np.ndarray:
+    """
+    Compute cosine similarity.
+    
+    Parameters
+    ----------
+    obj_true: mne.Evoked | mne.SourceEstimate
+        Ground truth acitvity.
+
+    obj_pred: mne.Evoked | mne.SourceEstimate
+        Estimated activity.
+
+    mode: str ['spatial', 'temporal', 'spatio-temporal']
+    
+    Returns
+    -------
+    cos: float | np.ndarray
+        Cosine similarity.
+    """
+    y_true = obj_true.data
+    y_pred = obj_pred.data
+
+    # map mode to axis
+    axis_map = {"spatio-temporal": None, "spatial": 0, "temporal": 1}
+    target_axis = axis_map[mode]
+
+    return calc_cosine(y_true, y_pred, target_axis)
+
+
 def compute_mne_confusion(
     obj_true: mne.Evoked | mne.SourceEstimate,
     obj_pred: mne.Evoked | mne.SourceEstimate,
     mode: str = "spatio-temporal",
-    rng: tuple = (None, None),
 ) -> dict:
     """
     Compute confusion matrix.
@@ -44,15 +113,6 @@ def compute_mne_confusion(
         - 'spatial': compute scores for each time point.
         - 'temporal': compute scores for each channel.
         - 'spatio-temporal': compute scores overall.
-
-    true_threshold: dict
-        Keyword arguments for `binarize_mne_object`.
-    
-    threshold:
-        Relative maximum threshold for binarization.
-
-    rng: tuple (float, float)
-        Range of data to consider for scoring.
     
     Returns
     -------
@@ -63,12 +123,8 @@ def compute_mne_confusion(
     if not is_binary_mne(obj_true) or not is_binary_mne(obj_pred):
         raise TypeError("Input data needs to be binary for computing the confusion matrix.")
 
-    # crop data
-    o_true = obj_true.copy().crop(*rng)
-    o_pred = obj_pred.copy().crop(*rng)
-
-    y_true = o_true.data
-    y_pred = o_pred.data
+    y_true = obj_true.data
+    y_pred = obj_pred.data
 
     # dynamic labels (channels vs dipoles)
     label_name = "channel" if hasattr(obj_true, "ch_names") else "dipole_index"
@@ -82,7 +138,7 @@ def compute_mne_confusion(
     if mode == "spatial":
         for t in range(y_true.shape[1]):
             res = calc_confusion_matrix(y_true[:, t], y_pred[:, t])
-            res["time"] = o_true.times[t]
+            res["time"] = obj_true.times[t]
             results.append(res)
         return pd.DataFrame(results).set_index("time")
 
@@ -99,7 +155,6 @@ def compute_mne_scores(
     obj_true: mne.Evoked | mne.SourceEstimate,
     obj_pred: mne.Evoked | mne.SourceEstimate,
     mode: str = "spatio-temporal",
-    rng: tuple = (None, None),
 ) -> dict:
     """
     Compute scores.
@@ -107,7 +162,7 @@ def compute_mne_scores(
     Parameters
     ----------
     obj_true: mne.Evoked | mne.SourceEstimate
-        Ground truth activity.
+        Binary ground truth activity.
     
     obj_pred: mne.Evoked | mne.SourceEstimate
         Estimated activity.
@@ -116,15 +171,6 @@ def compute_mne_scores(
         - 'spatial': compute scores for each time point.
         - 'temporal': compute scores for each channel.
         - 'spatio-temporal': compute scores overall.
-
-    true_threshold: dict
-        Keyword arguments for `binarize_mne_object`.
-    
-    threshold:
-        Relative maximum threshold for binarization.
-
-    rng: tuple (float, float)
-        Range of data to consider for scoring.
     
     Returns
     -------
@@ -135,12 +181,8 @@ def compute_mne_scores(
     if not is_binary_mne(obj_true) or not is_binary_mne(obj_pred):
         raise TypeError("Input data needs to be binary for computing performance scores.")
 
-    # crop data
-    o_true = obj_true.copy().crop(*rng)
-    o_pred = obj_pred.copy().crop(*rng)
-
-    y_true = o_true.data
-    y_pred = o_pred.data
+    y_true = obj_true.data
+    y_pred = obj_pred.data
 
     # dynamic labels (channels vs dipoles)
     label_name = "channel" if hasattr(obj_true, "ch_names") else "dipole_index"
@@ -154,7 +196,7 @@ def compute_mne_scores(
     if mode == "spatial":
         for t in range(y_true.shape[1]):
             res = calc_activity_scores(y_true[:, t], y_pred[:, t])
-            res["time"] = o_true.times[t]
+            res["time"] = obj_true.times[t]
             results.append(res)
         return pd.DataFrame(results).set_index("time")
 
@@ -169,7 +211,6 @@ def compute_mne_scores(
 def compute_mne_curves(
     obj_true: mne.Evoked | mne.SourceEstimate,
     obj_pred: mne.Evoked | mne.SourceEstimate,
-    rng: tuple = (None, None),
 ) -> dict:
     """
     Computes data for ROC and PR curves.
@@ -177,16 +218,13 @@ def compute_mne_curves(
     Parameters
     ----------
     obj_true: mne.Evoked | mne.SourceEstimate
-        Ground truth activity.
+        Binary ground truth activity.
     
     obj_pred: mne.Evoked | mne.SourceEstimate
         Estimated activity.
 
     true_threshold: dict
         Keyword arguments for `binarize_mne_object`.
-
-    rng: tuple (float, float)
-        Range of data to consider for scoring.
     
     Returns
     -------
@@ -197,11 +235,7 @@ def compute_mne_curves(
     if not is_binary_mne(obj_true):
         raise TypeError("Ground truth needs to be binary to compute ROC and PR curves.")
 
-    # crop data
-    o_true = obj_true.copy().crop(*rng)
-    o_pred = obj_pred.copy().crop(*rng)
-
-    y_true = o_true.data
-    y_pred = np.abs(o_pred.data)
+    y_true = obj_true.data
+    y_pred = np.abs(obj_pred.data)
 
     return calc_performance_curves(y_true, y_pred)

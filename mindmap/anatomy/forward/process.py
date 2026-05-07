@@ -23,7 +23,7 @@ from mne.bem import _get_ico_surface
 from mindmap.geometry.io import surf_to_polydata
 from mindmap.geometry.processing import surf_correction, fit_surface_to_volume
 from mindmap.anatomy.mri.io import get_affine, nibabel_to_ants
-from mindmap.anatomy.parcellation.core import Parcellation
+from mindmap.anatomy.parcellation.base import Parcellation
 from mindmap.anatomy.parcellation.processing import create_mask
 
 def correct_skull(

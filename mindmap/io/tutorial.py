@@ -19,7 +19,7 @@ import numpy as np
 import mne
 
 from mindmap.analysis.functional.eeg.utils import scale_montage
-from mindmap.anatomy.parcellation.core import Parcellation
+from mindmap.anatomy.parcellation.base import Parcellation
 from .dataset import DatasetManager
 import mne_bids
 

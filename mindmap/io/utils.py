@@ -1,45 +1,42 @@
 
 from pathlib import Path
 
-import mne_bids
+from bids import BIDSLayout
 
+def build_bids_path(layout, subject, suffix, **kwargs):
+    """
+    Universal BIDS path builder for Raw and MindMap derivatives.
+    """
+    entities = {
+        "subject": subject,
+        "suffix": suffix,
+        **kwargs
+    }
+
+    path = layout.build_path(entities, validate=False)
+
+    if path is None:
+        raise ValueError(f"Could not build path for suffix '{suffix}'.")
+
+    return path
 
 def build_raw_path(
-    root      : str | Path,
-    subject   : str,
-    datatype  : str,
-    session   : str = None,
-    task      : str = None,
-    run       : str | int = None,
-    acq       : str = None,
-    space     : str = None,
-    desc      : str = None,
-    suffix    : str = None,
-    extension : str = None,
+    root : str | Path,
+    entities: dict,
 ) -> Path:
     """
     Build BIDS path for raw data.
     """
-    fname = mne_bids.BIDSPath(
-        root        = root,
-        subject     = subject,
-        datatype    = datatype,
-        session     = session,
-        task        = task,
-        run         = run,
-        acquisition = acq,
-        space       = space,
-        description = desc,
-        suffix      = suffix,
-        extension   = extension,
-    )
+    layout = BIDSLayout(root)
 
-    return fname.fpath
+    file_path = layout.build_path(entities)
+
+    return file_path
 
 def build_mm_path(
     root      : str | Path,
     subject   : str,
-    datatype  : str,
+    suffix    : str,
     session   : str = None,
     task      : str = None,
     run       : str | int = None,
@@ -48,14 +45,14 @@ def build_mm_path(
     desc      : str = None,
     atlas     : str = None,
     res       : str = None,
-    suffix    : str = None,
     extension : str = None,
+    scale     : str = None,
 ) -> Path:
     """
     Constructs a BIDS-compliant path for MindMap derivatives.
     """
-    # 1. Configuration registry
-    MM_DATATYPES = {
+    # 1. Configuration registry (format: {suffix: (folder, extension)})
+    MM_SUFFIX = {
         "bem"       : ("bem",       "fif"),
         "fwd"       : ("fwd",       "fif"),
         "src"       : ("src",       "fif"),
@@ -67,22 +64,21 @@ def build_mm_path(
         "stc"       : ("stc",       ""),
         "eig"       : ("eig",       "npz"),
         "eeg-trans" : ("eeg-trans", "fif"),
-        "anat"      : ("T1w",       "nii.gz"),
         "v-ave"     : ("v-ave",     "fif"),
     }
 
-    if datatype not in MM_DATATYPES:
-        raise ValueError(f"Unknown datatype '{datatype}'. Valid: {list(MM_DATATYPES.keys())}")
+    if suffix not in MM_SUFFIX:
+        raise ValueError(f"Unknown datatype '{suffix}'. Valid: {list(MM_SUFFIX.keys())}")
 
     # 2. Cleanup inputs (ensure no redundant 'sub-' or 'ses-')
     sub_id = str(subject).replace("sub-", "")
     ses_id = str(session).replace("ses-", "") if session else None
 
-    # 3. Build directory sturcture
+    # 3. Build directory structure
     fpath = Path(root) / f"sub-{sub_id}"
     if ses_id:
         fpath /= f"ses-{ses_id}"
-    fpath /= datatype
+    fpath /= MM_SUFFIX[suffix][0]
 
     # 4. Handle BIDS naming
     entities = {
@@ -94,6 +90,7 @@ def build_mm_path(
         "atlas" : atlas,
         "res"   : res,
         "desc"  : desc,
+        "scale" : scale,
     }
 
     # Construct the base filename
@@ -102,15 +99,12 @@ def build_mm_path(
         if val is not None:
             parts.append(f"{key}-{val}")
 
-    # 5. Determine suffix and extension
-    default_suffix, default_ext = MM_DATATYPES[datatype]
+    # 5. Determine extension
+    ext = extension if extension is not None else MM_SUFFIX[suffix][1]
 
-    final_suffix = suffix if suffix is not None else default_suffix
-    final_ext    = extension if extension is not None else default_ext
-
-    fname = f"{'_'.join(parts)}_{final_suffix}"
-    if final_ext:
-        fname += f".{final_ext}"
+    fname = f"{'_'.join(parts)}_{suffix}"
+    if ext:
+        fname += f".{ext}"
 
     return fpath / fname
 

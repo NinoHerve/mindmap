@@ -1,0 +1,14 @@
+{
+    "name": "mindmap",
+
+    "default_path_patterns": [
+	"sub-{subject}[/ses-{session}]/{datatype<anat>|anat}/sub-{subject}[_ses-{session}][_acq-{acquisition}][_ce-{ceagent}][_rec-{reconstruction}][_space-{space}][_seg-{segmentation}][_res-{res}][_label-{label}][_desc-{desc}]_{suffix<dseg>}{extension<.nii|.nii.gz|.json>|.nii.gz}",
+	"sub-{subject}[/ses-{session}]/{datatype<ave>|ave}/sub-{subject}[_ses-{session}][_task-{task}][_run-{run}][_desc-{desc}]_{suffix<ave|i-ave>}{extension<.fif>|.fif}",
+	"sub-{subject}[/ses-{session}]/{datatype<cov>|cov}/sub-{subject}[_ses-{session}][_task-{task}][_run-{run}][_desc-{desc}]_{suffix<cov>}{extension<.fif>|.fif}",
+	"sub-{subject}[/ses-{session}]/{datatype<src>|src}/sub-{subject}[_ses-{session}][_desc-{desc}]_{suffix<src>}{extension<.fif>|.fif}",
+	"sub-{subject}[/ses-{session}]/{datatype<fwd>|fwd}/sub-{subject}[_ses-{session}][_desc-{desc}]_{suffix<fwd>}{extension<.fif>|.fif}",
+	"sub-{subject}[/ses-{session}]/{datatype<stc>|stc}/sub-{subject}[_ses-{session}][_desc-{desc}]_{suffix<stc-rh|stc-lh>}{extension<.stc>|.stc}",
+	"sub-{subject}[/ses-{session}]/{datatype<con>|con}/sub-{subject}[_ses-{session}][_space-{space}][_atlas-{atlas}][_desc-{desc}]_{suffix<con>}{extension<.npy>|.npy}",
+	"sub-{subject}[/ses-{session}]/{datatype<eig>|eig}/sub-{subject}[_ses-{session}][_desc-{desc}]_{suffix<eig>}{extension<.npz>|.npz}"
+    ]
+}

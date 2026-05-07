@@ -27,6 +27,7 @@ from mindmap.core.utils import get_spike_extent_mask, get_spurious_mask
 
 from mindmap.analysis.functional.common.metric import (
     compute_mne_confusion, compute_mne_scores, compute_mne_curves,
+    compute_mne_correlation, compute_mne_cosine,
 )
 
 from .io import get_ch_positions
@@ -250,12 +251,10 @@ def peak_baseline_snr(
 
 
 def compute_evoked_correlation(
-    evoked_ref: mne.Evoked,
-    evoked_est: mne.Evoked,
+    evoked_true: mne.Evoked,
+    evoked_pred: mne.Evoked,
     mode: str = "temporal",
     method: str = "pearson",
-    threshold: float | None = None,
-    average: bool = False,
 ) -> np.ndarray | float:
     """
     Compute correlation between two evoked objects.
@@ -276,55 +275,59 @@ def compute_evoked_correlation(
     method: str ['pearson', 'spearman', 'log-envelope']
         Correlation method.
 
-    threshold: float | None
-        If provided, only timepoints where Ground Truth GFP is above this 
-        value are included in the calculation.
-    
-    average: bool
-        If True, return the mean over the result vector.
+    Returns
+    -------
+    corr: float or np.ndarray
+        Correlation value(s). Shape depends on axis and average.
+    """
+    if not same_evoked(evoked_true, evoked_pred):
+        raise ValueError("Evokeds must have same channels and timepoints.")
+
+    return compute_mne_correlation(
+        evoked_true,
+        evoked_pred,
+        mode = mode,
+        method = method,
+    )
+
+
+def compute_evoked_cosine(
+    evoked_true: mne.Evoked,
+    evoked_pred: mne.Evoked,
+    mode: str = "temporal",
+) -> np.ndarray | float:
+    """
+    Compute cosine between two evoked objects.
+
+    Parameters
+    ----------
+    evoked_ref: mne.Evoked
+        Reference activity (e.g. True iEEG).
+
+    evoked_est: mne.Evoked
+        Estimated activity (e.g. virtual iEEG).
+
+    mode: str ['spatial', 'temporal', 'spatio-temporal']
+        - 'spatial': Correlation across channels at each timepoint -> (n_timepoints,)
+        - 'temporal': Correlation across time for each channel -> (n_channels,)
+        - 'sptio-temporal': Flattened correlation -> scalar
+
+    method: str ['pearson', 'spearman', 'log-envelope']
+        Correlation method.
 
     Returns
     -------
     corr: float or np.ndarray
         Correlation value(s). Shape depends on axis and average.
     """
-    if not same_evoked(evoked_ref, evoked_est):
+    if not same_evoked(evoked_true, evoked_pred):
         raise ValueError("Evokeds must have same channels and timepoints.")
 
-    # mapping mode to axis
-    mode_map = {"spatial":0, "temporal":1, "spatio-temporal":None}
-    if mode not in mode_map:
-        raise ValueError(f"Unknown mode '{mode}'. Use 'spatial', 'temporal', or 'spatio-temporal'.")
-
-    axis = mode_map[mode]
-
-    # handle thresholding (Masking)
-    if threshold is not None:
-        # calculate GFP of the reference to find "active" timepoints
-        gfp_ref = get_gfp(evoked_ref.data, axis=0)
-        mask = gfp_ref > threshold
-
-        # slice the data to only include active timepoints
-        # Note: this only makes sense for 'spatial' or 'spatio-temporal' modes
-        ref_data = evoked_ref.data[:, mask]
-        est_data = evoked_est.data[:, mask]
-
-        if ref_data.shape[1] == 0:
-            print("Warning: No timepoints exceed the threshold. Returning 0.")
-            return 0.0
-    else:
-        ref_data = evoked_ref.data
-        est_data = evoked_est.data
-
-    corr = calc_correlation(
-        ref_data, est_data, method=method, axis=axis,
+    return compute_mne_cosine(
+        evoked_true,
+        evoked_pred,
+        mode = mode,
     )
-    corr = np.mean(corr) if average else corr
-
-    if threshold is not None:
-        return corr, evoked_ref.times[mask]
-
-    return corr
 
 
 def compute_evoked_corr_matrix(
@@ -668,7 +671,6 @@ def compute_evoked_confusion(
     evoked_true: mne.Evoked,
     evoked_pred: mne.Evoked,
     mode: str = "spatio-temporal",
-    rng: tuple = (None, None),
 ) -> dict:
     """
     Wrapper for `compute_mne_confusion`
@@ -676,7 +678,7 @@ def compute_evoked_confusion(
     Parameters
     ----------
     evoked_true: mne.Evoked | mne.SourceEstimate
-        Ground truth activity.
+        Binary ground truth activity.
     
     evoked_pred: mne.Evoked | mne.SourceEstimate
         Estimated activity.
@@ -685,15 +687,9 @@ def compute_evoked_confusion(
         - 'spatial': compute scores for each time point.
         - 'temporal': compute scores for each channel.
         - 'spatio-temporal': compute scores overall.
-
-    true_threshold: dict
-        Keyword arguments for `binarize_mne_object`.
     
     threshold:
         Relative maximum threshold for binarization.
-
-    rng: tuple (float, float)
-        Range of data to consider for scoring.
     
     Returns
     -------
@@ -704,7 +700,6 @@ def compute_evoked_confusion(
         obj_true = evoked_true,
         obj_pred = evoked_pred,
         mode = mode,
-        rng = rng,
     )
 
 
@@ -712,7 +707,6 @@ def compute_evoked_scores(
     evoked_true: mne.Evoked,
     evoked_pred: mne.Evoked,
     mode: str = "spatio-temporal",
-    rng: tuple = (None, None),
 ) -> dict:
     """
     Wrapper for `compute_mne_scores`
@@ -748,14 +742,12 @@ def compute_evoked_scores(
         obj_true = evoked_true,
         obj_pred = evoked_pred,
         mode = mode,
-        rng = rng,
     )
 
 
 def compute_evoked_curves(
     evoked_true: mne.Evoked,
     evoked_pred: mne.Evoked,
-    rng: tuple = (None, None),
 ) -> dict:
     """
     Wrapper for `compute_mne_curves`.
@@ -782,5 +774,4 @@ def compute_evoked_curves(
     return compute_mne_curves(
         obj_true = evoked_true,
         obj_pred = evoked_pred,
-        rng = rng,
     )
