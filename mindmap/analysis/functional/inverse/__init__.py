@@ -18,6 +18,10 @@ from .metric import (
     compute_stc_curves,
 )
 
+from .io import (
+    make_stc,
+)
+
 __all__ = [
     "MNE",
     "wCSET",
@@ -26,4 +30,5 @@ __all__ = [
     "compute_stc_confusion",
     "compute_stc_scores",
     "compute_stc_curves",
+    "make_stc",
 ]

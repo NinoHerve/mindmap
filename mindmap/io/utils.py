@@ -123,12 +123,13 @@ def build_fs_path(
 
     FS_MAP = {
         "t1.mgz"     : ("mri", "T1.mgz"),
-        "brain"      : ("mri", "brain.mgz"),
+        "brain.mgz"  : ("mri", "brain.mgz"),
         "orig"       : ("mri", "orig.mgz"),
         "white"      : ("surf", "{hemi}.white"),
         "pial"       : ("surf", "{hemi}.pial"),
         "inflated"   : ("surf", "{hemi}.inflated"),
         "vertex-ctx" : ("label", "{hemi}.cortex.label"),
+        "bem"        : ("bem", ""),
     }
 
     if datatype not in FS_MAP:
@@ -218,3 +219,15 @@ def check_file(
         return f
 
     return f
+
+
+def parse_extension(filename):
+    """Returns extension of filename."""
+    path = Path(filename)
+
+    suffixes = path.suffixes
+
+    if len(suffixes) >= 2 and suffixes[-2:] == [".nii", ".gz"]:
+        return "".join(suffixes[-2:])
+
+    return suffixes[-1] if suffixes else ""

@@ -19,6 +19,7 @@ import nibabel as nib
 import mne
 
 from mindmap.core.io import read_config
+from mindmap.geometry.io import surf_to_polydata
 
 def read_bem_labels(config: str | Path | dict) -> dict[str, list[int]]:
     """
@@ -147,3 +148,18 @@ def save_bem_as_freesurfer(
 
     for k, f in zip(keys, files):
         save_pv_as_freesurfer(folder/f, bem[k], volume_info, overwrite)
+
+def read_bem(bem_folder):
+    """Read BEM surfaces."""
+
+    bem_folder = Path(bem_folder)
+
+    skin = nib.freesurfer.io.read_geometry(bem_folder/"outer_skin.surf")
+    oskull = nib.freesurfer.io.read_geometry(bem_folder/"outer_skull.surf")
+    iskull = nib.freesurfer.io.read_geometry(bem_folder/"inner_skull.surf")
+
+    return {
+        "skin": surf_to_polydata(*skin),
+        "outer_skull": surf_to_polydata(*oskull),
+        "inner_skull": surf_to_polydata(*iskull),
+    }

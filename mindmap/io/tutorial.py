@@ -15,13 +15,14 @@ import glob
 from pathlib import Path
 
 import numpy as np
+import scipy as sp
 
 import mne
+import nibabel as nib
 
 from mindmap.analysis.functional.eeg.utils import scale_montage
 from mindmap.anatomy.parcellation.base import Parcellation
 from .dataset import DatasetManager
-import mne_bids
 
 
 class TutoManager(DatasetManager):
@@ -35,154 +36,153 @@ class TutoManager(DatasetManager):
         super().__init__(config)
 
         # add new roots
-        self.roots["spk"] = self.config["DIR_SPK"]
-        self.roots["cartool"] = self.config["DIR_CART"]
+        self.add_root("spk", self.config["DIR_SPK"])
+        self.add_root("cartool", self.config["DIR_CART"])
+        self.add_root("cmp", self.config["DIR_CMP"])
 
-    def get_subject(self, subject_id):
-        """
-        Rewrite missing data for subject reader.
-        """
-        # default subject reader
-        subreader = super().get_subject(subject_id)
+        # add new datatype
+        self.add_datatype("eeg", None, self._build_path, self._load_eeg)
+        self.add_datatype("ieeg", None, self._build_path, self._load_eeg)
+        self.add_datatype("eeg-trans", "mm", self._build_path, load_identity_trans)
+        self.add_datatype("gold", "raw", self._build_path, mne.read_source_estimate)
+        self.add_datatype("tractogram", "cmp", self._build_path, nib.streamlines.load)
+        self.add_datatype("t12diff", "cmp", self._build_path, self._load_t12diff)
 
-        # configure for vep data
-        if "vep" in subject_id:
+    def load_ref(self, ref_key):
+        # Make thalamic atlas exception.
+        if ref_key.lower() == "ref_thal":
+            path = self.refs[ref_key]
+            clut_path = path.parent/"Thalamic_Nuclei-ColorLUT.txt"
+            return Parcellation(path, clut_path)
+
+        return super().load_ref(ref_key)
+
+    # ----------------------------
+    # TutoManager specific logic
+    # ----------------------------
+
+    def _build_path(self, root, subject, suffix, **kwargs):
+        """Build paths."""
+        if suffix == "eeg":
+            if "intra" in subject.lower():
+                # manage bids entities
+                task = kwargs.get("task")
+                task = f"_task-{task}" if task else ""
+
+                run = kwargs.get("run")
+                run = f"_run-{run}" if run else "_run-*"
+
+                eeg_dir = self.roots["spk"]/f"sub-{subject}"/"eeg"
+                return eeg_dir/f"sub-{subject}{task}{run}_eeg.vhdr"
+
+            if "simf" in subject.lower():
+                pass
+
+            if "spike" in subject.lower():
+                folder = self.roots["cartool"]/f"sub-{subject}"/"eeg"/"ses-preop"
+                return folder/f"sub-{subject}_ses-preop_task-rest_desc-spikeerp-204c-interpol-250Hz_eeg.vhdr"
+
+        if suffix == "ieeg":
+            if not "intra" in subject:
+                raise ValueError(f"Subject sub-{subject} doesn't have any iEEGs.")
+
+            # manage bids entities
+            task = kwargs.get("task")
+            task = f"_task-{task}" if task else ""
+
+            run = kwargs.get("run")
+            run = f"_run-{run}" if run else "_run-*"
+
+            ieeg_dir = self.roots/f"sub-{subject}"/"ieeg"
+            return ieeg_dir/f"sub-{subject}{task}{run}_ieeg.vhdr"
+
+        if suffix == "eeg-trans":
             pass
 
-        # configure for intra data
-        if "intra" in subject_id:
-            subreader.add_datatype("eeg", "spk", build_intra_path, load_eeg_intra)
-            subreader.add_datatype("ieeg", "spk", build_intra_path, load_eeg_intra)
-            subreader.add_datatype("eeg-trans", "mm", lambda *_, **__, : Path("."), load_identity_trans)
+        if suffix == "gold":
+            if "simf" in subject:
+                # manage bids entities
+                task = kwargs.get("task")
+                task = f"_task-{task}" if task else ""
 
-        # configure for simf data
-        if "simf" in subject_id:
-            subreader.add_datatype("eeg", "raw", mne_bids.BIDSPath, lambda f: mne_bids.read_raw_bids(f, verbose="warning").load_data(verbose="warning"))
-            subreader.add_datatype("gt", "raw", build_simf_path, mne.read_source_estimate)
-            subreader.add_datatype("eeg-trans", "mm", lambda *_, **__, : Path("."), load_identity_trans)
+                run = kwargs.get("run")
+                run = f"_run-{run}" if run else ""
 
-        # configure for spike data
-        if "spike" in subject_id:
-            subreader.add_datatype("eeg", "cartool", build_spike_path, load_eeg_spike)
+                desc = kwargs.get("desc")
+                desc = f"_desc-{desc}" if desc else ""
 
-        return subreader
+                gt_dir = root/f"sub-{subject}"/"stc"
+                return gt_dir/f"sub-{subject}{task}{run}{desc}_stc"
 
-    def get_standards(self):
-        """
-        Rewrite complex objects for standardized data
-        """
-        # default standardized data reader
-        stdreader = super().get_standards()
-
-        # add exceptions
-        stdreader.add_exceptions("THAL", load_thal_atlas)
-
-
-########################
-##   intra builders   ##
-##   ¨¨¨¨¨¨¨¨¨¨¨¨¨¨   ##
-########################
-
-def build_intra_path(root, subject, datatype, **kwargs):
-    """
-    EEG & iEEG path for intra dataset.
-    """
-    if datatype in ["eeg", "ieeg"]:
-
-        # manage bids entities
-        task = kwargs.get("task")
-        task = f"_task-{task}" if task else ""
-
-        run = kwargs.get("run")
-        run = f"_run-{run}" if run else "_run-*"
-
-        # filename
-        if datatype == "eeg":
-            eeg_dir = root/f"sub-{subject}"/"eeg"
-            return eeg_dir/f"sub-{subject}{task}{run}_eeg.vhdr"
-        else:
-            ieeg_dir = root/f"sub-{subject}"/"ieeg"
-            return ieeg_dir/f"sub-{subject}{task}_*_ieeg.vhdr"
-
-    else:
-        raise ValueError(f"Unknown datatype '{datatype}' for build_intra_path.")
-    
-
-########################
-##   SPIKE builders   ##
-##   ¨¨¨¨¨¨¨¨¨¨¨¨¨¨   ##
-########################
-
-def build_spike_path(root, subject, datatype):
-    """EEG & iEEG path for spike dataset"""
-    if datatype == "eeg":
-        return root/f"sub-{subject}"/"eeg"/"ses-preop"/f"sub-{subject}_ses-preop_task-rest_desc-spikeerp-204c-interpol-250Hz_eeg.vhdr"
-
-    elif datatype == "resec":
-        return NotImplementedError
-
-    else:
-        raise ValueError(f"Unknown datatype '{datatype}' for build_pike_path.")
+            else:
+                raise ValueError(f"No 'gold' standard for sub-{subject}.")
+            
+        if suffix == "eeg-trans":
+            return Path(".")
+        
+        if suffix == "tractogram":
+            if "simf" in subject:
+                return root/f"sub-{subject}"/"dwi"/f"sub-{subject}_model-CSD_desc-DET_tractogram.trk"
+            else:
+                raise ValueError(f"No tractogram for sub-{subject}")
+            
+        if suffix == "t12diff":
+            if "simf" in subject:
+                return root/f"sub-{subject}"/"xfm"/"final0GenericAffine.mat"
+            else:
+                raise ValueError(f"No tractogram for sub-{subject}")
 
 
-#######################
-##   SIMF builders   ##
-##   ¨¨¨¨¨¨¨¨¨¨¨¨¨   ##
-#######################
+    def _load_eeg(self, path):
+        """EEG loader."""
+        # Figure out which dataset it is.
+        dataset = ...
+
+        if dataset == "simf":
+            ...
+
+        if dataset == "spike":
+            eeg = mne.io.read_raw_brainvision(path, scale=1e-6, misc=[], verbose="warning")
+
+            data = eeg.get_data()
+            info = eeg.info
+
+            return mne.EvokedArray(data, info)
+
+        if dataset == "intra":
+            files = glob.glob(str(path))
+            montage = glob.glob(str(path.parent/"*_electrodes.tsv"))[0]
+
+            dat = []
+
+            for f in files:
+                spike = mne.io.read_raw_brainvision(f, verbose="warning")
+                dat.append(spike["data"][0])
+
+            dat = np.array(dat)
+
+            # info & montage
+            info = spike.info
+            montage = mne.channels.read_custom_montage(montage, coord_frame="head")
+            montage = scale_montage(montage, scale=1e-3)
+
+            # store in epoch object
+            epochs = mne.EpochsArray(dat, info, verbose="warning")
+            epochs = epochs.set_montage(montage, verbose="warning")
+
+            return epochs
 
 
-def build_simf_path(root, subject, datatype, **kwargs):
-    """
-    Ground truth path for simf dataset.
-    """
-    if datatype in ["gt"]:
+        raise ValueError(f"Unknown dataset {dataset}.")
 
-        # manage bids entities
-        task = kwargs.get("task")
-        task = f"_task-{task}" if task else ""
+    def _load_gold(self, path):
+        """Gold standard loader."""
 
-        run = kwargs.get("run")
-        run = f"_run-{run}" if run else ""
+    def _load_t12diff(self, path):
+        """Load t1 to diffusion space transform."""
+        affine = sp.io.loadmat(str(path))["AffineTransform_double_3_3"].reshape(3, 4, order="F")
+        return np.concatenate((affine, np.array([[0, 0, 0, 1]])))
 
-        desc = kwargs.get("desc")
-        desc = f"_desc-{desc}" if desc else ""
-
-        gt_dir = root/f"sub-{subject}"/"stc"
-        return gt_dir/f"sub-{subject}{task}{run}{desc}_stc"
-
-    else:
-        raise ValueError(f"Unknown datatype '{datatype}' for build_simf_path.")
-
-#######################
-##   intra loaders   ##
-##   ¨¨¨¨¨¨¨¨¨¨¨¨¨   ##
-#######################
-
-def load_eeg_intra(path):
-    """
-    Load EEGs for intra dataset.
-    """
-    files = glob.glob(str(path))
-    montage = glob.glob(str(path.parent/"*_electrodes.tsv"))[0]
-
-    dat = []
-
-    for f in files:
-        spike = mne.io.read_raw_brainvision(f, verbose="warning")
-        dat.append(spike["data"][0])
-
-    dat = np.array(dat)
-
-    # info & montage
-    info = spike.info
-    montage = mne.channels.read_custom_montage(montage, coord_frame="head")
-    montage = scale_montage(montage, scale=1e-3)
-
-    # store in epoch object
-    epochs = mne.EpochsArray(dat, info, verbose="warning")
-    epochs = epochs.set_montage(montage, verbose="warning")
-
-    return epochs
 
 def load_identity_trans(_):
     """
@@ -190,36 +190,3 @@ def load_identity_trans(_):
     """
     return mne.transforms.Transform(fro="head", to="mri")
 
-
-######################
-##   SIMF loaders   ##
-##   ¨¨¨¨¨¨¨¨¨¨¨¨   ##
-######################
-
-
-#######################
-##   SPIKE loaders   ##
-##   ¨¨¨¨¨¨¨¨¨¨¨¨¨   ##
-#######################
-
-def load_eeg_spike(path):
-    """Load EEGs for spike dataset"""
-    eeg = mne.io.read_raw_brainvision(path, scale=1e-6, misc=[], verbose="warning")
-
-    data = eeg.get_data()
-    info = eeg.info
-
-    return mne.EvokedArray(data, info)
-
-
-######################
-##   std loaders    ##
-##   ¨¨¨¨¨¨¨¨¨¨¨¨   ##
-######################
-
-def load_thal_atlas(path):
-    """
-    Thalamic atals loader.
-    """
-    clut_path = str(path).replace("-HCP-4DSPAMs.nii.gz", "ColorLUT.txt")
-    return Parcellation(path, clut_path)

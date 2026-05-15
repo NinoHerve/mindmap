@@ -71,7 +71,7 @@ def run_charm(
     # SimNIBS needs the files in the CWD to find them
     t1_sym = work_dir/t1.name
     if t1_sym.exists():
-        t1_sym.unlik()
+        t1_sym.unlink()
     os.symlink(t1, work_dir/t1.name)
 
     if t2:

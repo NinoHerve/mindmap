@@ -12,14 +12,16 @@ License: MIT
 
 import os
 import subprocess
+from pathlib import Path
 
 import pandas as pd
 
 import nibabel as nib
 import ants
 
-from mindmap.io.dataset import DatasetManager
-from mindmap.anatomy.mri.io import ants_to_nibabel
+from mindmap.core.io import read_config
+from mindmap.io.utils import build_fs_path
+from mindmap.anatomy.mri.io import ants_to_nibabel, read_mri
 from .io import read_clut
 from .base import Parcellation
 from .processing import prob2dseg
@@ -55,74 +57,107 @@ def parcellate_lausanne2018(sub:str, fconfig:str, margin:float = 0, verbose:int 
     if verbose == 1:
         print("\033[96mLoading data ...\033[0m")
 
-    # data readers
-    dm   = DatasetManager(fconfig)
-    stdr = dm.get_standards()
+    # mindmap configuration
+    config = read_config(fconfig)
+    if "DIR_FS" not in config.keys():
+        raise KeyError("Missing FreeSurfer directory ('DIR_FS') in mindmap configuration file.")
+    if "FS_HOME" not in config.keys():
+        raise KeyError("Missing FreeSurfer home directory ('FS_HOME') in mindmap configuration file.")
+    if "REF_LAUSL" not in config.keys():
+        raise KeyError("Missing Lausanne 2018 left annotation ('REF_LAUSL') in mindmap configuration file.")
+    if "REF_LAUSR" not in config.keys():
+        raise KeyError("Missing Lausanne 2018 right annotation ('REF_LAUSR') in mindmap configuration file.")
 
     # set freesurfer configuration
-    os.environ["SUBJECTS_DIR"]    = str(dm.config["DIR_FS"])
-    os.environ["FREESURFER_HOME"] = str(dm.config["FS_HOME"])
+    os.environ["SUBJECTS_DIR"]    = str(config["DIR_FS"])
+    os.environ["FREESURFER_HOME"] = str(config["FS_HOME"])
+
+    sub_id = str(sub).replace("sub-", "")
+    sub_id = f"sub-{sub_id}"
 
     # temporary files
-    annot_l  = dm.config["DIR_FS"]/sub/"label"/"lh.my-atlas.annot"
-    annot_r  = dm.config["DIR_FS"]/sub/"label"/"rh.my-atlas.annot"
-    dparc_fs = dm.config["DIR_FS"]/sub/"mri"/"my-atlas_space-fs_dparc.nii.gz"
+    annot_l  = config["DIR_FS"]/sub_id/"label"/"lh.my-atlas.annot"
+    annot_r  = config["DIR_FS"]/sub_id/"label"/"rh.my-atlas.annot"
+    dparc_fs = config["DIR_FS"]/sub_id/"mri"/"my-atlas_space-fs_dparc.nii.gz"
 
     # Registration of surface-based segmentation
     if verbose == 1:
         print("\033[96mRegistering surface-based segmentation ...\033[0m")
-    subprocess.run(
-        [
-            "mri_surf2surf",
-            "--srcsubject", "fsaverage",
-            "--trgsubject", sub,
-            "--hemi", "lh",
-            "--sval-annot", str(stdr.get_path("LAUSL")),
-            "--tval", str(annot_l),
-        ],
-        stdout             = subprocess.PIPE,
-        universal_newlines = True,
-        check              = True,
-    )
 
-    subprocess.run(
-        [
-            "mri_surf2surf",
-            "--srcsubject", "fsaverage",
-            "--trgsubject", sub,
-            "--hemi", "rh",
-            "--sval-annot", str(stdr.get_path("LAUSR")),
-            "--tval", str(annot_r),
-        ],
-        stdout             = subprocess.PIPE,
-        universal_newlines = True,
-        check              = True,
-    )
+    try:
+        subprocess.run(
+            [
+                "mri_surf2surf",
+                "--srcsubject", "fsaverage",
+                "--trgsubject", sub_id,
+                "--hemi", "lh",
+                "--sval-annot", str(config["REF_LAUSL"]),
+                "--tval", str(annot_l),
+            ],
+            stdout             = subprocess.PIPE,
+            universal_newlines = True,
+            check              = True,
+        )
+
+    except subprocess.CalledProcessError as e:
+        print(f"Command failed with return code {e.returncode}")
+        print(f"STDOUT: {e.stdout}")
+        print(f"STDERR: {e.stderr}")
+        raise
+
+    try:
+        subprocess.run(
+            [
+                "mri_surf2surf",
+                "--srcsubject", "fsaverage",
+                "--trgsubject", sub_id,
+                "--hemi", "rh",
+                "--sval-annot", str(config["REF_LAUSR"]),
+                "--tval", str(annot_r),
+            ],
+            stdout             = subprocess.PIPE,
+            universal_newlines = True,
+            check              = True,
+        )
+
+    except subprocess.CalledProcessError as e:
+        print(f"Command failed with return code {e.returncode}")
+        print(f"STDOUT: {e.stdout}")
+        print(f"STDERR: {e.stderr}")
+        raise
 
     # Expanding surface-based segmentation to volumetric segmentation
     if verbose == 1:
         print("\033[96mExpanding surface-based segmentation to volumetric segmentation ...\033[0m")
-    subprocess.run(
-        [
-            "mri_aparc2aseg",
-            "--s", sub,
-            "--annot", "my-atlas",
-            "--wmparc-dmax", str(margin),
-            "--labelwm",
-            "--hypo-as-wm",
-            "--new-ribbon",
-            "--o", str(dparc_fs),
-        ],
-        stdout=subprocess.PIPE,
-        universal_newlines=True,
-        check = True,
-    )
+
+    try:
+        subprocess.run(
+            [
+                "mri_aparc2aseg",
+                "--s", sub_id,
+                "--annot", "my-atlas",
+                "--wmparc-dmax", str(margin),
+                "--labelwm",
+                "--hypo-as-wm",
+                "--new-ribbon",
+                "--o", str(dparc_fs),
+            ],
+            stdout=subprocess.PIPE,
+            universal_newlines=True,
+            check = True,
+        )
+
+    except subprocess.CalledProcessError as e:
+        print(f"Command failed with return code {e.returncode}")
+        print(f"STDOUT: {e.stdout}")
+        print(f"STDERR: {e.stderr}")
+        raise
 
     # load data
     volume  = nib.load(dparc_fs)
-    fs_clut = read_clut(reader.config["FS_HOME"]/"FreeSurferColorLUT.txt")     # FreeSurfer color LUT
-    lh_clut = read_clut(annot_l)                                      # Left annotation color LUT
-    rh_clut = read_clut(annot_r)                                      # Right annotation color LUT
+    fs_clut = read_clut(config["FS_HOME"]/"FreeSurferColorLUT.txt")     # FreeSurfer color LUT
+    lh_clut = read_clut(annot_l)                                        # Left annotation color LUT
+    rh_clut = read_clut(annot_r)                                        # Right annotation color LUT
 
     # correct clut
     if verbose == 1:
@@ -163,10 +198,10 @@ def parcellate_thal(sub, fconfig, thresh=0.05, verbose=1):
     Parameters:
     ----------
     sub: str
-        Subject's name.
+        Subject id.
 
     fconfig: str
-        Configuration file.
+        Mindmap configuration file.
 
     thresh: float
         Threshold to convert probabilistic atlas to deterministic atlas.
@@ -179,55 +214,78 @@ def parcellate_thal(sub, fconfig, thresh=0.05, verbose=1):
     thal: mm.Parcellation
         Thalamic parcellation in FreeSurfer space.
     """
+    config = read_config(fconfig)
+
+    if not "DIR_FS" in config.keys():
+        raise KeyError("Missing FreeSurfer directory ('DIR_FS') in mindmap configuration file.")
+    if not "REF_MNI" in config.keys():
+        raise KeyError("Missing MNI template ('REF_MNI') in mindmap configuration file.")
+    if not "REF_THAL" in config.keys():
+        raise KeyError("Missing Thalamic atlas ('REF_THAL') in mindmap configuration file.")
+
     if verbose == 1:
-        print(f"\033[96mSegmenting subject {sub} according to the thalamic atlas ...\033[0m")
+        print(f"\033[96mSegmenting {sub} according to the thalamic atlas ...\033[0m")
 
     # retrieve data
     if verbose == 1:
         print("\033[96mLoading data ...\033[0m")
 
-    reader = dataset_reader(fconfig)
-    data   = reader(sub, "T1", "std-mni", "std-thal", "std-thalclut", mri_dtype="ants")
+    t1_file = build_fs_path(config["DIR_FS"], sub, "t1.mgz")
+    t1 = read_mri(t1_file, mri_dtype="ants")
+    mni = read_mri(config["REF_MNI"], mri_dtype="ants")
+    thal = read_mri(config["REF_THAL"], mri_dtype="ants")
+
+    clut_file = config["REF_THAL"].parent/"Thalamic_Nuclei-ColorLUT.txt"
+    thal_clut = read_clut(clut_file)
 
     if verbose == 1:
         print("\033[96mANTS registration of MNI space ...\033[0m")
 
     # registration transform
     mytx = ants.registration(
-        fixed = data["std-mni"],
-        moving = data["T1"],
+        fixed = mni,
+        moving = t1,
         type_of_transform = "SyN",
     )
 
     # registration 
     volume = ants.apply_transforms(
-        fixed = data["T1"],
-        moving = data["std-thal"],
+        fixed = t1,
+        moving = thal,  ### Needs to be ants
         transformlist = mytx["invtransforms"],
         imagetype = 3,
         interpolator = "linear",
     )
 
     volume = ants_to_nibabel(volume)
-    thal   = Parcellation(volume, data["std-thalclut"])
+    thal   = Parcellation(volume, thal_clut)
     thal   = prob2dseg(thal, thresh=thresh)
 
     if verbose == 1:
-        print(f"\033[92mThalamic Parcellation of subject {sub} finished\033[0m")
+        print("\033[92mThalamic Parcellation finished\033[0m")
 
     return thal
 
-def parcellate_multiconn(sub: str, fconfig: str, margin:float = 2, thresh:float = 0.05, verbose=1):
+def parcellate_multiconn(
+    sub : str,
+    fconfig: str | Path,
+    margin:float = 2,
+    thresh:float = 0.05,
+    verbose: int = 1
+) -> Parcellation:
     """
     Generate the multiconn parcellation for subject.
 
     Parameters:
     ----------
     sub: str
-        Subject
+        Subject ID
 
-    fconfig: str
-        Configuration file.
+    fconfig: str | Path
+        Mindmap configuration file name.
+
+    t1_file: str | Path
+        T1 file name.
 
     margin: float
         Margin for Lausanne 2018 atlas

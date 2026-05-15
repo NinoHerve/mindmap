@@ -5,7 +5,7 @@ DOC String
 import numpy as np
 
 from mindmap.core.noise import pink_noise, white_noise
-from mindmap.analysis.functional.inverse.simulation import make_stc
+from mindmap.analysis.functional.inverse.io import make_stc
 from mindmap.analysis.simulation.components import Source, HeadModel
 
 

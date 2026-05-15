@@ -11,7 +11,7 @@ License: MIT
 """
 
 from pathlib import Path
-from importlib import resources
+import importlib
 from typing import Any
 import os
 
@@ -139,8 +139,7 @@ def get_config(config_input):
     # Handle "Keywords" for internal library configs
     if config_input == "charm":
         # accessing the file inside the package
-        with resources.path("mindmap.resources", "bem_charm_config.yml") as p:
-            config_input = p
+        config_input = importlib.resources.files("mindmap.resources").joinpath("bem_charm_config.yml")
 
     # Handle File Paths (String or Path object)
     if isinstance(config_input, (str, Path)):

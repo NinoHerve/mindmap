@@ -18,10 +18,11 @@ import pyvista as pv
 
 import nibabel as nib
 import ants
+import mne
 from mne.bem import _get_ico_surface
 
 from mindmap.geometry.io import surf_to_polydata
-from mindmap.geometry.processing import surf_correction, fit_surface_to_volume
+from mindmap.geometry.processing import surf_correction, fit_surface_to_volume, polydata_transform
 from mindmap.anatomy.mri.io import get_affine, nibabel_to_ants
 from mindmap.anatomy.parcellation.base import Parcellation
 from mindmap.anatomy.parcellation.processing import create_mask
@@ -151,10 +152,22 @@ def fit_surface_to_mri_mask(
 def build_bem_layers(
     seg: Parcellation,
     bem_labels: dict,
+    brain_interp: np.ndarray = None,
     **kwargs,
 ) -> dict[str, pv.PolyData]:
     """
     Build BEM layers from segmentation.
+
+    Parameters:
+    ----------
+    seg: mm.Parcellation
+        Segmentation image.
+    
+    bem_labels: dict
+        Tissue labels belonging inside each surface.
+
+    brain_interp: np.ndarray
+        Interpolator of brain tissue.
     """
     # extract labels from segmentation
     skin_mask = create_mask(seg, regions=bem_labels["skin"])
@@ -179,7 +192,7 @@ def build_bem_layers(
     iskull_mask = nibabel_to_ants(iskull_mask)
     iskull_mask = iskull_mask.morphology("close", radius=10)
     iskull_mesh, _ = fit_surface_to_mri_mask(
-        iskull_mask, outer_interpolator=oskull_interp, z_floor=45, **kwargs,
+        iskull_mask, outer_interpolator=oskull_interp, inner_interpolator=brain_interp, max_buffer=0, z_floor=45, **kwargs,
     )
 
     return {
@@ -207,12 +220,85 @@ def bem_transform(bem, trans):
         Transformed BEM
     """
     for k in bem.keys():
-        bem[k].transform(trans, inplace=True)
-
-        # fix the winding order and normals
-        if np.linalg.det(trans) < 0:
-            bem[k].flip_faces(inplace=True)
-
-        bem[k].compute_normals(inplace=True, consistent_normals=False, auto_orient_normals=False)
+        bem[k] = polydata_transform(bem[k], trans)
 
     return bem
+
+
+def template_coregistration(
+    eeg_temp: mne.Evoked | mne.Epochs | mne.io.Raw,
+    subject: str,
+    subjects_dir: Path,
+    iterations: int = 10
+) -> mne.Evoked | mne.Epochs | mne.io.Raw:
+    """
+    Coregisters by projecting electrodes radially from the head center.
+    Prevents clustering by maintaining angular spacing.
+    """
+    # 1. SETUP HEAD MESH
+    head_surf = mne.read_surface(Path(subjects_dir)/subject/"bem"/"outer_skin.surf")
+    head_mesh = surf_to_polydata(head_surf[0]/1000.0, head_surf[1])
+    
+    # Calculate geometric center of the head (the 'origin' for rays)
+    center = np.mean(head_mesh.points, axis=0)
+
+    # 2. INITIAL FIDUCIAL ALIGNMENT
+    coreg = mne.coreg.Coregistration(eeg_temp.info, subject, subjects_dir)
+    coreg.fit_fiducials(verbose=False)
+    
+    # We apply the rigid transform to get the montage into head space
+    montage = eeg_temp.get_montage()
+    montage.apply_trans(coreg.trans)
+    
+    ch_pos = montage.get_positions()['ch_pos']
+    ch_names = list(ch_pos.keys())
+    current_points = np.array([ch_pos[name] for name in ch_names])
+
+    # 3. RADIAL RAY-CASTING (The 'Expansion' Phase)
+    # Shoot rays from the center through each electrode to see
+    # where they hit the scalp.
+    final_points = []
+    
+    for pt in current_points:
+        # Define a ray starting at center and going far past the electrode
+        direction = pt - center
+        direction /= np.linalg.norm(direction) # unit vector
+        
+        # Shoot ray 20cm out from center
+        ray_start = center
+        ray_end = center + (direction * 0.2) 
+        
+        points, _ = head_mesh.ray_trace(ray_start, ray_end)
+        
+        if len(points) > 0:
+            # Take the intersection furthest from center (the scalp)
+            final_points.append(points[-1])
+        else:
+            # Fallback: if ray misses, use closest point
+            idx = head_mesh.find_closest_point(pt)
+            final_points.append(head_mesh.points[idx])
+
+    # 4. ITERATIVE SURFACE SMOOTHING (Optional but keeps it 'clean')
+    # If the sensors look jittery, relax them while snapping them back to surface
+    final_points = np.array(final_points)
+    for _ in range(iterations):
+        # Create a mesh of the electrodes
+        cloud = pv.PolyData(final_points)
+        surf_cap = cloud.delaunay_2d(alpha=0.05)
+        # Relax (Smoothing)
+        final_points = surf_cap.smooth(n_iter=1, relaxation_factor=0.1).points
+        # Re-snap to surface (so they don't 'sink' into the head during smoothing)
+        snapped = []
+        for p in final_points:
+            idx = head_mesh.find_closest_point(p)
+            snapped.append(head_mesh.points[idx])
+        final_points = np.array(snapped)
+
+    # 5. UPDATE MNE
+    new_ch_pos = dict(zip(ch_names, final_points))
+    new_montage = mne.channels.make_dig_montage(ch_pos=new_ch_pos)
+    
+    eeg_coreg = eeg_temp.copy()
+    eeg_coreg.set_montage(new_montage)
+    
+    return eeg_coreg

@@ -161,19 +161,19 @@ def surf_correction(
     # arrange arrays for computation
     final_mask = np.expand_dims(final_mask, axis=1)
     distance2surface = np.expand_dims(distance2surface, axis=1)
-    
+
     # change points
     changes = -1 * final_mask * in_skull.point_normals * (offset - signs*distance2surface)
     in_skull_fixed.points = in_skull.points + changes
 
-    
+
     if return_arrows:
         changed_mesh = pv.PolyData(in_skull.points)
         changed_mesh["vectors"] = np.array(changes)
         arrows = changed_mesh.glyph(orient="vectors", scale=True)
 
         return in_skull_fixed, arrows
-    
+
     return in_skull_fixed
 
 
@@ -201,7 +201,9 @@ def fit_surface_to_volume(
     n_smooth: int = 1,
     z_floor: int = None,
     outer_interpolator: RegularGridInterpolator = None,
+    inner_interpolator: RegularGridInterpolator = None,
     min_buffer: float = 3.0,
+    max_buffer: float = 3.0,
     sphere: pv.PolyData = None, # In order to use MNE's icosahedron (for tri ordering)
 ):
     """
@@ -251,15 +253,20 @@ def fit_surface_to_volume(
 
         # current move based on target mask
         d_target = interpolator(vertices)
+        combined_d = d_target
 
         # Pull back if we are exiting the "outer" container
         if outer_interpolator is not None:
             d_outer = outer_interpolator(vertices)
-            # fuce the fields: the vertex is contrained by the 'outer' envelope
+            # force fields: the vertex is contrained by the 'outer' envelope
             # this keeps the inner layer strictly inside the outer layer
-            combined_d = np.minimum(d_target, d_outer - min_buffer)
-        else:
-            combined_d = d_target
+            combined_d = np.minimum(combined_d, d_outer - min_buffer)
+        
+        # Push away from inner container
+        if inner_interpolator is not None:
+            d_inner = inner_interpolator(vertices)
+            # this keeps the outer layer strictly outside the inner layer
+            combined_d = np.maximum(combined_d, d_inner + max_buffer)
 
         # define movement
         move = np.clip(combined_d, -2, 2)
@@ -278,3 +285,33 @@ def fit_surface_to_volume(
             sphere.points = taubin.points
 
     return sphere, interpolator
+
+
+def polydata_transform(
+    polydata: pv.PolyData,
+    trans: np.ndarray
+) -> pv.PolyData:
+    """
+    Apply transform on PolyData vertices.
+
+    Parameters
+    ----------
+    polydata: pv.PolyData
+        PolyData object.
+
+    trans: np.ndarray
+        Transformation matrix.
+
+    Returns
+    -------
+    pv.PolyData
+        Transformed polydata.
+    """
+    polydata.transform(trans, inplace=True)
+
+    if np.linalg.det(trans) < 0:
+        polydata.flip_faces(inplace=True)
+
+    polydata.compute_normals(inplace=True, consistent_normals=False, auto_orient_normals=False)
+
+    return polydata

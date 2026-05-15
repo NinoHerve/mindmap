@@ -16,7 +16,7 @@ import pandas as pd
 import nibabel as nib
 
 
-def align_freesurfer2subject(fs_points: np.ndarray, tkras2ras: np.ndarray):
+def align_freesurfer2subject(fs_points: np.ndarray, ras2tkras: np.ndarray):
     """
     Map points from freesurfer space (tkras) to T1 ras space.
 
@@ -25,16 +25,16 @@ def align_freesurfer2subject(fs_points: np.ndarray, tkras2ras: np.ndarray):
     fs_points: np.ndarray (n,3)
         Points in the freesurfer space in [m]. Carefull ! Points from MNE objects
         are often in [m]. Make the scaling (*1000) before using this alignment.
-    tkras2ras: np.ndarray (4,4)
-        Affine transform (tkras [mm] -> T1 ras [mm])
+    ras2tkras: np.ndarray (4,4)
+        Affine transform (T1 ras [mm] -> tkras [mm])
 
     Returns
     -------
     new_points: np.ndarray (n,3)
-        Points mapped to the T1 ras space in [mm]
+        Points mapped to the tkras space (freesurfer space) in [mm]
     """
 
-    return nib.affines.apply_affine(tkras2ras, fs_points)
+    return nib.affines.apply_affine(np.linalg.inv(ras2tkras), fs_points)
 
 
 def align_diffusion2subject(dwi_points, t12diff):

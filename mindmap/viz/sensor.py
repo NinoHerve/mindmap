@@ -41,16 +41,13 @@ from mindmap.viz.core import (
     plot_multi_scatterplots, plot_cog_trajectories, plot_rem,
 )
 
-def plot_alignment(bem, ave):
+def plot_alignment(head: pv.PolyData, ave: mne.Evoked):
     """
     Plot alignment between the head and sensors.
     """
-    # outer skin surface
-    head = bem["surfs"][0]
-    head = surf_to_polydata(head["rr"], head["tris"])
 
     # sensor positions
-    sens = get_ch_positions(ave)
+    sens = get_ch_positions(ave)*1000
     sens = pv.PolyData(sens)
 
     # plot

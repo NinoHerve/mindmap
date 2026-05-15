@@ -36,14 +36,14 @@ from .utils import store_in_lists, find_clim, default_cmap, BaseBrainPlotter, bu
 
 
 def plot_brain(
-    source_space   : mne.SourceSpaces | list[mne.SourceSpaces],
-    signal         : np.ndarray | list[np.ndarray] = None,
-    overlay        : np.ndarray | nib.Nifti1Image | list[np.ndarray] | list[nib.Nifti1Image]     = None,
-    tkras2ras      : np.ndarray | list[np.ndarray] = None,
-    title          : str | list[str] = "",
-    mesh_params    : dict = None,
-    signal_params  : dict = None,
-    overlay_params : dict = None,
+    source_space: mne.SourceSpaces | list[mne.SourceSpaces],
+    signal: np.ndarray | list[np.ndarray] = None,
+    overlay: np.ndarray | nib.Nifti1Image | list[np.ndarray] | list[nib.Nifti1Image]     = None,
+    ras2tkras: np.ndarray | list[np.ndarray] = None,
+    title: str | list[str] = "",
+    mesh_params: dict = None,
+    signal_params: dict = None,
+    overlay_params: dict = None,
 ) -> pv.Plotter:
     """
     Plot Brain
@@ -83,8 +83,8 @@ def plot_brain(
     # Handle inputs as lists
     # -----------------------
 
-    source_space, signal, overlay, tkras2ras, title = store_in_lists(
-        source_space, signal, overlay, tkras2ras, title
+    source_space, signal, overlay, ras2tkras, title = store_in_lists(
+        source_space, signal, overlay, ras2tkras, title
     )
 
     # ---------------
@@ -192,7 +192,7 @@ def plot_brain(
         if overlay[i] is not None:
             # convert overlay to polydata
             if isinstance(overlay[i], nib.Nifti1Image):
-                over = nib_to_polydata(overlay[i], trans=np.linalg.inv(tkras2ras[i]))
+                over = nib_to_polydata(overlay[i], trans=ras2tkras[i])
             else:
                 over = overlay[i]
 

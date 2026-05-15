@@ -24,7 +24,7 @@ import pyxu.operator as pxo
 import pyxu.opt.stop as pxst
 from pyxu.opt.solver import PGD
 
-from .simulation import make_stc
+from .io import make_stc
 from .utils import compute_harmonic_prior, compute_depth_prior
 
 

@@ -68,8 +68,8 @@ def plot_brain_activity(
         key : value
     
     func_params: dict
-        key : value
-        key : value
+        normalize: max | minmax | zscore
+        absolute: True | False
     
     overlay_params: dict
         key : value

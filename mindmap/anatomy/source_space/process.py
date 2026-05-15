@@ -16,12 +16,10 @@ import pandas as pd
 import mne
 import nibabel as nib
 
-from ..utils import align_freesurfer2subject
-
 def filter_dipoles_by_nifti_mask(
-    source_space   : mne.SourceSpaces,
-    mask           : nib.Nifti1Image,
-    tkras2ras      : np.ndarray,
+    source_space: mne.SourceSpaces,
+    mask: nib.Nifti1Image,
+    ras2tkras: np.ndarray = None,
 ) -> mne.SourceSpaces:
     """
     Mask sources not in mask (usually gray matter mask).
@@ -29,12 +27,12 @@ def filter_dipoles_by_nifti_mask(
     Parameters
     ----------
     source_space: mne.SourceSpaces
-        Source space.
+        Source space (space-freesurfer).
 
     mask: nib.NIfTi1Image
         Binary mask. If a dipole is on a voxel with value 0 it will be masked ('inuse'=False).
 
-    tkras2ras: np.ndarray (4,4)
+    ras2tkras: np.ndarray (4,4)
         Affine transform to convert volume from talairach conform space to individual space.
 
     Returns
@@ -47,29 +45,31 @@ def filter_dipoles_by_nifti_mask(
     for src in source_space:
         # select used dipoles
         inuse = src["inuse"].astype(bool)
-        pos   = src["rr"][inuse]*1000                     # dipole positions in talairach space [mm]
-        pos   = align_freesurfer2subject(pos, tkras2ras)
+        pos = src["rr"][inuse]*1000                     # dipole positions in talairach space [mm]
+
+        if ras2tkras is not None:
+            pos = nib.affines.apply_affine(np.linalg.inv(ras2tkras), pos)
 
         # place sources in voxel space
         inv_affine = np.linalg.inv(mask.affine)
-        pos_vox    = mne.transforms.apply_trans(inv_affine, pos)
-        pos_vox    = np.round(pos_vox).astype(int)               # source positions in voxel space
+        pos_vox = mne.transforms.apply_trans(inv_affine, pos)
+        pos_vox = np.round(pos_vox).astype(int)               # source positions in voxel space
 
         # keep only sources inside GM mask
         volume = mask.get_fdata()
-        keep   = volume[pos_vox[:,0], pos_vox[:,1], pos_vox[:,2]].astype(bool)
+        keep = volume[pos_vox[:,0], pos_vox[:,1], pos_vox[:,2]].astype(bool)
 
         new_inuse = np.zeros_like(inuse, dtype=bool)
         new_inuse[inuse] = keep
 
         # save new variables in source space
-        nuse   = np.sum(new_inuse)                              # number of used sources
+        nuse = np.sum(new_inuse)                              # number of used sources
         vertno = np.nonzero(new_inuse)[0]                       # vertex number of used sources
 
-        src["inuse"]  = new_inuse
-        src["nuse"]   = nuse
+        src["inuse"] = new_inuse
+        src["nuse"] = nuse
         src["vertno"] = vertno
-        src["pinfo"]  = [patch for i, patch in enumerate(src["pinfo"]) if keep[i]]
+        src["pinfo"] = [patch for i, patch in enumerate(src["pinfo"]) if keep[i]]
 
     return source_space
 
@@ -105,15 +105,15 @@ def filter_dipoles_by_id_list(
 
     for src, vertices in zip(source_space, vertex_ids):
         # new attributes
-        vertno        = list(set(src["vertno"]) & set(vertices))        # vertices that were sampled and are cortical
-        inuse         = np.zeros_like(src["inuse"], dtype=bool)
+        vertno = list(set(src["vertno"]) & set(vertices))        # vertices that were sampled and are cortical
+        inuse = np.zeros_like(src["inuse"], dtype=bool)
         inuse[vertno] = True
-        keep          = inuse[src["inuse"].astype(bool)]     # dipole list where 1 is keep dipole and 0 is removed dipole
+        keep = inuse[src["inuse"].astype(bool)]     # dipole list where 1 is keep dipole and 0 is removed dipole
 
         # change object attributes
-        src["inuse"]  = inuse
-        src["nuse"]   = np.sum(inuse)
+        src["inuse"] = inuse
+        src["nuse"] = np.sum(inuse)
         src["vertno"] = vertno
-        src["pinfo"]  = [patch for i, patch in enumerate(src["pinfo"]) if keep[i]]
+        src["pinfo"] = [patch for i, patch in enumerate(src["pinfo"]) if keep[i]]
 
     return source_space
