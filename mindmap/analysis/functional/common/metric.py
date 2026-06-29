@@ -64,6 +64,7 @@ def compute_mne_cosine(
     obj_true: mne.Evoked | mne.SourceEstimate,
     obj_pred: mne.Evoked | mne.SourceEstimate,
     mode: str = "spatio-temporal",
+    absolute: bool = False,
 ) -> float | np.ndarray:
     """
     Compute cosine similarity.
@@ -90,7 +91,7 @@ def compute_mne_cosine(
     axis_map = {"spatio-temporal": None, "spatial": 0, "temporal": 1}
     target_axis = axis_map[mode]
 
-    return calc_cosine(y_true, y_pred, target_axis)
+    return calc_cosine(y_true, y_pred, target_axis, absolute)
 
 
 def compute_mne_confusion(

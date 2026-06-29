@@ -15,7 +15,7 @@ import numpy as np
 from scipy.stats import rankdata
 from sklearn.metrics import (
     confusion_matrix, accuracy_score, precision_score, recall_score, f1_score,
-    matthews_corrcoef, roc_curve, precision_recall_curve, auc, average_precision_score,
+    roc_curve, precision_recall_curve, auc, average_precision_score,
 )
 
 def avg_power(signal: np.ndarray) -> np.ndarray:
@@ -185,7 +185,6 @@ def calc_correlation(
     method: str = "pearson",
     axis: int = None,
     center_axis: str | int | None = "default",
-    eps: float = 1e-8,
 ) -> np.ndarray | float:
     """
     Correlation between two arrays.
@@ -230,26 +229,43 @@ def calc_correlation(
     else:
         c_axis = center_axis
 
+    # Upcast to float64 to handle tiny scales safely
+    arr1_64 = arr1.astype(np.float64)
+    arr2_64 = arr2.astype(np.float64)
+
+    eps = np.finfo(np.float64).eps
 
     # compute correlation
     if method == "log-envelope":
-        arr1 = np.log(np.abs(arr1) + eps)
-        arr2 = np.log(np.abs(arr2) + eps)
+        # calculate individual data-dependent log floors safely
+        std1 = np.std(np.abs(arr1_64)) * 1e-4 or 1e-15
+        std2 = np.std(np.abs(arr2_64)) * 1e-4 or 1e-15
+
+        eps_log1 = (std1 * 1e-4) if std1 > eps else 1e-15
+        eps_log2 = (std2 * 1e-4) if std2 > eps else 1e-15
+
+        # compute log-envelope
+        arr1_64 = np.log(np.abs(arr1_64) + eps_log1)
+        arr2_64 = np.log(np.abs(arr2_64) + eps_log2)
         method = "pearson"
 
     if method == "pearson":
-        arr1_c = arr1 - arr1.mean(axis=c_axis, keepdims=True)
-        arr2_c = arr2 - arr2.mean(axis=c_axis, keepdims=True)
+        arr1_c = arr1_64 - arr1_64.mean(axis=c_axis, keepdims=True)
+        arr2_c = arr2_64 - arr2_64.mean(axis=c_axis, keepdims=True)
 
     elif method == "spearman":
-        arr1_c = rankdata(arr1, axis=axis).astype(float)
-        arr2_c = rankdata(arr2, axis=axis).astype(float)
+        arr1_c = rankdata(arr1_64, axis=axis).astype(float)
+        arr2_c = rankdata(arr2_64, axis=axis).astype(float)
         arr1_c -= arr1_c.mean(axis=axis, keepdims=True)
         arr2_c -= arr2_c.mean(axis=axis, keepdims=True)
 
-    upper = np.sum(arr1_c * arr2_c, axis=axis)
-    lower = np.sqrt(np.sum(arr1_c**2, axis=axis) * np.sum(arr2_c**2, axis=axis))
-    corr = np.divide(upper, lower, out=np.zeros_like(upper), where=lower > 1e-12)
+    norm1 = np.sqrt(np.sum(arr1_c**2, axis=axis, keepdims=True))
+    norm2 = np.sqrt(np.sum(arr2_c**2, axis=axis, keepdims=True))
+
+    arr1_normed = np.divide(arr1_c, norm1, out=np.zeros_like(arr1_c), where=norm1 > eps)
+    arr2_normed = np.divide(arr2_c, norm2, out=np.zeros_like(arr2_c), where=norm2 > eps)
+
+    corr = np.sum(arr1_normed * arr2_normed, axis=axis)
 
     return corr.item() if corr.size == 1 else corr
 
@@ -257,6 +273,7 @@ def calc_cosine(
     arr1: np.ndarray,
     arr2: np.ndarray,
     axis: int = None,
+    absolute: bool = False,
 ) -> np.ndarray | float:
     """
     Compute Cosine Similarity between two arrays.
@@ -269,6 +286,9 @@ def calc_cosine(
     axis: int or None
         Axis along which to compute similarity.
         None flattens arrays (global similarity).
+    
+    absolute: bool
+        If True, computes similarity on the absolute magnitudes.
 
     Returns
     -------
@@ -277,16 +297,28 @@ def calc_cosine(
     """
     if arr1.shape != arr2.shape:
         raise ValueError("Shapes must match.")
-    
-    dot_product = np.sum(arr1 * arr2, axis=axis)
+
+    # upcast to float64 to handle tiny scales safely
+    arr1_64 = arr1.astype(np.float64)
+    arr2_64 = arr2.astype(np.float64)
+
+    # apply absolute
+    if absolute:
+        arr1_64 = np.abs(arr1_64)
+        arr2_64 = np.abs(arr2_64)
 
     # norms
-    norm1 = np.linalg.norm(arr1, axis=axis)
-    norm2 = np.linalg.norm(arr2, axis=axis)
+    norm1 = np.linalg.norm(arr1_64, axis=axis)
+    norm2 = np.linalg.norm(arr2_64, axis=axis)
 
-    lower = norm1 * norm2
+    # safely normalize
+    eps = np.finfo(np.float64).eps
 
-    cos = np.divide(dot_product, lower, out=np.zeros_like(dot_product), where=lower > 1e-12)
+    arr1_normed = np.divide(arr1_64, norm1, out=np.zeros_like(arr1_64), where=norm1 > eps)
+    arr2_normed = np.divide(arr2_64, norm2, out=np.zeros_like(arr2_64), where=norm2 > eps)
+
+    # cosine similarity
+    cos = np.sum(arr1_normed * arr2_normed, axis=axis)
 
     return cos.item() if cos.size == 1 else cos
 
@@ -656,10 +688,30 @@ def calc_performance_curves(
     roc_auc = auc(fpr, tpr)
 
     # compute precision recall
-    precision, recall, _ = precision_recall_curve(yt, yp)
+    precision, recall, _ = precision_recall_curve(yt, yp, drop_intermediate=True)
     ap = average_precision_score(yt, yp)
 
     return {
         "roc": {"fpr": fpr, "tpr":tpr, "auc":roc_auc},
         "pr": {"precision": precision, "recall": recall, "ap": ap}
     }
+
+
+def calc_rdm(arr1, arr2):
+    """Calculate the Relative Difference Magnitude (RDM)."""
+    # Calculate Frobenius norms
+    norm_arr1 = np.linalg.norm(arr1, ord="fro")
+    norm_arr2 = np.linalg.norm(arr2, ord="fro")
+
+    # Calculate RDM
+    return np.linalg.norm((arr1/norm_arr1) - (arr2/norm_arr2), ord="fro")
+
+
+def calc_mag(arr1, arr2):
+    """Calculate the Magnitude Magnification (MAG)."""
+    # Calculate Frobenius norms
+    norm_arr1 = np.linalg.norm(arr1, ord="fro")
+    norm_arr2 = np.linalg.norm(arr2, ord="fro")
+
+    # Calculate MAG
+    return norm_arr1 / norm_arr2

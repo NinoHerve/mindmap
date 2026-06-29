@@ -39,12 +39,14 @@ class TutoManager(DatasetManager):
         self.add_root("spk", self.config["DIR_SPK"])
         self.add_root("cartool", self.config["DIR_CART"])
         self.add_root("cmp", self.config["DIR_CMP"])
+        self.add_root("sim", self.config["DIR_SIM"])
 
         # add new datatype
+        self.add_datatype("ave-temp", "mm", self._build_path, lambda f: mne.read_evokeds(f, verbose="warning")[0])
         self.add_datatype("eeg", None, self._build_path, self._load_eeg)
         self.add_datatype("ieeg", None, self._build_path, self._load_eeg)
         self.add_datatype("eeg-trans", "mm", self._build_path, load_identity_trans)
-        self.add_datatype("gold", "raw", self._build_path, mne.read_source_estimate)
+        self.add_datatype("gold", "sim", self._build_path, mne.read_source_estimate)
         self.add_datatype("tractogram", "cmp", self._build_path, nib.streamlines.load)
         self.add_datatype("t12diff", "cmp", self._build_path, self._load_t12diff)
 
@@ -63,6 +65,9 @@ class TutoManager(DatasetManager):
 
     def _build_path(self, root, subject, suffix, **kwargs):
         """Build paths."""
+        if suffix == "ave-temp":
+            return root/f"sub-{subject}"/"ave"/f"sub-{subject}_desc-template-coreg_ave.fif"
+
         if suffix == "eeg":
             if "intra" in subject.lower():
                 # manage bids entities

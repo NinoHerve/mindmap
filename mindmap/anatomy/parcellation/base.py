@@ -162,7 +162,7 @@ class Parcellation():
             make_line = lambda row: f"{row['#No.']:<4} {row['Label name']:<60} {row['R']:>3} {row['G']:>3} {row['B']:>3} {row['A']:>3}"
             lines += [make_line(row) for _, row in lut.iterrows()]
 
-            with open(clut_fname, "w") as colorLUT_f:
+            with open(clut_fname, "w", encoding="utf-8") as colorLUT_f:
                 colorLUT_f.write("\n".join(lines))
 
     def id2name(self, id_labels):
@@ -182,7 +182,8 @@ class Parcellation():
         """
         Returns the parcellation as nifti image.
         """
-        return nib.Nifti1Image(self.volume, self.affine)
+        safe_volume = self.volume.astype(np.int32)
+        return nib.Nifti1Image(safe_volume, self.affine)
 
     def get_clut(self) -> pd.DataFrame:
         """

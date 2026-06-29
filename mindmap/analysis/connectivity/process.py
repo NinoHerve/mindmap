@@ -21,7 +21,7 @@ import mne
 
 from mindmap.anatomy.parcellation.base import Parcellation
 from mindmap.anatomy.tractogram.processing import tract_endpoints, tract_lengths
-from mindmap.anatomy.utils import align_diffusion2subject, align_freesurfer2subject
+from mindmap.anatomy.utils import align_diffusion2subject
 from mindmap.anatomy.source_space.io import get_ndipole, get_dipole_positions
 
 
@@ -29,7 +29,7 @@ def connectome_from_tracts(
         tracts    : nib.streamlines.TrkFile,
         regions   : Parcellation | mne.SourceSpaces,
         t12diff   : np.ndarray,
-        tkras2ras : np.ndarray = None,
+        ras2tkras : np.ndarray = None,
         lengths   : bool = False,
         ) -> np.ndarray:
     """
@@ -46,7 +46,7 @@ def connectome_from_tracts(
     t12diff: np.ndarray (4,4)
         Individual space to diffusion MRI space affine transformation.
     
-    tkras2ras: np.ndarray (4,4)
+    ras2tkras: np.ndarray (4,4)
         FreeSurfer conform space to individual space affine transform (required when using
         source space only).
 
@@ -69,8 +69,8 @@ def connectome_from_tracts(
         start_labels, end_labels = _label_by_region(starts, ends, regions)
         n = regions.n_regions
     else:
-        assert tkras2ras is not None, "tkras2ras is required when using source spaces in order to map dipole positions to the T1-ras space."
-        start_labels, end_labels = _label_by_dipole(starts, ends, regions, tkras2ras)
+        assert ras2tkras is not None, "tkras2ras is required when using source spaces in order to map dipole positions to the T1-ras space."
+        start_labels, end_labels = _label_by_dipole(starts, ends, regions, ras2tkras)
         n = get_ndipole(regions)
 
     # build connectivity matrix
@@ -146,7 +146,7 @@ def _label_by_dipole(
         starts       : np.ndarray,
         ends         : np.ndarray,
         source_space : mne.SourceSpaces,
-        tkras2ras    : np.ndarray,
+        ras2tkras    : np.ndarray,
         ) -> tuple[list, list]:
     """
     Label start and end points by closest dipole.
@@ -171,7 +171,7 @@ def _label_by_dipole(
         Associated dipole id for each endpoint.
     """
     dipoles = get_dipole_positions(source_space) * 1000     # switch from [m] to [m]
-    dipoles = align_freesurfer2subject(dipoles, tkras2ras)
+    dipoles = nib.affines.apply_affine(np.linalg.inv(ras2tkras), dipoles)
 
     # find closest dipole using nearest neighbor
     kd_tree         = sp.spatial.cKDTree(dipoles)
@@ -268,3 +268,5 @@ def connectome_from_geometry(
         return (geometry > 0).astype(int)
 
     return geometry
+
+

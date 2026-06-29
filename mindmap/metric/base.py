@@ -10,8 +10,13 @@ Last Modified: 2025-10-27
 License: MIT
 """
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
+
+import mne
+
 from mindmap.viz.core import (
     metric_bar, metric_box, metric_heatmap, metric_violin, metric_relational
 )
@@ -30,13 +35,43 @@ class MetricSuite:
 
         context: dict
             Context for 3D plotting.
-            - 'src':mne.SourceSpace
+            - 'src':mne.SourceSpaces
             - 'ave':mne.Evoked
         """
         self.name = name
         self._data = []
         self.group_name = group_name
         self.context = context or {}
+        self._validate_context()
+
+    def _validate_context(self):
+        """Validates that the context dictionary only contains allowed types."""
+        if not isinstance(self.context, dict):
+            raise TypeError("Context must be a dictionary.")
+        
+        allowed_keys = {"src", "ave"}
+        invalid_keys = set(self.context.keys()) - allowed_keys
+        if invalid_keys:
+            raise KeyError(
+                f"Invalid keys(s) found in context: {invalid_keys}."
+                f"Only 'src' and 'ave' are allowed."
+            )
+        
+        # Check 'ave' type consistency
+        if "ave" in self.context and self.context["ave"] is not None:
+            if not isinstance(self.context["ave"], mne.Evoked):
+                raise TypeError(
+                    f"Expected context['ave'] to be an instance of mne.Evoked, "
+                    f"got {type(self.context['ave']).__name__} instead."
+                )
+            
+        # Check 'src' type consistency
+        if "src" in self.context and self.context["src"] is not None:
+            if not isinstance(self.context["src"], mne.SourceSpaces):
+                raise TypeError(
+                    f"Expected context['src'] to be an instance of mne.SourceSpaces, "
+                    f"got {type(self.context['src']).__name__} instead."
+                )
 
     def register(self, label, metric, values, **coords):
         """Adds results. 'values' can be a single number or a list/array."""
@@ -53,7 +88,12 @@ class MetricSuite:
             }
 
             for c_name, c_val in coords.items():
-                if isinstance(c_val, (list, tuple, np.ndarray, pd.Series)) and len(c_val) == n_obs:
+                if isinstance(c_val, (list, tuple, np.ndarray, pd.Series)):
+                    if not len(c_val) == n_obs:
+                        raise ValueError(
+                            "Coordinate lengths must be of the same length as the new metric."
+                            f"Instead, coordinate '{c_name}' has length {len(c_val)}."
+                        )
                     entry[c_name] = c_val[i] if not isinstance(c_val, pd.Series) else c_val.iloc[i]
                 else:
                     entry[c_name] = c_val
@@ -91,7 +131,88 @@ class MetricSuite:
         """Quick statistical overview."""
         return self.dataframe.groupby(["Metric", self.group_name])["Value"].agg(["mean", "std", "count"])
 
-    def plot(self, metrics=None, labels=None, kind=None, **kwargs):
+    def save(self, folder: str | Path):
+        """
+        Saves the MetricSuite to a CSV file.
+        Embeds object metadata safely as commented headers at the top.
+        """
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+
+        # 1. Save metadata & metrics dataframe
+        csv_path = folder/"metrics.csv"
+        with open(folder, "w", encoding="utf-8") as f:
+            f.write(f"# metric_suite_name: {self.name}\n")
+            f.write(f"# metric_suite_group_name: {self.group_name}\n")
+        self.dataframe.to_csv(csv_path, mode="a", index=False, header=True)
+        
+        # 2. Save MNE Context Objects if they exist
+        if "ave" in self.context and self.context["ave"] is not None:
+            ave_path = folder/"context-ave.fif"
+            self.context["ave"].save(ave_path, overwrite=True, verbose="warning")
+
+        if "src" in self.context and self.context["src"] is not None:
+            src_path = folder/"context-src.fif"
+            mne.write_source_spaces(src_path, self.context["src"], overwrite=True, verbose="warning")
+
+        print(f"MetricSuite and context successfully saved to folder: {folder}")
+    
+    @staticmethod
+    def load(folder: str | Path):
+        """
+        Loads a MetricSuite from a custom CSV file, parsing out the embedded metadata headers.
+        """
+        folder = Path(folder)
+        if not folder.exists():
+            raise FileNotFoundError(f"Could not find folder '{folder}'.")
+        
+        csv_path = folder/"metrics.csv"
+        if not csv_path.exists():
+            raise FileNotFoundError(f"Could not find file '{csv_path.name}' inside metric folder.")
+
+        name = "Evaluation"
+        group_name = "Label"
+
+        # 1. Parse the metadata headers from the top of the file
+        with open(csv_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("# ").strip():
+                    # Clean up the comment and split key/value
+                    clean_line = line.lstrip("# ").strip()
+                    if ":" in clean_line:
+                        key, val = clean_line.split(":", 1)
+                        key, val = key.strip(), val.strip()
+                        if key == "metric_suite_name":
+                            name = val
+                        elif key == "metric_suite_group_name":
+                            group_name = val
+
+                else:
+                    # Stop reading once we hit actual data rows
+                    break
+
+        # 2. Re-load MNE context components if files exist
+        context = {}
+
+        ave_path = folder/"context-ave.fif"
+        if ave_path.exists():
+            context["ave"] = mne.read_evokeds(ave_path, verbose=False)[0]
+
+        src_path = folder/"context-src.fif"
+        if src_path.exists():
+            context["src"] = mne.read_source_spaces(src_path, verbose=False)
+        
+        # 3. Reconstruct the base MetricSuite object
+        suite = MetricSuite(name=name, group_name=group_name, context=context)
+
+        # 3. Populate DaraFrame data
+        df = pd.read_csv(csv_path, comment="#")
+        suite._data = df.to_dict(orient="records")
+
+        return suite
+
+
+    def plot(self, metrics=None, labels=None, coord=None, kind=None, **kwargs):
         """
         Flexible plotting interface.
 
@@ -102,9 +223,14 @@ class MetricSuite:
 
         labels: list | str
             Filter for specific labels.
+        
+        coord: str, optional
+            The coordinate column name to use as the X-axis. If provided, triggers
+            a relational plot.
 
         kind: str ['auto', 'box', 'violin', 'bar', or 'heatmap']
-            Type of plot.
+            Type of plot. Defaults to 'bo' for statistical and 'line'
+            for relational layouts.
 
         **kwargs:
             Passed to the underlying Seaborn/Matplotlib functions.
@@ -115,33 +241,33 @@ class MetricSuite:
         if df.empty:
             print("Query returned no data.")
             return
-
-        # Indentify plot families
+        
+        # 1. If coord is provided, validate it and route to relational plotting.
+        if coord is not None:
+            if coord not in df.columns:
+                raise ValueError(
+                    f"Coordinate column '{coord}' does not exist in the registered data."
+                )
+            if df[coord].isna().all():
+                raise ValueError(
+                    f"Coordinate column '{coord}' contains only NaN values for the selected metrics/labels."
+                )
+            
+            # Default relational kind to 'line' if not explicitly stated.
+            plot_kind = kind if kind in ["line", "scatter"] else "line"
+            return self._plot_relational(df, x_coord=coord, kind=plot_kind, **kwargs)
+        
+        # 2. If no coord is provided, check if fallback to spatial is requested/needed
+        spatial_kinds = ["vista"]
         meta_cols = [c for c in df.columns if c not in [self.group_name, "Metric", "Value"]]
         has_spatial = any(c in meta_cols for c in ["channel", "vertex", "region"])
-        has_relational = any(c in meta_cols for c in ["time", "freq", "ms"])
 
-        # map 'kind' to a family
-        stat_kinds = ["box", "violin", "bar"]
-        rel_kinds = ["line", "scatter"]
-        spatial_kinds = ["vista"]
-
-        # decision tree
-        if kind in stat_kinds:
-            return self._plot_statistical(df, kind, **kwargs)
-
-        if kind in rel_kinds:
-            return self._plot_relational(df, kind, **kwargs)
-
-        if kind in spatial_kinds:
+        if kind in spatial_kinds or (kind is None and has_spatial):
             return self._plot_spatial(df, **kwargs)
-
-        if kind is None:
-            if has_spatial:
-                return self._plot_spatial(df, **kwargs)
-            if has_relational:
-                return self._plot_relational(df, "line", **kwargs)
-            return self._plot_statistical(df, "box", **kwargs)
+        
+        # 3. Default fallback: Statistical plots
+        plot_kind = kind if kind in ["box", "violin", "bar", "heatmap"] else "box"
+        return self._plot_statistical(df, kind=plot_kind, **kwargs) 
 
 
     def _plot_statistical(self, df, kind="box", **kwargs):
@@ -160,16 +286,13 @@ class MetricSuite:
 
         return plot_kind[kind](df, **kwargs)
 
-    def _plot_relational(self, df, kind="line", **kwargs):
+    def _plot_relational(self, df, x_coord, kind="line", **kwargs):
         """
         Plot relational plot.
         """
-        reserved = [self.group_name, "Metric", "Value"]
-        all_coords = [c for c in df.columns if c not in reserved]
-
         return metric_relational(
             df,
-            coords = all_coords,
+            coords = [x_coord],
             hue = self.group_name,
             kind = kind,
             **kwargs,

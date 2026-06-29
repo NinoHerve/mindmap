@@ -141,15 +141,14 @@ def fit_surface_to_mri_mask(
     if np.linalg.det(affine) < 0:
         sphere.flip_faces(inplace=True)
 
-    sphere.compute_normals(inplace=True, consistent_normals=False, auto_orient_normals=False)
+    sphere.compute_normals(inplace=True, consistent_normals=True, auto_orient_normals=False)
 
     assert np.array_equal(template_ico.faces, sphere.faces), "Topology was corrupted during fitting!"
 
     return sphere, interp
 
 
-
-def build_bem_layers(
+def build_bem_layersOLD(
     seg: Parcellation,
     bem_labels: dict,
     brain_interp: np.ndarray = None,
@@ -193,6 +192,59 @@ def build_bem_layers(
     iskull_mask = iskull_mask.morphology("close", radius=10)
     iskull_mesh, _ = fit_surface_to_mri_mask(
         iskull_mask, outer_interpolator=oskull_interp, inner_interpolator=brain_interp, max_buffer=0, z_floor=45, **kwargs,
+    )
+
+    return {
+        "skin": skin_mesh,
+        "outer skull": oskull_mesh,
+        "inner skull": iskull_mesh,
+    }
+
+
+def build_bem_layers(
+    seg: Parcellation,
+    bem_labels: dict,
+    brain_interp: np.ndarray = None,
+    **kwargs,
+) -> dict[str, pv.PolyData]:
+    """
+    Build BEM layers from segmentation.
+
+    Parameters:
+    ----------
+    seg: mm.Parcellation
+        Segmentation image.
+    
+    bem_labels: dict
+        Tissue labels belonging inside each surface.
+
+    brain_interp: np.ndarray
+        Interpolator of brain tissue.
+    """
+    # extract labels from segmentation
+    iskull_mask = create_mask(seg, regions=bem_labels["inner_skull"])
+    oskull_mask = create_mask(seg, regions=bem_labels["outer_skull"])
+    skin_mask = create_mask(seg, regions=bem_labels["skin"])
+
+    # inner skull
+    iskull_mask = nibabel_to_ants(iskull_mask)
+    iskull_mask = iskull_mask.morphology("close", radius=10)
+    iskull_mesh, iskull_interp = fit_surface_to_mri_mask(
+        iskull_mask, inner_interpolator=brain_interp, z_floor=45, **kwargs,
+    )
+
+    # outer skull
+    oskull_mask = nibabel_to_ants(oskull_mask)
+    oskull_mask = oskull_mask.morphology("close", radius=10)
+    oskull_mesh, oskull_interp = fit_surface_to_mri_mask(
+        oskull_mask, inner_interpolator=iskull_interp, z_floor = 35, **kwargs,
+    )
+
+    # skin
+    skin_mask = nibabel_to_ants(skin_mask)
+    skin_mask = skin_mask.morphology("close", radius=10)
+    skin_mesh, _ = fit_surface_to_mri_mask(
+        skin_mask, inner_interpolator=oskull_interp, z_floor = 20, **kwargs,
     )
 
     return {

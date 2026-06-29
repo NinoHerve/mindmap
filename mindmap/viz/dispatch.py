@@ -19,13 +19,14 @@ import numpy as np
 import mne
 import nibabel as nib
 
+import seaborn as sns
 import pyvista as pv
 
 from mindmap.core.process import normalize_data
 from mindmap.anatomy.mri.io import nib_to_polydata
 from mindmap.analysis.functional.eeg.process import normalize_evoked
 from mindmap.analysis.simulation.signals import Signal
-from mindmap.analysis.simulation.components import Source
+from mindmap.analysis.simulation.components import Source, HeadModel
 from mindmap.viz.utils import (
     store_in_lists, find_clim, default_cmap,
     BrainMesh, SourceMesh, ChannelMesh, OverlayMesh
@@ -108,8 +109,12 @@ def plot_brain_activity(
             continue
 
         # extract data matrix and times
-        d = func.data if hasattr(func, "data") else func
-        t = func.times if hasattr(func, "times") else None
+        if isinstance(func, mne.SourceEstimate):
+            d = func.data
+            t = func.times
+        else:
+            d = func
+            t = None
 
         if norm := func_params.get("normalize"):
             d = normalize_data(d, "global", norm)
@@ -282,13 +287,11 @@ def plot_ieeg(
 
     return tm.plotter
 
-import seaborn as sns
-
 def plot_signal(
-    times,
-    signal,
-    show_events = False,
-    title = None,
+    times: np.ndarray,
+    signal: Signal,
+    show_events: bool = False,
+    title: str = None,
 ):
     """
     Plots the signal's waveform.
@@ -317,7 +320,7 @@ def plot_signal(
     return ax
 
 
-def plot_source(head_model, source):
+def plot_source(head_model: HeadModel, source: Source):
     """
     Plots brain mesh with highlighted source.
     """
@@ -325,7 +328,7 @@ def plot_source(head_model, source):
     targets = source.select_targets(
         head_model.src,
         head_model.parc,
-        head_model.tkras2ras
+        head_model.ras2tkras
     )
 
-    plot_brain_activity(head_model.src, targets.astype(int), func_params={"absolute":True})
+    return plot_brain_activity(head_model.src, targets.astype(int), func_params={"absolute":True})

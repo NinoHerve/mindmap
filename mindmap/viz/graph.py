@@ -224,7 +224,40 @@ def plot_degree_dist(adj_matrix, ax=None, **kwargs):
     ax.set_ylabel("Frequency")
 
 
-def plot_con_summary(adj_matrix, subject="unknown"):
+def plot_adj_matrix(
+    connectome,
+    title: str = "Adjacency matrix", 
+    clabel: str = "weights",
+    xylabel: str = "Dipole Index",
+):
+    """Plot adjacency matrix."""
+    # Create a masked array to hide zero-valued elements
+    masked_matrix = np.ma.masked_equal(connectome, 0)
+
+    plt.figure(figsize=(10, 8))
+
+    # Using 'nearest' interpolation and 'rasterized=True' handles big matrices 
+    im = plt.imshow(
+        masked_matrix,
+        cmap = "viridis_r",
+        interpolation = "nearest",
+        aspect = "equal",
+        rasterized = True,
+    )
+
+    # Add a colorbar and label it appropratiely since the weights are distances
+    cbar = plt.colorbar(im, fraction=0.046, pad=0.04)
+    cbar.set_label(clabel, rotation=270, labelpad=15)
+
+    plt.title(title, fontsize=14, pad=15)
+    plt.xlabel(xylabel, fontsize=12)
+    plt.ylabel(xylabel, fontsize=12)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_con_summary(adj_matrix, title="Connectome summary", xlabel="weights"):
     """
     Plot connectome summary.
 
@@ -234,12 +267,12 @@ def plot_con_summary(adj_matrix, subject="unknown"):
         Adjacency matrix.
     """
     fig, axs = plt.subplots(nrows=1, ncols=2)
-    fig.suptitle(f"Connectome summary: sub-{subject}")
+    fig.suptitle(title)
 
     # plots
     plot_degree_dist(adj_matrix, axs[0])
     plot_weight_dist(adj_matrix, axs[1])
-    axs[1].set_xlabel("Geodesic Distance (mm)")
+    axs[1].set_xlabel(xlabel)
 
     plt.show()
 

@@ -477,3 +477,85 @@ class OverlayMesh(BaseMesh):
 
     def update_signal(self, idx):
         pass
+
+
+class HeadMesh(BaseMesh):
+    """Class to manage Head meshes."""
+    def __init__(self, polydata, scalar_name="head", **kwargs):
+        super().__init__(times=[0], functional=np.zeros((polydata.n_points, 1)), scalar_name=scalar_name)
+        self.polydata = polydata
+
+        # Default aesthetics for head mesh
+        self.plot_kwargs = {
+            "color": "black",
+            "label": None,
+            "line_width": 1,
+            "style": "wireframe",
+        } | kwargs
+
+    def update_signal(self, idx):
+        pass
+
+
+def get_brain_view(view_name: str) -> list:
+    """
+    Returns PyVista camera coordinates based on neuroscientific and anatomical viewing angles.
+
+    Parameters
+    ----------
+    view_name: str
+        The requested anatomical view.
+        Supported terms:
+        - 'Lateral Left' / 'Left'
+        - 'Lateral Right' / 'Right'
+        - 'Anterior' / 'Front' / 'Rostral'
+        - 'Posterior' / 'Back' / 'Caudal'
+        - 'Superior' / 'Top' / 'Dorsal'
+        - 'Inferior' / 'Down' / 'Ventral'
+    
+    Returns
+    -------
+    list
+        A PyVista camera position sequence: [Camera_XYZ, Focus_XYZ, ViewUp_XYZ]
+    """
+    # Normalize input string to ignore casing or spaces
+    view_clean = view_name.strip().lower()
+
+    # Define focus point (origin) and the ViewUp vector (Z-axis points up by default)
+    focus = (0.0, 0.0, 0.0)
+    up_default = (0.0, 0.0, 1.0)
+    up_top = (0.0, 1.0, 0.0)
+
+    # Mapping dict containing primary neuroscientific terms and common aliases
+    views = {
+        # --- Lateral Views (Sides) ---
+        "lateral left": [(-2.0, 0.0, 0.0), focus, up_default],
+        "left": [(-2.0, 0.0, 0.0), focus, up_default],
+
+        "lateral rigth": [(2.0, 0.0, 0.0), focus, up_default],
+        "right": [(2.0, 0.0, 0.0), focus, up_default],
+
+        # --- Anterior / Posterior (Front / Back) ---
+        "anterior": [(0.0, 2.0, 0.0), focus, up_default],
+        "front": [(0.0, 2.0, 0.0), focus, up_default],
+        "rostral": [(0.0, 2.0, 0.0), focus, up_default],
+
+        "posterior": [(0.0, -2.0, 0.0), focus, up_default],
+        "back": [(0.0, -2.0, 0.0), focus, up_default],
+        "caudal": [(0.0, -2.0, 0.0), focus, up_default],
+
+        # --- Superior / Inferior (Top / Bottom) ---
+        "superior": [(0.0, 0.0, 2.0), focus, up_top],
+        "top": [(0.0, 0.0, 2.0), focus, up_top],
+        "dorsal": [(0.0, 0.0, 2.0), focus, up_top],
+
+        "inferior": [(0.0, 0.0, -2.0), focus, up_top],
+        "down": [(0.0, 0.0, -2.0), focus, up_top],
+        "ventral": [(0.0, 0.0, -2.0), focus, up_top],
+    }
+
+    if view_clean not in views:
+        valid_options = ", ".join([{f"'{k}'"} for k in ["Lateral Left", "Lateral Right", "Anterior", "Posterior", "Superior", "Inferior"]])
+        raise ValueError(f"Unknown view '{view_name}'. Please use standard neuroscientific orientations such as: {valid_options}.")
+    
+    return views[view_clean]

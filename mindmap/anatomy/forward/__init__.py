@@ -1,6 +1,11 @@
+from .metric import (
+    compute_fwd_mag,
+    compute_fwd_rdm,
+)
+
 from .process import correct_skull, build_bem_layers, fit_surface_to_mri_mask, bem_transform, template_coregistration
 
-from .io import save_bem_as_freesurfer
+from .io import save_bem_as_freesurfer, save_pv_as_freesurfer
 
 __all__ = [
     "correct_skull",
@@ -9,4 +14,7 @@ __all__ = [
     "fit_surface_to_mri_mask",
     "bem_transform",
     "template_coregistration",
+    "compute_fwd_mag",
+    "compute_fwd_rdm",
+    "save_pv_as_freesurfer",
 ]

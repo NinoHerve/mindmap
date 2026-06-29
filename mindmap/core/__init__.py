@@ -7,6 +7,7 @@ from .metric import (
     compute_distances,
     extract_voxel_volume,
     point_to_area_distance,
+    calc_performance_curves,
 )
 
 from .utils import (
@@ -42,4 +43,5 @@ __all__ = [
     "write_csv_row",
     "get_config",
     "create_dataset_description",
+    "calc_performance_curves",
 ]

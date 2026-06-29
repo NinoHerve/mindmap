@@ -23,6 +23,8 @@ import pyvista as pv
 import mne
 
 from mindmap.analysis.functional.eeg.io import get_ch_positions
+from mindmap.core.metric import calc_correlation
+from mindmap.viz.dispatch import plot_brain_activity
 from .surface import plot_brain
 from .utils import find_clim
 
@@ -198,3 +200,71 @@ def plot_fwd_avg_ref(fwd, title="Forward Average Referencing", fixed=True):
 
     plt.close("all")  # Prevent Jupyter from auto-rendering
     return fig
+
+
+import matplotlib.pyplot as plt
+
+def plot_fwd_topo_comp(
+    fwd1: mne.Forward,
+    fwd2: mne.Forward,
+    dipole_idx: int,
+    info: mne.Info,
+    title1: str = "Forward Topograghy 1",
+    title2: str = "Forward Topography 2",
+    title3: str = "Topography Difference",
+):
+    """
+    Plot Topographic Map differences between two forward solutions.
+    
+    Parameters
+    ----------
+    fwd1, fwd2: mne.Forward
+        Forward solutions.
+    
+    dipole_idx: int
+        Dipole index.
+
+    info: mne.Info
+        Sensor info object.
+
+    title1, title2, title3: str
+        Titles for first, second and difference topographies.
+    """
+    # force cortical/fixed constraint
+    fwd1_fixed = mne.convert_forward_solution(fwd1, surf_ori=True, force_fixed=True, use_cps=True, verbose="warning")
+    fwd2_fixed = mne.convert_forward_solution(fwd2, surf_ori=True, force_fixed=True, use_cps=True, verbose="warning")
+
+    data1 = fwd1_fixed["sol"]["data"][:, dipole_idx]
+    data2 = fwd2_fixed["sol"]["data"][:, dipole_idx]
+
+    _, axes = plt.subplots(1, 3, figsize=(12, 4))
+
+    mne.viz.plot_topomap(data1, info, axes=axes[0], show=False)
+    axes[0].set_title(title1)
+
+    mne.viz.plot_topomap(data2, info, axes=axes[1], show=False)
+    axes[1].set_title(title2)
+
+    mne.viz.plot_topomap(data1 - data2, info, axes=axes[2], show=False)
+    axes[2].set_title(title3)
+
+    plt.show()
+
+
+def plot_fwd_src_comp(
+    fwd1: mne.Forward,
+    fwd2: mne.Forward,
+    src: mne.SourceSpaces,
+    title: str = "Source sensitivity correlation."
+):
+    # force cortical/fixed constraint
+    fwd1_fixed = mne.convert_forward_solution(fwd1, surf_ori=True, force_fixed=True, use_cps=True, verbose="warning")
+    fwd2_fixed = mne.convert_forward_solution(fwd2, surf_ori=True, force_fixed=True, use_cps=True, verbose="warning")
+
+    data1 = fwd1_fixed["sol"]["data"]
+    data2 = fwd2_fixed["sol"]["data"]
+
+    # compute correlations
+    corr = calc_correlation(data1, data2, "pearson", axis=0)
+
+    plot_brain_activity(src, corr, title=title).show()

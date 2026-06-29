@@ -58,7 +58,7 @@ def prune_tracts(
         tractogram: nib.streamlines.Tractogram | nib.streamlines.TrkFile | nib.streamlines.TckFile, 
         mask_cortex: nib.Nifti1Image,
         t12diff: np.ndarray,
-        return_pruned: bool,
+        return_pruned: bool = False,
         ) -> nib.streamlines.Tractogram:
     """
     Prune tracts.

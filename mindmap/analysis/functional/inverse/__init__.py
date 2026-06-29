@@ -5,6 +5,8 @@ Modules for computing inverse solutions.
 from .solvers import (
     MNE,
     wCSET,
+    MCE,
+    CSET,
 )
 
 from .process import (
@@ -16,19 +18,34 @@ from .metric import (
     compute_stc_confusion,
     compute_stc_scores,
     compute_stc_curves,
+    compute_stc_correlation,
+    compute_stc_cosine,
 )
 
 from .io import (
     make_stc,
+    filter_remaining_files,
+    stream_source_solutions,
+)
+
+from .pipeline import (
+    make_process_sample,
 )
 
 __all__ = [
     "MNE",
     "wCSET",
+    "MCE",
+    "CSET",
     "normalize_source_estimate",
     "binarize_stc",
     "compute_stc_confusion",
     "compute_stc_scores",
     "compute_stc_curves",
     "make_stc",
+    "compute_stc_correlation",
+    "compute_stc_cosine",
+    "make_process_sample",
+    "filter_remaining_files",
+    "stream_source_solutions",
 ]

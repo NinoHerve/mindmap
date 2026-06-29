@@ -10,7 +10,7 @@ Last Modified: 2025-10-24
 License: MIT
 """
 
-from abc import ABC, abstractmethod
+from abc import ABC
 
 import numpy as np
 import scipy.linalg as sla
@@ -19,7 +19,7 @@ import mne
 from mne.proj import make_projector
 from mne.cov import prepare_noise_cov, compute_whitener
 
-import pyxu.abc as pxa
+from pyxu.abc import LinOp
 import pyxu.operator as pxo
 import pyxu.opt.stop as pxst
 from pyxu.opt.solver import PGD
@@ -28,6 +28,12 @@ from .io import make_stc
 from .utils import compute_harmonic_prior, compute_depth_prior
 
 
+# --------------------------------------------
+# Minimum Norm Estimates (MNE)
+# ¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨
+# Solves optimization problems of the form
+# ||Ls - y||²_2 + λ||Ms||²_2
+# --------------------------------------------
 
 
 
@@ -80,7 +86,7 @@ class MNE:
 
     def _setup_preprocessor(self, info, nave=1):
         """
-        Extracts whitener from noise covariance.
+        Extracts whitener from noise covariance and applies average referencing.
 
         Parameters
         ----------
@@ -268,7 +274,17 @@ class wCSET(MNE):
         """
         Parameters
         ----------
+        eigenvectors: np.ndarray of shape (n,n)
+            Eigenvectors of the connectome Laplacian.
 
+        eigenvalues: np.ndarray of shape (n,)
+            Eigenvalues of the connectome Laplacian.
+
+        harm: float
+            Harmonic weighting factor.
+
+        kwargs: dict
+            Any parameters used in mindmap's MNE class.
         """
         self.U = eigenvectors
         self.e = eigenvalues
@@ -290,6 +306,113 @@ class wCSET(MNE):
 
         # inverse prior mixing matrix
         return w_depth[:, np.newaxis] * (self.U * w_harm)
+
+
+# --------------------------------------------
+# Minimum Current Estimates (MCE)
+# ¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨¨
+# Solves optimization problems of the form 
+# ||Ls - y||²_2 + λ||Ms||²_1
+# --------------------------------------------
+
+
+class MCE(MNE):
+    """Minimum Current Estimate (L1-norm) sovler using Pyxu."""
+    def __init__(self, forward, noise_cov, depth=0.8, verbose="warning"):
+        # Inherit MNE to reuse foward solution conversion and gain extraction
+        super().__init__(forward, noise_cov, depth=depth, noise_norm=None, verbose=verbose)
+
+    def solve(self, evoked, lambda2=0.1, max_iter=500, rel_grad_tol=1e-4):
+        """Solve L1 inverse problem: min ||y-Gx||^2_2 + alpha * ||Wx||_1"""
+        # 1. Preprocessing (Reuse MNE logic)
+        projs_gain, projs_data, whitener = self._setup_preprocessor(evoked.info, evoked.nave)
+
+        # 2. Whiten Gain and Data
+        gain_white = whitener @ projs_gain @ self.gain_raw
+        y_white = whitener @ projs_data @ evoked.data
+
+        # 3. Compute Source Prior
+        w_source = self.compute_source_prior(gain_white)
+
+        if w_source.ndim == 1:
+            gain_weighted = gain_white * w_source
+        else:
+            gain_weighted = gain_white @ w_source
+
+        # 4. Scale to balance Loss and Regularization ranges
+        trace_GRGT = np.linalg.norm(gain_weighted, ord="fro")**2
+        scale = np.sqrt(self.rank / trace_GRGT)
+
+        gain_weighted = gain_weighted * scale
+        
+        # 4. Construct Pyxu Operators
+        G = LinOp.from_array(gain_weighted)
+
+        # Regularization: alpha * ||x||_1
+        penalty = lambda2 * pxo.L1Norm(dim_shape=G.dim_shape)
+
+        # solution storage
+        sol = np.zeros((G.dim_shape[0], y_white.shape[1]))
+
+        # stopping criterion
+        stop_crit = pxst.RelError(eps=rel_grad_tol, var="x") | pxst.MaxIter(max_iter)
+
+        # Iterate over time points
+        for i, y in enumerate(y_white.T):
+            # Loss: ||y-Gx||^2_2
+            loss = pxo.SquaredL2Norm(dim_shape=G.codim_shape).argshift(-y) * G
+            loss.diff_lipschitz = loss.estimate_diff_lipschitz()
+
+            # 5. Optimization (Proximal Gradient Descent)
+            # MCE is typically solved for each time point
+            solver = PGD(loss, penalty, show_progress=False)
+            solver.fit(
+                x0 = np.zeros(G.dim_shape),
+                stop_crit = stop_crit,
+            )
+
+            sol_weighted = solver.solution().squeeze()
+
+            # 6. Map back to original space
+            if w_source.ndim == 1:
+                sol[:,i] = sol_weighted * w_source
+            else:
+                sol[:,i] = w_source @ sol_weighted
+
+        return make_stc(
+            source_space = self.forward["src"],
+            activity = sol,
+            tmin = evoked.times[0],
+            tstep = 1/evoked.info["sfreq"],
+        )
+
+class CSET(MCE):
+    """Connectome Spectrum Electromagnetic Tomography"""
+    def __init__(self, eigenvectors, **kwargs):
+        """
+        Parameters
+        ----------
+        eigenvectors: np.ndarray of shape (n,n)
+            Eigenvectors of the connectome Laplacian.
+
+        kwargs: dict
+            Any parameters used in mindmap's MCE class.
+        """
+        self.U = eigenvectors
+
+        super().__init__(**kwargs)
+
+    def compute_source_prior(self, gain_whitened):
+        """
+        Override MCE source weighting.
+        Compute Connectome Spectrum prior with depth weightings.
+        """
+        # depth weighting
+        w_depth = compute_depth_prior(gain_whitened, self.depth_coeff)
+
+        return w_depth[:, np.newaxis] * self.U
+
+
 
 
 # class InverseOperator(ABC):

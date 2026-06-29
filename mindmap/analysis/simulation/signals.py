@@ -3,6 +3,8 @@ DOC String
 """
 
 from abc import ABC, abstractmethod
+from pathlib import Path
+import json
 
 import numpy as np
 
@@ -31,20 +33,83 @@ class Signal(ABC):
         """
         raise NotImplementedError("Implement a `generate` method for Signal Childs.")
 
+    def to_dict(self) -> dict:
+        """Serialize any signal object into a standard dictionary."""
+        state = {
+            "__class__": self.__class__.__name__
+        }
+
+        # Loop through all attributes of the instance dynamically
+        for key, value in self.__dict__.items():
+            # Special case: CombinedSignal holds a list of nested Signal objects
+            if key == "signal" and isinstance(value, list):
+                state[key] = [sig.to_dict() for sig in value]
+            else:
+                state[key] = value
+
+        return state
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        """Reconstructs any child Signal object from a serialized dictionary."""
+        if not data:
+            return None
+        
+        # 1. Map string names back to the actual class objects
+        class_registry = {sub_cls.__name__: sub_cls for sub_cls in cls.__subclasses__()}
+        # Include itself if a non-abstract subclass pattern matches
+        class_registry[cls.__name__] = cls
+
+        class_name = data.pop("__class__")
+        target_class = class_registry.get(class_name)
+
+        if target_class is None:
+            raise ValueError(f"Unknown Signal class: {class_name}. Ensure it's imported.")
+
+        # 2. Handle nested elements (for CombinedSignal)
+        if "signals" in data:
+            data["signals"] = [cls.from_dict(sig_dict) for sig_dict in data["signals"]]
+
+        # 3. Instanciate the correct child class without calling a rigid __init__
+        # This bypasses strict init arguments and fills the object footprint safely
+        obj = target_class.__new__(target_class)
+        obj.__dict__.update(data)
+
+        return obj
+
+    def save(self, path: str | Path = "signal_config.json"):
+        """Save the signal configuration to a specific path."""
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=4)
+
+    @classmethod
+    def load(cls, path: str | Path):
+        """Load a signal configuration from a specific path."""
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Could not find file '{path}'")
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return cls.from_dict(data)
+
     def __str__(self):
         return f"Type: {self.name} (ID: {self.event_id})"
-    
+
     def __add__(self, other):
         if isinstance(other, Signal):
             return CombinedSignal(self, other)
         return NotImplemented
-    
+
 class CombinedSignal(Signal):
+    """
+    Combine Signals together.
+    """
     def __init__(self, sig1, sig2):
         super().__init__(name=f"{sig1.name} + {sig2.name}")
         self.signals = [sig1, sig2]
 
     def generate(self, times):
+        """Additive combination."""
         data = np.zeros_like(times)
         events = np.zeros_like(times)
         for sig in self.signals:

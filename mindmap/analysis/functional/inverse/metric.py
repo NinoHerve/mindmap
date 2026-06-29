@@ -56,10 +56,11 @@ def compute_stc_correlation(
     )
 
 
-def compute_evoked_cosine(
+def compute_stc_cosine(
     stc_true: mne.SourceEstimate,
     stc_pred: mne.SourceEstimate,
     mode: str = "temporal",
+    absolute: bool = False,
 ) -> np.ndarray | float:
     """
     Compute cosine between two evoked objects.
@@ -90,6 +91,7 @@ def compute_evoked_cosine(
         stc_true,
         stc_pred,
         mode = mode,
+        absolute = absolute,
     )
 
 
@@ -103,11 +105,11 @@ def compute_stc_confusion(
 
     Parameters
     ----------
-    stc_true: mne.Evoked | mne.SourceEstimate
-        Ground truth activity.
+    stc_true: mne.SourceEstimate
+        Binary ground truth activity.
     
-    stc_pred: mne.Evoked | mne.SourceEstimate
-        Estimated activity.
+    stc_pred: mne.SourceEstimate
+        Binary estimated activity.
 
     mode: str ['spatial', 'temporal', 'spatio-temporal']
         - 'spatial': compute scores for each time point.
@@ -137,10 +139,10 @@ def compute_stc_scores(
     Parameters
     ----------
     stc_true: mne.SourceEstimate
-        Ground truth activity.
+        Binary ground truth activity.
     
     stc_pred: mne.SourceEstimate
-        Estimated activity.
+        Binary estimated activity.
 
     mode: str ['spatial', 'temporal', 'spatio-temporal']
         - 'spatial': compute scores for each time point.
@@ -169,7 +171,7 @@ def compute_stc_curves(
     Parameters
     ----------
     stc_true: mne.Evoked | mne.SourceEstimate
-        Ground truth activity.
+        Binary ground truth activity.
     
     stc_pred: mne.Evoked | mne.SourceEstimate
         Estimated activity.

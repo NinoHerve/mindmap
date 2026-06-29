@@ -111,7 +111,7 @@ class TimeMesh(BaseBrainPlotter):
         self.setup_keys()
         self.update_display(0)
 
-
+        self.plotter.link_views()
     # -------------------
     # Inherited methods
     # -------------------

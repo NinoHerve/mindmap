@@ -20,6 +20,7 @@ def run_charm(
         t1_file: str | Path,
         t2_file: str | Path = None,
         charm_dir: str | Path = None,
+        fs_dir: str | Path = None,
         overwrite: bool = False
         ):
     """
@@ -84,6 +85,8 @@ def run_charm(
     cml = ["charm", f"sub-{subject}", t1.name]
     if t2:
         cml.append(t2.name)
+    if fs_dir:
+        cml.append(f"--fs-dir {fs_dir/subject}")
     cml.extend(["--segment", "--initatlas"])
 
     # run subprocess inside the work_dir

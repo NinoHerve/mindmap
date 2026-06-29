@@ -18,12 +18,14 @@ from .metric import (
     compute_ratio_spurious,
     compute_grova_metrics,
     estimate_evoked_snr,
+    estimate_raw_snr,
     compute_evoked_corr_matrix,
     calc_rem,
     find_spike_window,
     compute_evoked_confusion,
     compute_evoked_scores,
     compute_evoked_curves,
+    get_channel_distances,
 )
 
 from .process import (
@@ -59,10 +61,12 @@ __all__ = [
     "compute_evoked_correlation",
     "compute_evoked_cosine",
     "estimate_evoked_snr",
+    "estimate_raw_snr",
     "compute_evoked_corr_matrix",
     "calc_rem",
     "find_spike_window",
     "compute_evoked_confusion",
     "compute_evoked_scores",
     "compute_evoked_curves",
+    "get_channel_distances",
 ]

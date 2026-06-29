@@ -45,6 +45,7 @@ from .graph import (
     plot_eigval,
     plot_con_summary,
     plot_spectrum,
+    plot_adj_matrix,
 )
 
 from .forward import (
@@ -57,6 +58,10 @@ from .forward import (
 
 from .inverse import(
     plot_predicted_data_covariance,
+)
+
+from .utils import (
+    get_brain_view,
 )
 
 __all__ = [
@@ -90,4 +95,6 @@ __all__ = [
     "plot_evoked_cog",
     "plot_evoked_rem",
     "plot_signal",
+    "get_brain_view",
+    "plot_adj_matrix",
 ]

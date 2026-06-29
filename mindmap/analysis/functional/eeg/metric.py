@@ -198,6 +198,99 @@ def estimate_evoked_snr(
     return estimate_snr(data, (b_start, b_stop), method=method)
 
 
+def estimate_raw_snr(
+    raw: mne.io.Raw,
+    events,
+    event_id: int = None,
+    tmin: float = -0.05,
+    tmax: float = 0.05,
+    baseline: tuple[float, float] = (-0.05, -0.005),
+    signal_window: tuple[float, float] = None,
+    picks: str = "eeg",
+):
+    """
+    Computes a robust single-trial SNR metric designed to anchor
+    generative simulations based on median single-trial statistics.
+    
+    Parameters
+    ----------
+    raw: mne.io.Raw
+        The raw continuous data.
+
+    events: array, shape (n_events, 3)
+        The MNE events array.
+
+    event_id: int
+        The id of the event to epoch around.
+
+    tmin, tmax: float
+        Total time window around the event. Must encompass both baseline
+        and signal winodws completely.
+
+    baseline: tuple of float (start, end)
+        The time window to extract background noise from.
+
+    signal_window: tuple of float (start, end)
+        The time window where the spike peak is expected to occur. If None,
+        defaults to (0, tmax).
+
+    picks: str | list
+        Channels to include.
+
+    Returns
+    -------
+    snrs:
+        SNR per channel.
+    """
+    # Default signal window
+    if signal_window is None:
+        signal_window = (0.0, tmax)
+
+    # Load epochs without MNE's baseline correction (keep noise intact)
+    epochs = mne.Epochs(
+        raw,
+        events,
+        event_id = event_id,
+        tmin = tmin,
+        tmax = tmax,
+        baseline = None,
+        picks = picks,
+        preload = True,
+        verbose = False,
+    )
+
+    # data shape: (n_epochs, n_channels, n_times)
+    data = epochs.get_data(copy=False)
+    times = epochs.times
+
+    # 1. Isolate the Signal Window and find peak per trial, per channel
+    s_start = np.argmin(np.abs(times - signal_window[0]))
+    s_end = np.argmin(np.abs(times - signal_window[1]))
+    spike_data = data[:, :, s_start:s_end]
+    single_trial_peaks = np.max(np.abs(spike_data), axis=2)
+
+    # 2. Isolate the Baseline Window and find noise standard deviation per trial
+    # per channel
+    b_start = np.argmin(np.abs(times - baseline[0]))
+    b_end = np.argmin(np.abs(times - baseline[1]))
+    baseline_data = data[:, :, b_start:b_end]
+    single_trial_noise = np.std(baseline_data, axis=2)
+
+    # 3. Take the median across all trials (axis 0) for each channel seperately
+    median_peaks = np.median(single_trial_peaks, axis=0)
+    median_noise = np.median(single_trial_noise, axis=0)
+
+    # 4. Comptue SNR per channel, protecting against any dead/flat channels.
+    snrs = np.divide(
+        median_peaks,
+        median_noise,
+        out = np.zeros_like(median_peaks),
+        where = median_noise != 0,
+    )
+
+    return snrs
+
+
 
 def peak_baseline_snr(
         sensor          : mne.io.Raw | mne.Epochs | mne.Evoked,
@@ -775,3 +868,48 @@ def compute_evoked_curves(
         obj_true = evoked_true,
         obj_pred = evoked_pred,
     )
+
+
+def get_channel_distances(evoked: mne.Evoked, target_ch: str) -> dict[str, float]:
+    """
+    Calculates the spatial Euclidean distance from all valid channels to an anchor channel.
+
+    Parameters
+    ----------
+    evoked: mne.Evoked
+        The MNE Evoked object.
+
+    target_ch: str
+        Name of the anchor channel.
+
+    Returns
+    -------
+    dict
+        A dictionary mapping channel names to their distance in centimeters (cm)
+    """
+    # 1. Extract 3D coordinate
+    channel_positions = {}
+    for ch_info in evoked.info["chs"]:
+        name = ch_info["ch_name"]
+        loc = ch_info["loc"][:3]
+
+        # check that the channel has genuine coordinates
+        if not np.isnan(loc).any() and not (loc==0).all():
+            channel_positions[name] = loc
+
+    # 2. Guard against structural coordinate absence
+    if target_ch not in channel_positions:
+        raise ValueError(
+            f"Target anchor channel '{target_ch}' lacks spatial 3D coordinates in this object's montage."
+        )
+
+    anchor_xyz = channel_positions[target_ch]
+    calculated_distances = {}
+
+    # 3. Vectorized Euclidean distance conversion (Meters -> Centimeters)
+    for name, xyz in channel_positions.items():
+        # L2 Norm calculation translates to standard straigth-line 3D Euclidean distance
+        distance_cm = np.linalg.norm(xyz - anchor_xyz) * 100
+        calculated_distances[name] = distance_cm
+
+    return calculated_distances

@@ -2,22 +2,16 @@
 Docstring pour mindmap.core.signals
 """
 
+from functools import wraps
 import numpy as np
 
-
-def color_noise(t, n=1, filt=lambda f: 1):
+def colored_noise(filt):
     """
     Produces colored noise. Inspired from https://stackoverflow.com/questions/67085963/generate-colors-of-noise-in-python
 
     Parameters
     ----------
-    t: int
-        Number of samples per series.
-
-    n: int
-        Number of series.
-
-    filt: function
+    filt: Callable
         Frequency filter (depends on color)
         - f* = f (= white noise)
         - f* = 1/f (= pink noise)
@@ -25,31 +19,91 @@ def color_noise(t, n=1, filt=lambda f: 1):
 
     Returns
     -------
-    color: np.ndarray(n,1)
-        Colored noise 
+    color_generator: func
+        Generates colored noise.
 
     Note: To produce colored noise we generate a white noise signal and fix the frequencies according to the filter.
     """
-    color = np.zeros((n,t))
+    @wraps(filt)
+    def wrapper(t, n=1):
+        """
+        Parameters
+        ----------
+        t: int
+            Number of samples per series.
 
-    for i in range(n):
-        # generate white noise
-        white     = np.random.randn(t)
-        white_fft = np.fft.rfft(white)
+        n: int
+            Number of series.
 
-        # fix the frequency space
-        scale     = filt(np.fft.rfftfreq(t))
-        scale     = scale / np.sqrt(np.mean(scale**2))      # preserve white noise energy
-        color_fft = white_fft * scale
+        Returns
+        -------
+        color: np.ndarray(n,1)
+            Colored noise.
 
-        # inverse Fourier
-        color[i,:] = np.fft.irfft(color_fft)
+        Note: To produce colored noise we generate a white noise signal and fix the frequencies according to the filter.
+        """
+        color = np.zeros((n, t))
+        for i in range(n):
+            # generate white noise
+            white = np.random.randn(t)
+            white_fft = np.fft.rfft(white)
 
-    return color.squeeze()
+            # fix the frequency space (calling the decorated filter)
+            scale = filt(np.fft.rfftfreq(t))
+            scale = scale / np.sqrt(np.mean(scale**2))    # preserve white noise energy
+            color_fft = white_fft * scale
 
-def colored_noise(filt):
-    """Applies noise with given filter"""
-    return lambda t, n=1: color_noise(t, n, filt)
+            # inverse Fourier
+            color[i, :] = np.fft.irfft(color_fft)
+
+        return color.squeeze()
+    return wrapper
+
+# def color_noise(t, n=1, filt=lambda f: 1):
+#     """
+#     Produces colored noise. Inspired from https://stackoverflow.com/questions/67085963/generate-colors-of-noise-in-python
+
+#     Parameters
+#     ----------
+#     t: int
+#         Number of samples per series.
+
+#     n: int
+#         Number of series.
+
+#     filt: function
+#         Frequency filter (depends on color)
+#         - f* = f (= white noise)
+#         - f* = 1/f (= pink noise)
+#         - ...
+
+#     Returns
+#     -------
+#     color: np.ndarray(n,1)
+#         Colored noise 
+
+#     Note: To produce colored noise we generate a white noise signal and fix the frequencies according to the filter.
+#     """
+#     color = np.zeros((n,t))
+
+#     for i in range(n):
+#         # generate white noise
+#         white     = np.random.randn(t)
+#         white_fft = np.fft.rfft(white)
+
+#         # fix the frequency space
+#         scale     = filt(np.fft.rfftfreq(t))
+#         scale     = scale / np.sqrt(np.mean(scale**2))      # preserve white noise energy
+#         color_fft = white_fft * scale
+
+#         # inverse Fourier
+#         color[i,:] = np.fft.irfft(color_fft)
+
+#     return color.squeeze()
+
+#def colored_noise(filt):
+#    """Applies noise with given filter"""
+#    return lambda t, n=1: color_noise(t, n, filt)
 
 @colored_noise
 def white_noise(_):

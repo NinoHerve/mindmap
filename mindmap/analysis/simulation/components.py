@@ -1,9 +1,11 @@
 """
 DOC string
 """
+from pathlib import Path
+import json
 
 import numpy as np
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, save_npz, load_npz
 from scipy.sparse.csgraph import dijkstra
 
 import nibabel as nib
@@ -21,7 +23,40 @@ class Source:
         self.loc = np.array(locations) if not isinstance(locations, np.ndarray) else locations
         self.signal = signal
 
-    def build_source_pattern(self, times, src, parc=None, tkras2ras=None):
+    def save(self, path: str | Path = "source_config.json"):
+        """Saves Source configurations."""
+        loc_data = self.loc.tolist() if isinstance(self.loc, np.ndarray) else self.loc
+        is_index = np.issubdtype(self.loc.dtype, np.integer)
+
+        metadata = {
+            "locations": loc_data,
+            "is_index": bool(is_index),
+            "signal": self.signal.to_dict(),
+        }
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=4)
+    
+    @classmethod
+    def load(cls, path: str | Path):
+        """Reconstructs Source from saved state."""
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Could not find file '{path}'")
+        
+        with open(path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+
+        # Re-verify tracking type format (convert back to appropriate numpy arrays)
+        dtype = int if meta["is_index"] else None
+        locations = np.array(meta["locations"], dtype=dtype)
+
+        # Rebuild the exact nested Signal child
+        signal = Signal.from_dict(meta["signal"])
+
+        return cls(locations=locations, signal=signal)
+
+    def build_source_pattern(self, times, src, parc=None, ras2tkras=None):
         """
         Create a brain activity with activity only at source location.
         """
@@ -29,7 +64,7 @@ class Source:
         waveform = self.signal.generate(times)
 
         # spatial selection logic
-        targets = self.select_targets(src, parc, tkras2ras)
+        targets = self.select_targets(src, parc, ras2tkras)
 
         pattern = np.zeros((targets.shape[0], times.shape[0]))
         pattern[targets, :] = waveform["data"]
@@ -41,7 +76,7 @@ class Source:
         }
 
     # --- finish class with the other stuff ---
-    def select_targets(self, source_space, parc=None, tkras2ras=None):
+    def select_targets(self, source_space, parc=None, ras2tkras=None):
         """
         Retrieves dipole ids belonging to source.
         """
@@ -52,9 +87,9 @@ class Source:
             targets[self.loc] = True
         else:
             assert parc is not None, "Need parcellation to build stimulus because source locations are given as brain regions."
-            assert tkras2ras is not None, "Need tkras2ras transform to align dipoles with T1-space."
+            assert ras2tkras is not None, "Need tkras2ras transform to align dipoles with T1-space."
 
-            dipoles = nib.affines.apply_affine(tkras2ras, dipoles*1000)
+            dipoles = nib.affines.apply_affine(np.linalg.inv(ras2tkras), dipoles*1000)
             labels = parc.label_points(dipoles)
             targets = np.isin(labels, self.loc)
 
@@ -79,10 +114,8 @@ class HeadModel:
         forward: mne.Forward,
         connectivity_weights: np.ndarray,
         connectivity_lengths: np.ndarray,
-        conduction_speed: float = 500,
-        node_delay: float = 0.001,
         parcellation: Parcellation = None,
-        tkras2ras: np.ndarray = None,
+        ras2tkras: np.ndarray = None,
     ):
         """
         Parameters:
@@ -95,13 +128,9 @@ class HeadModel:
             Connectome.
         - connectivity_lengths: np.ndarray
             Connectome with distance in [mm] as weights.
-        - conduction_speed: float
-            Conduction speed in [mm/ms]
-        - node_delay: float
-            Nodal delay in [ms].
         - parcellation: Parcellation (optional)
             Parcellation required if using brain region name as source.
-        - tkras2ras: np.ndarray
+        - ras2tkras: np.ndarray
             FreeSurfer to subject transform to align dipoles in Parcellation's
             space.
         """
@@ -109,32 +138,94 @@ class HeadModel:
         self.fwd = forward
         self.src = forward['src']
         self.parc = parcellation
-        self.tkras2ras = tkras2ras
-
-        # hyper-parameters
-        self.speed = conduction_speed
-        self.node_delay = node_delay
+        self.ras2tkras = ras2tkras
 
         # Store everything as Sparse CSR for memory efficiency
         # We only need the lengths and weights for the simulation
         self._weights = csr_matrix(connectivity_weights)
         self._lengths = csr_matrix(connectivity_lengths)
         self._unweighted = csr_matrix(self._lengths > 0)
+    
+    def save(self, folder: str | Path = "./headmodel", verbose="warning"):
+        """Save C-bound MNE objects and SciPy matrices natively."""
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
 
-        # Pre-calculate the 'delay' graph
-        # Logic: (length / speed) + node_delay (if length > 0)
-        # Use .data to only operate on existing connections
-        self._delays = self._lengths / self.speed
-        self._delays.data += self.node_delay
+        # 1. Save MNE objects using robust formats
+        mne.write_evokeds(folder/"sensors-ave.fif", self.sens, overwrite=True, verbose=verbose)
+        mne.write_forward_solution(folder/"forward-fwd.fif", self.fwd, overwrite=True, verbose=verbose)
 
-    def compute_distance_from_source(self, source_idx, weight="delay"):
+        # 2. Save SciPy CSR matrices using their native efficient formats
+        save_npz(folder/"conn_weights.npz", self._weights)
+        save_npz(folder/"conn_lengths.npz", self._lengths)
+
+        # 3. Save your custom parcellation using your custom save option
+        if self.parc is not None:
+            self.parc.save(folder/"parcellation.nii.gz", folder/"parcellation_lut.txt")
+
+        # 4. Save arrays and structural parameters in a JSON file
+        meta = {
+            "has_parc": self.parc is not None,
+            "ras2tkras": self.ras2tkras.tolist() if self.ras2tkras is not None else None
+        }
+        with open(folder/"headmodel_config.json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=4)
+
+    @classmethod
+    def load(cls, folder: str | Path, verbose="warning"):
+        """Reconstructs the HeadModel components securely back into execution space."""
+        folder = Path(folder)
+        if not folder.exists():
+            raise FileNotFoundError(f"Could not find folder '{folder}'.")
+        
+        # 1. Load basic properties
+        with open(folder/"headmodel_config.json", "r", encoding="utf-8") as f:
+            meta = json.load(f)
+
+        ras2tkras = np.array(meta["ras2tkras"]) if meta["ras2tkras"] is not None else None
+
+        # 2. Load MNE structures safely
+        sensors = mne.read_evokeds(folder/"sensors-ave.fif", verbose=verbose)[0]
+        forward = mne.read_forward_solution(folder/"forward-fwd.fif", verbose=verbose)
+
+        # 3. Load Sparse arrays
+        connectivity_weights = load_npz(folder/"conn_weights.npz")
+        connectivity_lengths = load_npz(folder/"conn_lengths.npz")
+
+        # 4. Load Parcellation
+        parcellation = None
+        if meta["has_parc"]:
+            parcellation = Parcellation(folder/"parcellation.nii.gz", folder/"parcellation_lut.txt")
+
+        return cls(
+            sensors = sensors,
+            forward = forward,
+            connectivity_weights = connectivity_weights,
+            connectivity_lengths = connectivity_lengths,
+            parcellation = parcellation,
+            ras2tkras = ras2tkras,
+        )
+    
+
+    def compute_distance_from_source(self, source_idx, weight="hop"):
         """
         Calculates shortest paths from a source to ALL other nodes using Dijkstra.
+
+        Parameters
+        ----------
+        source_idx: int
+            Source index.
+
+        weight: str ['length', 'hop']
+            Type of weight to consider along the path.
+
+        Returns
+        -------
+        distances: np.ndarray
+            Shortest path between source_idx and all other nodes.
         """
         # Select the correct sparse representation
-        if weight == "delay":
-            graph = self._delays
-        elif weight == "length":
+        if weight == "length":
             graph = self._lengths
         elif weight == "hop":
             graph = self._unweighted
@@ -149,21 +240,60 @@ class HeadModel:
             unweighted=(weight == "hop")
         )
 
-        return distances
+        return distances.squeeze()
     
-    def apply_jitter(self, amount=0.0001):
-        """Adds random jitter to the conduction delays."""
-        self._delays.data += np.random.normal(0, amount, size=self._delays.nnz)
+    def compute_delay_from_source(
+        self,
+        source_idx,
+        conduction_speed: float = 500,
+        nodal_delay: float = 0.1,
+        jitter: float = 0.0,
+    ):
+        """
+        Compute delay with uncertainties.
+        
+        Parameter
+        ---------
+        source_idx: int
+            Source index.
+        
+        - conduction_speed: float
+            Conduction speed in [mm/ms]
 
+        - node_delay: float
+            Nodal delay in [ms].
+
+        jitter: float
+            Uncertainty of delay (standard deviation in [ms]).
+
+        Returns
+        -------
+        delays: np.ndarray
+            Delays from source with added uncertainties.
+        """
+        # edge delay matrix
+        delays = self._lengths / conduction_speed
+        delays.data += nodal_delay
+        
+        # dijkstra returns a (N,) array of distances from the source_idx
+        delays_from_source = dijkstra(
+            csgraph = delays,
+            directed = False,
+            indices = source_idx,
+            unweighted = False,
+        ).squeeze()
+
+        if jitter > 0:
+            delays_from_source += np.random.normal(0, jitter, size=delays_from_source.size)
+
+        return delays_from_source
 
     def __str__(self):
         # Using join for cleaner multi-line strings
         summary = [
             "\033[94mHead model:\033[0m",
             f"- Number of dipoles: {self.fwd['nsource']}",
-            f"- Conduction speed: {self.speed} [mm/s]",
-            f"- Node delay: {self.node_delay} [s]",
             f"- Parcellation: {getattr(self.parc, 'n_regions', None)}",
-            f"- tkras2ras: {self.tkras2ras is not None}"
+            f"- tkras2ras: {self.ras2tkras is not None}"
         ]
         return "\n".join(summary)

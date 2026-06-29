@@ -13,6 +13,7 @@ License: MIT
 """
 
 from pathlib import Path
+import subprocess
 
 import numpy as np
 
@@ -70,17 +71,9 @@ def get_affine(image: ants.ANTsImage):
     """
     Return the image affine from an ANTsImage object. 
     """
-    spacing = image.spacing
-    origin  = image.origin
-    direction = image.direction
+    nib_img = ants_to_nibabel(image)
 
-    affine = np.eye(4)
-    affine[:3, :3] = np.diag(spacing) @ direction
-    affine[:3, 3] = origin
-
-    affine[:2, :] *= -1    # flip y and z axis to be in nibabel convention
-
-    return affine
+    return nib_img.affine
 
 
 def nib_to_polydata(image:nib.Nifti1Image, trans:np.ndarray = np.eye(4)):
@@ -110,4 +103,62 @@ def nib_to_polydata(image:nib.Nifti1Image, trans:np.ndarray = np.eye(4)):
         points = nib.affines.apply_affine(trans, points)/1000
 
     return pv.PolyData(points)
+
+def load_fs_in_native_space(fs_subject_dir, volume_type="brain", cache_dir=None):
+    """
+    Transforms a FreeSurfer conformed volume back to native T1 space
+    and returns it as a nibabel object.
+
+    Parameters
+    ----------
+    fs_subject_dir: str
+        Path to the specific subject's FreeSurfer folder.
+    
+    volume_type: str
+        The name of the file in the mri/ folder without extension.
+
+    cache_dir: str, optional
+        If provided, saves the converted .nii.gz file here to skip conversion next time.
+        If None, uses the mri/ folder as cache_dir.
+    """
+    mri_dir = Path(fs_subject_dir)/"mri"
+    moving_volume = mri_dir/f"{volume_type}.mgz"
+    target_volume = mri_dir/"rawavg.mgz"
+
+    # Sanity checks
+    if not moving_volume.exists():
+        raise FileNotFoundError(f"Requested FreeSurfer volume not found: {moving_volume}")
+    if not target_volume.exists():
+        raise FileNotFoundError(f"Native target space 'rawavg.mgz' not found in {mri_dir}")
+
+    # Setup output paths
+    output_filename = f"{volume_type}_native.nii.gz"
+
+    if cache_dir:
+        cache_dir = Path(cache_dir)
+        cache_dir.mkdir(exist_ok=True)
+        output_path = cache_dir/output_filename
+    else:
+        output_path = mri_dir/output_filename
+
+    # If cached file doesn't exist, compute the transformation
+    if not output_path.exists():
+        print(f"Transforming {volume_type}.mgz to native space...")
+
+        # Construct the FreeSurfer command
+        cmd = [
+            "mri_vol2vol",
+            "--mov", str(moving_volume),
+            "--targ", str(target_volume),
+            "--regheader",
+            "--o", str(output_path),
+        ]
+
+        # Execute command silently
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    # Load into nibabel
+    img = nib.load(output_path)
+
+    return img
 
