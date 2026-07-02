@@ -67,6 +67,12 @@ def main():
         flut = str(fseg).replace(".nii.gz", "_LUT.txt")
         plot_segmentation(ft1, fseg, flut)
 
+    if args.target == "parc":
+        ft1 = dm.get_path(args.subject, "T1w")  # problem if T1w and dseg needs entities ...
+        fseg = dm.get_path(args.subject, "dseg")
+        flut = str(fseg).replace(".nii.gz", "_LUT.txt")
+        plot_segmentation(ft1, fseg, flut)
+
     if args.target == "src":
         src = dm.load(args.subject, "src")
         plot_brain(src, mesh_params={"show_src":True}).show()

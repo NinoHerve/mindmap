@@ -42,7 +42,7 @@ def compute_harmonic_prior(eigvals : np.ndarray, relaxation : float = 1) -> np.n
     weights[-1] = arr2[-1]
 
     # convert to prior weights and store in prior mixing matrix
-    weights[5000:] = weights[5000]  # high harmonics seems to be problematic ...
+    #weights[5000:] = weights[5000]  # high harmonics seems to be problematic ...
     weights = weights**relaxation
 
     return weights
