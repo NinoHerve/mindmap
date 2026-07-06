@@ -184,9 +184,29 @@ class TutoManager(DatasetManager):
         """Gold standard loader."""
 
     def _load_t12diff(self, path):
-        """Load t1 to diffusion space transform."""
-        affine = sp.io.loadmat(str(path))["AffineTransform_double_3_3"].reshape(3, 4, order="F")
-        return np.concatenate((affine, np.array([[0, 0, 0, 1]])))
+        """
+        Load t1 to diffusion space transform.
+
+        ANTs .mat affines store a linear part `A`, a `translation`, and a
+        `fixed` center of rotation the linear part pivots around -- the
+        on-disk transform is `T(x) = A @ (x - center) + center + translation`,
+        not `A @ x + translation`. Folding the pivot in here once gives an
+        ordinary 4x4 matrix, so every downstream use of this affine via
+        `nib.affines.apply_affine` (align_diffusion2subject, etc.) doesn't
+        need to know a pivot was ever involved.
+        """
+        mat = sp.io.loadmat(str(path))
+        raw = mat["AffineTransform_double_3_3"].reshape(3, 4, order="F")
+        linear, translation = raw[:, :3], raw[:, 3]
+        center = mat["fixed"].flatten()
+
+        effective_translation = translation + center - linear @ center
+
+        affine = np.eye(4)
+        affine[:3, :3] = linear
+        affine[:3, 3] = effective_translation
+
+        return affine
 
 
 def load_identity_trans(_):

@@ -54,8 +54,6 @@ def align_diffusion2subject(dwi_points, t12diff):
     new_points: np.ndarray (n,3)
         Points mapped to the T1 ras space in [mm]
     """
-    t12diff[:3, :3] = np.eye(3)     # For some reason only the translaton improves the mapping ??? set the rest to identity
-
     return nib.affines.apply_affine(t12diff, dwi_points)
 
 

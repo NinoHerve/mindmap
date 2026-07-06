@@ -5,6 +5,13 @@ Description: Functions to measure metrics.
 This module provides functions to measure various metrics. Usefull for evaluation, validation,
 or simply testing.
 
+Includes graph/connectome metrics (`density` through `block_conservation` at
+the end of this file) operating on plain adjacency matrices. See
+`mindmap/analysis/connectivity/process.py`'s module docstring for the
+literature and target ranges behind those, and
+`mindmap/analysis/connectivity/metric.py` for mne/nibabel-aware wrappers
+around them.
+
 Author: Nino Herve
 Created: 2025-10-24
 Last Modified: 2025-10-24
@@ -12,11 +19,17 @@ License: MIT
 """
 
 import numpy as np
+import scipy.sparse as sp
 from scipy.stats import rankdata
+from scipy.sparse.csgraph import shortest_path
+from scipy.spatial import cKDTree
+from scipy.spatial.distance import cdist
 from sklearn.metrics import (
     confusion_matrix, accuracy_score, precision_score, recall_score, f1_score,
     roc_curve, precision_recall_curve, auc, average_precision_score,
 )
+
+import bct
 
 def avg_power(signal: np.ndarray) -> np.ndarray:
     """
@@ -715,3 +728,393 @@ def calc_mag(arr1, arr2):
 
     # Calculate MAG
     return norm_arr1 / norm_arr2
+
+
+# -----------------------------------------------------------------------
+# Graph / connectome metrics
+#
+# `small_world_sigma`, `rich_club_curve` and `modularity` operate on the
+# *binarized* graph. Adjacency weights are often lengths/distances rather
+# than connection strengths, and feeding those directly into bctpy's
+# weighted functions (which treat larger weight as "more strongly
+# connected") would silently invert their meaning. A length-to-strength
+# conversion would be needed first; that transform isn't settled, so
+# weighted variants are left out rather than guessed.
+# -----------------------------------------------------------------------
+
+def binarize(adj: np.ndarray) -> np.ndarray:
+    """Binarize a weighted adjacency matrix."""
+    return (adj > 0).astype(int)
+
+
+def _shortest_path_matrix(bin_adj: np.ndarray) -> np.ndarray:
+    """
+    Binary all-pairs shortest-path distance matrix (unreachable pairs =
+    inf), via scipy's BFS rather than bct.distance_bin. bct.distance_bin's
+    repeated-matrix-multiplication approach is >80x slower already at
+    n=2000 nodes and scales worse than cubically, making it infeasible at
+    dipole-level resolution (10^4-10^5 nodes); scipy's BFS is ~O(n^2) and
+    stays usable at that scale.
+    """
+    return shortest_path(sp.csr_matrix(bin_adj), method="D", unweighted=True, directed=False)
+
+
+def density(adj: np.ndarray) -> float:
+    """
+    Edge density: fraction of possible undirected edges that are present.
+
+    Parameters
+    ----------
+    adj: np.ndarray of shape (n, n)
+        Adjacency matrix (weighted or binary, undirected).
+
+    Returns
+    -------
+    density: float
+        Number of present edges over the number of possible edges,
+        n*(n-1)/2.
+    """
+    n = adj.shape[0]
+    if n < 2:
+        return 0.0
+
+    n_edges = np.count_nonzero(np.triu(adj, k=1))
+    n_possible = n * (n - 1) / 2
+
+    return n_edges / n_possible
+
+
+def small_world_sigma(
+        adj: np.ndarray,
+        n_null: int = 20,
+        n_rewire: int = 5,
+        seed: int | None = None,
+) -> dict:
+    """
+    Small-world coefficient sigma = (C / C_null) / (L / L_null).
+
+    Computed on the binarized graph against a degree-preserving
+    randomized null ensemble (bct.randmio_und). sigma > 1 indicates
+    small-world organization: clustering above, and path length close
+    to, a random graph with the same degree sequence. The absolute value
+    of sigma is not comparable across studies/resolutions (reported
+    values in the literature span roughly 1 to several hundred) -- only
+    sigma > 1 should be treated as meaningful here.
+
+    Parameters
+    ----------
+    adj: np.ndarray of shape (n, n)
+        Adjacency matrix (weighted or binary, undirected).
+
+    n_null: int
+        Number of randomized null networks to average over.
+
+    n_rewire: int
+        Rewiring parameter passed to bct.randmio_und (each edge is
+        rewired approximately this many times per null network).
+
+    seed: int, optional
+        Seed for the null-network randomization.
+
+    Returns
+    -------
+    result: dict
+        - sigma: small-world coefficient
+        - C, C_null: mean clustering coefficient (real, null average)
+        - L, L_null: characteristic path length (real, null average)
+    """
+    rng = np.random.default_rng(seed)
+    bin_adj = binarize(adj)
+
+    C = np.mean(bct.clustering_coef_bu(bin_adj))
+    D = _shortest_path_matrix(bin_adj)
+    L = bct.charpath(D, include_infinite=False)[0]
+
+    C_null, L_null = [], []
+    for _ in range(n_null):
+        null_seed = int(rng.integers(0, 2**32 - 1))
+        rewired, _ = bct.randmio_und(bin_adj, n_rewire, seed=null_seed)
+        C_null.append(np.mean(bct.clustering_coef_bu(rewired)))
+        D_null = _shortest_path_matrix(rewired)
+        L_null.append(bct.charpath(D_null, include_infinite=False)[0])
+
+    C_null, L_null = float(np.mean(C_null)), float(np.mean(L_null))
+    sigma = (C / C_null) / (L / L_null)
+
+    return {"sigma": sigma, "C": C, "C_null": C_null, "L": L, "L_null": L_null}
+
+
+def rich_club_curve(
+        adj: np.ndarray,
+        n_null: int = 20,
+        seed: int | None = None,
+) -> dict:
+    """
+    Normalized rich-club coefficient curve, R_norm(k) = R(k) / R_null(k).
+
+    R_norm(k) > 1 over a range of k indicates that high-degree nodes are
+    more densely interconnected than expected by degree alone (rich-club
+    organization), computed on the binarized graph against a
+    degree-preserving randomized null ensemble.
+
+    Parameters
+    ----------
+    adj: np.ndarray of shape (n, n)
+        Adjacency matrix (weighted or binary, undirected).
+
+    n_null: int
+        Number of randomized null networks to average over.
+
+    seed: int, optional
+        Seed for the null-network randomization.
+
+    Returns
+    -------
+    result: dict
+        - k: degree levels, 1..max(degree)
+        - R: rich-club coefficient of the real network at each k
+        - R_null: null-average rich-club coefficient at each k
+        - R_norm: R / R_null
+    """
+    bin_adj = binarize(adj)
+    R, _, _ = bct.rich_club_bu(bin_adj)
+    klevel = len(R)
+
+    rng = np.random.default_rng(seed)
+    R_null = np.full((n_null, klevel), np.nan)
+    for i in range(n_null):
+        null_seed = int(rng.integers(0, 2**32 - 1))
+        rewired, _ = bct.randmio_und(bin_adj, 5, seed=null_seed)
+        R_null[i], _, _ = bct.rich_club_bu(rewired, klevel=klevel)
+
+    R_null_mean = np.nanmean(R_null, axis=0)
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        R_norm = R / R_null_mean
+
+    return {"k": np.arange(1, klevel + 1), "R": R, "R_null": R_null_mean, "R_norm": R_norm}
+
+
+def modularity(adj: np.ndarray, gamma: float = 1.0, seed: int | None = None) -> dict:
+    """
+    Modularity of the binarized graph, via Louvain community detection.
+
+    Uses bct.modularity_louvain_und rather than bct.modularity_und: the
+    latter's spectral partitioning builds a ragged (unequal-size-per-
+    community) Python list internally and hands it to numpy without an
+    explicit dtype, which raises `ValueError: setting an array element
+    with a sequence` under numpy>=2.0 for any partition with differently
+    sized communities -- i.e. almost always. Louvain does not hit this
+    code path and gives an equivalent modularity-maximizing partition.
+
+    Parameters
+    ----------
+    adj: np.ndarray of shape (n, n)
+        Adjacency matrix (weighted or binary, undirected).
+
+    gamma: float
+        Resolution parameter (higher values favor more, smaller
+        communities).
+
+    seed: int, optional
+        Seed for the Louvain heuristic, which is stochastic and can
+        otherwise vary between runs on the same input.
+
+    Returns
+    -------
+    result: dict
+        - q: modularity value
+        - community: community assignment per node
+        - n_communities: number of detected communities
+    """
+    bin_adj = binarize(adj)
+    community, q = bct.modularity_louvain_und(bin_adj, gamma=gamma, seed=seed)
+
+    return {"q": q, "community": community, "n_communities": int(np.unique(community).size)}
+
+
+def distance_decay_fit(adj: np.ndarray, coords: np.ndarray, n_bins: int = 30) -> dict:
+    """
+    Fit the exponential distance rule (EDR): P(connected) ~ c * exp(-lambda * d).
+
+    Distances are binned, the fraction of connected pairs is computed per
+    bin, and log(fraction) is fit linearly against bin distance. This is
+    a check on the *binary* topology only (not weights), since adjacency
+    weights are often lengths rather than a connection strength/
+    probability.
+
+    Parameters
+    ----------
+    adj: np.ndarray of shape (n, n)
+        Adjacency matrix (weighted or binary, undirected).
+
+    coords: np.ndarray of shape (n, 3)
+        Node positions, in the same units used to judge lambda (e.g. [mm]).
+
+    n_bins: int
+        Number of distance bins.
+
+    Returns
+    -------
+    result: dict
+        - lambda_: fitted distance-decay constant
+        - c: fitted proportionality constant
+        - r2: R^2 of the log-linear fit
+        - bin_centers, bin_prob: binned connection probability vs distance
+    """
+    n = adj.shape[0]
+    iu = np.triu_indices(n, k=1)
+
+    d = cdist(coords, coords)[iu]
+    connected = (adj[iu] > 0).astype(float)
+
+    bins = np.linspace(0, d.max(), n_bins + 1)
+    bin_idx = np.clip(np.digitize(d, bins) - 1, 0, n_bins - 1)
+    bin_centers = 0.5 * (bins[:-1] + bins[1:])
+
+    bin_prob = np.full(n_bins, np.nan)
+    for b in range(n_bins):
+        in_bin = bin_idx == b
+        if np.any(in_bin):
+            bin_prob[b] = connected[in_bin].mean()
+
+    valid = np.isfinite(bin_prob) & (bin_prob > 0)
+    if valid.sum() < 2:
+        return {
+            "lambda_": np.nan, "c": np.nan, "r2": np.nan,
+            "bin_centers": bin_centers, "bin_prob": bin_prob,
+        }
+
+    slope, intercept = np.polyfit(bin_centers[valid], np.log(bin_prob[valid]), 1)
+    lambda_, c = -slope, np.exp(intercept)
+
+    pred = c * np.exp(-lambda_ * bin_centers[valid])
+    ss_res = np.sum((bin_prob[valid] - pred) ** 2)
+    ss_tot = np.sum((bin_prob[valid] - bin_prob[valid].mean()) ** 2)
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
+
+    return {
+        "lambda_": lambda_, "c": c, "r2": r2,
+        "bin_centers": bin_centers, "bin_prob": bin_prob,
+    }
+
+
+def hemispheric_symmetry(adj: np.ndarray, coords: np.ndarray, hemi: np.ndarray) -> dict:
+    """
+    Correlation between the degree of homologous nodes across two halves
+    of a bipartitioned graph (e.g. brain hemispheres).
+
+    Homologous pairs are found by mirroring one half across the midline
+    (x=0) and nearest-neighbor matching to the other half in 3D. dMRI
+    tractography is known to underestimate homotopic interhemispheric
+    connections, so this checks structural (degree) symmetry rather than
+    assuming strong direct cross-hemisphere edges.
+
+    Parameters
+    ----------
+    adj: np.ndarray of shape (n, n)
+        Adjacency matrix (weighted or binary, undirected).
+
+    coords: np.ndarray of shape (n, 3)
+        Node positions in a space where the midline is x=0 (e.g.
+        FreeSurfer tkras space), in [mm].
+
+    hemi: np.ndarray of shape (n,)
+        Side label per node (0=left, 1=right).
+
+    Returns
+    -------
+    result: dict
+        - r: Pearson correlation between matched left/right degree
+        - match_dist_mean, match_dist_max: mirror-matching quality [mm]
+          (large values mean the two sides are not close to
+          mirror-symmetric, so the matching -- and thus `r` -- should be
+          interpreted with caution)
+    """
+    coords = np.asarray(coords)
+    hemi = np.asarray(hemi)
+
+    left = np.where(hemi == 0)[0]
+    right = np.where(hemi == 1)[0]
+
+    mirrored_left = coords[left].copy()
+    mirrored_left[:, 0] *= -1
+
+    tree = cKDTree(coords[right])
+    match_dist, nn = tree.query(mirrored_left)
+
+    degree = np.sum(adj > 0, axis=1)
+    r = np.corrcoef(degree[left], degree[right][nn])[0, 1]
+
+    return {"r": r, "match_dist_mean": float(match_dist.mean()), "match_dist_max": float(match_dist.max())}
+
+
+def block_conservation(fine_adj: np.ndarray, block_labels: np.ndarray, coarse_adj: np.ndarray) -> dict:
+    """
+    Checks whether block-averaging a fine-grained (e.g. dipole-level)
+    connectome back down to block (e.g. region) resolution recovers the
+    coarser connectome it was built from. This is a correctness check on
+    an upscaling procedure, not a realism check: a well-behaved upscaling
+    should not introduce a systematic bias relative to its own input.
+
+    For each coarse-connected block pair, the mean of the nonzero
+    fine-grained edges in that block is compared to the coarse value.
+    Zero-valued (unselected) fine-grained pairs are excluded from the
+    block mean, since they reflect a sparsity constraint rather than the
+    calibrated edge weight.
+
+    Parameters
+    ----------
+    fine_adj: np.ndarray of shape (n_fine, n_fine)
+        Fine-grained connectome produced from `coarse_adj`.
+
+    block_labels: np.ndarray of shape (n_fine,)
+        Block (e.g. region) id per fine node, 1-indexed (0 reserved for
+        unlabeled).
+
+    coarse_adj: np.ndarray of shape (n_blocks, n_blocks)
+        Coarse connectome `fine_adj` was upscaled from.
+
+    Returns
+    -------
+    result: dict
+        - r: Pearson correlation between coarse and recovered block means
+        - mae: mean absolute error (recovered - coarse), in coarse units
+        - mean_bias: mean relative error, (recovered - coarse) / coarse
+        - n_pairs: number of coarse-connected block pairs used
+    """
+    n_blocks = coarse_adj.shape[0]
+    block_to_fine = {
+        b: np.where(block_labels == (b + 1))[0]
+        for b in range(n_blocks)
+    }
+
+    recovered = np.full((n_blocks, n_blocks), np.nan)
+    for i in range(n_blocks):
+        idx_i = block_to_fine[i]
+        if len(idx_i) == 0:
+            continue
+
+        for j in range(i, n_blocks):
+            idx_j = block_to_fine[j]
+            if len(idx_j) == 0:
+                continue
+
+            block = fine_adj[np.ix_(idx_i, idx_j)]
+            nonzero = block[block > 0]
+            if nonzero.size > 0:
+                recovered[i, j] = recovered[j, i] = nonzero.mean()
+
+    triu = np.triu(np.ones_like(coarse_adj, dtype=bool), k=1)
+    mask = (coarse_adj > 0) & np.isfinite(recovered) & triu
+    coarse_vals = coarse_adj[mask]
+    recovered_vals = recovered[mask]
+
+    if coarse_vals.size < 2:
+        return {"r": np.nan, "mae": np.nan, "mean_bias": np.nan, "n_pairs": int(coarse_vals.size)}
+
+    r = np.corrcoef(coarse_vals, recovered_vals)[0, 1]
+    mae = np.mean(np.abs(recovered_vals - coarse_vals))
+    mean_bias = np.mean((recovered_vals - coarse_vals) / coarse_vals)
+
+    return {"r": r, "mae": mae, "mean_bias": mean_bias, "n_pairs": int(coarse_vals.size)}

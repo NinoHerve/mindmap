@@ -1,14 +1,90 @@
 """
-Module Name: analysis/connectivity/processing.py
+Module Name: analysis/connectivity/process.py
 Description: Functions to process connectomes.
 
-This module provides functions to handle connectomes such as 
-building them from tractograms.
+This module provides functions to handle connectomes such as
+building them from tractograms or from a coarse structural-connectivity
+atlas (e.g. `connectome_from_atlas`, upscaling a region-level atlas to
+dipole/vertex resolution as a surrogate structural prior for subjects
+without their own diffusion MRI).
 
 Author: Nino Herve
 Created: 2025-10-24
 Last Modified: 2025-10-24
 License: MIT
+
+Background: upscaling a region-level atlas to dipole/vertex resolution
+------------------------------------------------------------------------
+No published, validated method upscales an already-aggregated empirical
+region x region atlas (e.g. the ProbConn / multi-scale structural
+connectivity atlas of Aleman-Gomez et al. 2020, Sci Data 7:296) to
+dipole/vertex resolution (10^3-10^5 nodes). The field's default is to
+build dense connectomes directly from tractography instead. Closest
+precedents and useful building blocks:
+
+- Rue-Queralt, Hagmann, Aleman-Gomez et al. 2024, "Connectome Spectrum
+  Electromagnetic Tomography (CSET)", Hum Brain Mapp 45(5):e26638.
+  Builds ~8000-node vertex-level connectomes from individual DWI; for
+  subjects without dMRI, substitutes a group-consensus vertex-level
+  connectome as a fixed graph-Laplacian prior for M/EEG source
+  reconstruction. Closest precedent to this module's use case (same
+  atlas lineage), though it keeps a separately-built dense connectome
+  rather than upscaling a coarse one.
+- Ercsey-Ravasz et al. 2013, Neuron 80(1):184-197. Exponential distance
+  rule (EDR): connection probability decays ~exp(-lambda*d) with
+  distance. Basis for the `sigma`-controlled stochastic edge sampling
+  in `connectome_from_atlas`.
+- Vertes et al. 2012, PNAS 109(15):5868; Betzel et al. 2016, NeuroImage
+  124:1054. Generative models combining a wiring-cost/distance term
+  with a topological-homophily term to reproduce realistic small-world
+  /modular topology -- a more principled analogue of a distance +
+  atlas-weight rule.
+- Faskowitz et al. 2018, Sci Rep 8:12997. Weighted stochastic block
+  model of the human connectome -- the natural framework for "sample
+  fine edges from region-level statistics", though not applied there
+  to expand an empirical atlas.
+- Cammoun et al. 2012, J Neurosci Methods 203(2):386; Hagmann et al.
+  2008, PLoS Biol 6(7):e159. Origin of the multi-scale Lausanne
+  parcellation scheme (source of the "multiconn2022" scales used
+  here); tops out at ~1000 regions/hemisphere, i.e. the field's
+  practical resolution ceiling before vertex-level extension.
+
+Known tractography biases inherited by any dMRI-derived atlas (relevant
+when treating the atlas as ground truth to replicate at high
+resolution rather than as an imperfect estimate):
+- Gyral bias: streamlines over-terminate at gyral crowns vs sulcal
+  banks (Schilling et al. 2018, PMC5807146; mitigation in Schilling et
+  al. 2019, NeuroImage).
+- Under-detection of long-range/interhemispheric connections, due to
+  superficial U-fiber systems and crossing-fiber ambiguity (Reveley et
+  al. 2015, PNAS 112:E2820).
+
+Target statistics for validating an upscaled/surrogate connectome (see
+`mindmap.viz.graph` for degree/weight-distribution plots, and
+`mindmap.core.metric` / `analysis/connectivity/metric.py` for the
+small-world, rich-club, modularity, EDR-fit, hemispheric-symmetry and
+block-conservation implementations):
+- Density: ~10-20% is the typical benchmark at Lausanne scale (~1000
+  regions; Hagmann et al. 2008); expected to decrease at finer
+  resolution, but no established vertex-level target exists.
+- Weight/degree distribution: lognormal weights with exponential
+  distance-decay fit better than a power law/scale-free model (Shastin
+  et al. 2021, eNeuro 8(1); arXiv:2407.17220).
+- Small-worldness: sigma = (C/Cr)/(L/Lr) > 1 against a degree-preserving
+  null; absolute sigma is not comparable across studies/scales.
+- Rich-club: known hubs (precuneus, superior frontal/parietal cortex,
+  hippocampus, putamen, thalamus at Lausanne scale) should be more
+  interconnected than a degree-matched null (van den Heuvel & Sporns
+  2011, J Neurosci 31:15775).
+- Modularity: ~4 modules (bilateral anterior/posterior) is the typical
+  qualitative signature at this scale.
+- Hemispheric symmetry: left/right connectivity-profile correlation;
+  dMRI is known to underestimate homotopic interhemispheric
+  connections, so a surrogate should not be tuned to reproduce that
+  bias faithfully.
+- Block conservation: block-averaging the upscaled connectome back down
+  to region resolution should approximately reproduce the original
+  atlas matrix.
 """
 
 from collections import defaultdict
@@ -23,6 +99,8 @@ from mindmap.anatomy.parcellation.base import Parcellation
 from mindmap.anatomy.tractogram.processing import tract_endpoints, tract_lengths
 from mindmap.anatomy.utils import align_diffusion2subject
 from mindmap.anatomy.source_space.io import get_ndipole, get_dipole_positions
+from mindmap.analysis.connectivity.utils import get_transformed_dipoles, get_dipole_region_labels
+from mindmap.core.process import normalize_data
 
 
 def connectome_from_tracts(
@@ -268,5 +346,206 @@ def connectome_from_geometry(
         return (geometry > 0).astype(int)
 
     return geometry
+
+
+def connectome_from_atlas(
+        source_space    : mne.SourceSpaces,
+        parcellation    : Parcellation,
+        atlas_matrix    : np.ndarray,
+        ras2tkras       : np.ndarray,
+        sparsity        : float = 0.2,
+        strength_matrix : np.ndarray = None,
+        sparsity_range  : tuple[float, float] = None,
+        deterministic   : bool = True,
+        sigma           : float = 50.0,
+        ) -> np.ndarray:
+    """
+    Builds a source-space distance connectome from a coarse region-level
+    atlas, using boundary proximity mapping to upscale it to dipole
+    resolution. See this module's docstring for the literature and
+    known limitations behind this approach (in particular:
+    `deterministic=True` concentrates edges at the mutually closest
+    boundary dipoles).
+
+    Parameters
+    ----------
+    source_space: mne.SourceSpaces
+        Source space.
+
+    parcellation: Parcellation
+        Parcellation related to atlas.
+
+    atlas_matrix: np.ndarray of shape (m, m)
+        Macro connetcome matrix where entries are average fiber lengths.
+
+    ras2tkras: np.ndarray of shape (4,4)
+        Affine transform matrix from FreeSurfer to subject RAS.
+
+    sparsity: float
+        Value between 0.0 and 1.0 dictating the portion of connections to
+        keep per region pair. Used as-is when `strength_matrix` is None;
+        otherwise only used for atlas-connected region pairs that end up
+        with 0 valid entries in `strength_matrix` (e.g. NaNs).
+
+    strength_matrix: np.ndarray of shape (m, m), optional
+        Per-region-pair connection strength/confidence (e.g. the atlas's
+        consistency matrix -- percentage of subjects with this tract).
+        When given (together with `sparsity_range`), the sparsity used
+        for each atlas-connected region pair is modulated by the
+        percentile rank of its strength among all atlas-connected pairs,
+        instead of a single value uniform across pairs -- so a
+        near-universal, high-confidence tract gets a denser dipole-level
+        fan-out than one that only just cleared the atlas's own
+        thresholding. Percentile rank (not raw min-max scaling) is used
+        so that a couple of outlier pairs don't compress the rest of the
+        distribution.
+
+    sparsity_range: tuple[float, float], optional
+        (sparsity_min, sparsity_max) used when `strength_matrix` is
+        given: the weakest atlas-connected pair gets sparsity_min, the
+        strongest gets sparsity_max. Required if `strength_matrix` is set.
+
+    deterministic: bool, otpional (default=True)
+        If True, connects the absolute closest dipoles.
+        If False, uses a distance-weigthed random lottery to spread out connections.
+
+    sigma: float, optional (defautl=50.0)
+        The spatial decay constant (in mm) used only when deterministic=False.
+        Smaller values force tighter clustering; larger values allow more widespread randomness.
+
+    Returns
+    -------
+    source_connectome: np.ndarray of shape (n_dipoles, n_dipoles)
+        High-resolution distance matrix for the source space.
+    """
+    # 1. Label dipoles according to atlas brain regions
+    transformed_dipoles = get_transformed_dipoles(source_space, ras2tkras)
+    dipole_labels = get_dipole_region_labels(source_space, parcellation, ras2tkras)
+    n_dipoles = transformed_dipoles.shape[0]
+
+    # 2. Initialize the high-resolution connectome matrix
+    source_connectome = np.zeros((n_dipoles, n_dipoles))
+
+    # pre-group dipole indices by their region ID to avoid searching inside the loop
+    num_regions = atlas_matrix.shape[0]
+    global_indices = np.arange(n_dipoles)
+    region_to_dipoles = {
+        r: global_indices[dipole_labels == (r + 1)]
+        for r in range(num_regions)
+    }
+
+    # modulate per-pair sparsity by atlas connection strength, if given
+    if strength_matrix is not None:
+        if sparsity_range is None:
+            raise ValueError("sparsity_range=(low, high) must be given when strength_matrix is used.")
+
+        low, high = sparsity_range
+        sparsity_matrix = np.full(atlas_matrix.shape, sparsity, dtype=float)
+
+        # rank over unique region pairs only (upper triangle): atlas_matrix is
+        # symmetric, so `atlas_matrix > 0` would otherwise count each pair
+        # twice and skew the percentile rank.
+        triu_i, triu_j = np.triu_indices(num_regions, k=1)
+        connected = atlas_matrix[triu_i, triu_j] > 0
+
+        if np.any(connected):
+            rows, cols = triu_i[connected], triu_j[connected]
+            rank = normalize_data(strength_matrix[rows, cols], strategy="global", method="rank")
+            pair_sparsity = low + (high - low) * rank
+            sparsity_matrix[rows, cols] = pair_sparsity
+            sparsity_matrix[cols, rows] = pair_sparsity
+    else:
+        sparsity_matrix = None
+
+    # Iterate through unique macro-region pairs
+    for i in range(num_regions):
+        idx_i = region_to_dipoles[i]
+        if len(idx_i) == 0:
+            continue
+
+        for j in range(i+1, num_regions):
+            idx_j = region_to_dipoles[j]
+            if len(idx_j) == 0:
+                continue
+
+            # check if an actual white matter tract exists in the atlas
+            W_ij = atlas_matrix[i, j]
+            if W_ij == 0:
+                continue
+
+            # extract 3D coordinates for dipoles in both regions
+            coords_i = transformed_dipoles[idx_i]
+            coords_j = transformed_dipoles[idx_j]
+
+            # 3. Compute pairwise 3D euclidean distances
+            dist_3d_matrix = sp.spatial.distance.cdist(coords_i, coords_j, metric="euclidean")
+
+            # find closest boundary distance between these two subsets
+            min_3d_dist = np.min(dist_3d_matrix)
+
+            # calibrate distances based on the Atlas average tract length
+            tract_dist_matrix = dist_3d_matrix - min_3d_dist + W_ij
+
+            # 4. Apply sparsity constraint (strength-modulated if sparsity_matrix is set)
+            pair_sparsity = sparsity_matrix[i, j] if sparsity_matrix is not None else sparsity
+            total_possible_edges = len(idx_i) * len(idx_j)
+            k_keep = max(1, int(np.round(total_possible_edges * pair_sparsity)))
+
+            flat_tract_distances = tract_dist_matrix.ravel()
+            keep_mask_flat = np.zeros(total_possible_edges, dtype=bool)
+
+            # --- METHOD A: Purely Deterministic (Closest Neighbor) ---
+            if deterministic:
+                if k_keep < total_possible_edges:
+                    threshold_val = np.partition(flat_tract_distances, k_keep - 1)[k_keep - 1]
+                    keep_mask_flat = flat_tract_distances <= threshold_val
+
+                    # exact tie-breaker to guarantee exactly k_keep indices
+                    if np.sum(keep_mask_flat) > k_keep:
+                        true_indices = np.where(keep_mask_flat)[0]
+                        keep_mask_flat[true_indices[k_keep:]] = False
+                else:
+                    keep_mask_flat = np.ones(total_possible_edges, dtype=bool)
+
+            # --- METHOD B: Stochastic (Distance-Weighted Lottery) ---
+            else:
+                if k_keep < total_possible_edges:
+                    # Map distances to weights using exponential decay
+                    # subtracting min ensures numerical stability (prevents underflow).
+                    weights = np.exp(-(flat_tract_distances - np.min(flat_tract_distances)) / sigma)
+
+                    # Normalize weights into a true probability distribution summing to 1
+                    probabilities = weights / np.sum(weights)
+
+                    # sample k_keep unique edge indices without replacement
+                    chosen_indices = np.random.choice(
+                        total_possible_edges,
+                        size = k_keep,
+                        replace = False,
+                        p = probabilities,
+                    )
+                    keep_mask_flat[chosen_indices] = True
+                else:
+                    keep_mask_flat = np.ones(total_possible_edges, dtype=bool)
+
+            # Reshape the flat mask to the 2D sub-matrix shape
+            keep_mask = keep_mask_flat.reshape(tract_dist_matrix.shape)
+
+            # 5. Map back to global source connectome coordinates
+            # Get the local row/column positions where mask is True
+            row_indices, col_indices = np.where(keep_mask)
+
+            # Translate local sub-matrix indices back to global source-space indices
+            global_row = idx_i[row_indices]
+            global_col = idx_j[col_indices]
+
+            # Get the distances for those chosen pairs
+            final_distances = tract_dist_matrix[keep_mask]
+
+            # Symmetrically assign to the master matrix
+            source_connectome[global_row, global_col] = final_distances
+            source_connectome[global_col, global_row] = final_distances
+
+    return source_connectome
 
 

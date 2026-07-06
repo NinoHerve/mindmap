@@ -60,6 +60,15 @@ def get_ndipole(source_space: mne.SourceSpaces) -> int:
     return sum(src["nuse"] for src in source_space)
 
 
+def get_hemi_labels(source_space: mne.SourceSpaces) -> np.ndarray:
+    """
+    Get hemisphere label (0=left, 1=right) for each dipole, in the same
+    concatenation order as `get_dipole_positions`.
+    """
+    labels = [np.full(src["nuse"], hemi) for hemi, src in enumerate(source_space)]
+    return np.concatenate(labels, axis=0)
+
+
 
 
 def mne_to_polydata(

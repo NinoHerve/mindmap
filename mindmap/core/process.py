@@ -10,6 +10,7 @@ License: MIT
 
 import numpy as np
 from scipy.ndimage import shift
+from scipy.stats import rankdata
 
 from mindmap.core.metric import compute_correlation
 
@@ -27,11 +28,13 @@ def normalize_data(data, strategy="global", method="zscore"):
         'global': Normalize using the max/mean of the entire matrix.
         'spatial': Normalize each timepoint (column) independently.
         'temporal': Normalize each channel (row) independently.
-    
+
     method: str
         'max': scale by absolute maximum (range [-1, 1]). Preserves zero-baseline.
         'minmax': scale to range [0, 1]. Best for strictly positive data.
         'zscore': (x - mean) / std. Center at 0 with unit variance.
+        'rank': percentile rank, scaled to range [0, 1]. Robust to outliers/skew,
+        since it only uses the ordering of values, not their magnitude.
 
     Returns
     -------
@@ -67,6 +70,12 @@ def normalize_data(data, strategy="global", method="zscore"):
         q75, q25 = np.percentile(data, [75, 25], axis, keepdims=True)
         iqr = q75 - q25
         return np.divide(data - median, iqr, out=np.zeros_like(data), where=iqr > 1e-12)
+
+    elif method == "rank":
+        # percentile rank in [0, 1], ranking over the flattened array when axis is None
+        ranks = rankdata(data, axis=axis, method="average")
+        n = data.shape[axis] if axis is not None else data.size
+        return (ranks - 1) / max(n - 1, 1)
 
     else:
         raise ValueError(f"Unknown normalization method: {method}")

@@ -7,6 +7,7 @@ from .io import (
     get_dipole_positions,
     get_ndipole,
     get_geodist,
+    get_hemi_labels,
 )
 
 from .process import (
@@ -22,6 +23,7 @@ __all__ = [
     "get_dipole_positions",
     "get_ndipole",
     "get_geodist",
+    "get_hemi_labels",
     "filter_dipoles_by_id_list",
     "filter_dipoles_by_nifti_mask",
 ]

@@ -1,11 +1,15 @@
 """
-Command lines to generate plots for given subjects.
+Command lines to generate plots of mindmap generated objects for given subjects.
 """
 
 import argparse
+import numpy as np
+
 from mindmap.io.dataset import DatasetManager
 from mindmap.core import get_spike_extent_mask, get_spurious_mask
 from mindmap.analysis.functional.eeg import get_ch_positions, normalize_evoked
+from mindmap.cli.resolve import resolve_bundle, resolve_path, parse_entity_flags
+from mindmap.cli.viz_specs import TARGET_SPECS
 from mindmap.viz import (
     plot_brain, plot_source_estimate, plot_alignment, plot_leadfield,
     plot_eigvec, plot_ieeg, plot_bem, plot_con_summary, plot_eigval,
@@ -24,7 +28,7 @@ def main():
     parser = argparse.ArgumentParser(prog="mindmap-viz")
     parser.add_argument(
         "target",
-        choices = ["charm", "src", "bem", "align", "leadfield", "ave", "iave", "stc", "con", "eigvec", "eigval", "iave-pos", "vave"],
+        choices = ["charm", "parc", "src", "bem", "align", "leadfield", "ave", "iave", "stc", "con", "eigvec", "eigval", "iave-pos", "vave"],
         help    = "What to visualize",
     )
     parser.add_argument(
@@ -38,19 +42,18 @@ def main():
         help     = "Subject ID",
     )
     parser.add_argument(
-        "--desc",
-        required = False,
-        default  = None,
-        help     = "BIDS description identifier"
-    )
-    parser.add_argument(
-        "--task",
-        required = False,
-        default  = None,
-        help     = "BIDS task identifier."
+        "--entity", "-e",
+        action   = "append",
+        default  = [],
+        metavar  = "SUFFIX:KEY=VALUE",
+        help     = "Pin a BIDS entity on a specific object to skip asking for it, e.g. "
+                    "-e i-ave:task=spk -e con:desc=geom. Repeatable, including several times "
+                    "for the same suffix. Anything left ambiguous after these filters is "
+                    "resolved interactively, entity by entity."
     )
 
     args = parser.parse_args()
+    cli_entities = parse_entity_flags(args.entity)
 
     # --------------
     # Configuration
@@ -58,81 +61,80 @@ def main():
 
     dm = DatasetManager(args.config)
 
+    # ----------------------------
+    # Resolve the objects needed
+    # ----------------------------
+
+    bundle = {}
+    if args.target in TARGET_SPECS:
+        bundle = resolve_bundle(dm, args.subject, TARGET_SPECS[args.target], cli_entities)
+
     # -----
     # Plot
     # -----
     if args.target == "charm":
-        ft1 = dm.get_path(args.subject, "T1w")
-        fseg = dm.get_path(args.subject, "seg")
+        ft1 = resolve_path(dm, args.subject, "t1-charm", cli_entities.get("t1-charm", {}))
+        fseg = resolve_path(dm, args.subject, "seg", cli_entities.get("seg", {}))
         flut = str(fseg).replace(".nii.gz", "_LUT.txt")
         plot_segmentation(ft1, fseg, flut)
 
-    if args.target == "parc":
-        ft1 = dm.get_path(args.subject, "T1w")  # problem if T1w and dseg needs entities ...
-        fseg = dm.get_path(args.subject, "dseg")
-        flut = str(fseg).replace(".nii.gz", "_LUT.txt")
+    elif args.target == "parc":
+        ft1 = resolve_path(dm, args.subject, "t1.mgz", cli_entities.get("t1.mgz", {}))
+        fseg = resolve_path(dm, args.subject, "dseg", cli_entities.get("dseg", {}))
+        flut = str(fseg).replace(".nii.gz", ".txt")  # dseg's LUT sidecar convention (see _load_parc)
         plot_segmentation(ft1, fseg, flut)
 
-    if args.target == "src":
-        src = dm.load(args.subject, "src")
-        plot_brain(src, mesh_params={"show_src":True}).show()
+    elif args.target == "src":
+        plot_brain(bundle["src"], mesh_params={"show_src":True}).show()
 
     elif args.target == "bem":
         plot_bem(dm.config["DIR_FS"], args.subject)
 
     elif args.target == "align":
-        bem = dm.load(args.subject, "bem")
-        ave = dm.load(args.subject, "ave", task=args.task)
-        plot_alignment(bem, ave).show()
+        plot_alignment(bundle["bem"], bundle["ave"]).show()
 
     elif args.target == "leadfield":
-        fwd = dm.load(args.subject, "fwd")
-        ave = dm.load(args.subject, "ave", task=args.task)
-        plot_leadfield(ave, fwd).show()
+        plot_leadfield(bundle["ave"], bundle["fwd"]).show()
 
     elif args.target == "ave":
-        ave = dm.load(args.subject, "ave", task=args.task)
-        ave.plot()
+        bundle["ave"].plot()
 
     elif args.target == "iave":
-        iave = dm.load(args.subject, "i-ave", task=args.task)
-        iave.plot()
+        bundle["i-ave"].plot()
 
     elif args.target == "iave-pos":
-        iave = dm.load(args.subject, "i-ave", task = args.task)
-        src  = dm.load(args.subject, "src")
+        iave = bundle["i-ave"]
+        src  = bundle["src"]
 
         extent_mask = get_spike_extent_mask(iave.data.T, perc_max_amp=0.7)
         spurious_mask = get_spurious_mask(extent_mask, get_ch_positions(iave), spurious_dist=0.01)
-        import numpy as np
         iave.data = np.abs(iave.data)
         plot_ieeg(src, iave, subject=args.subject, extent_mask=extent_mask, spurious_mask=spurious_mask).show()
 
     elif args.target == "vave":
-        iave = dm.load(args.subject, "i-ave", task = args.task)
-        vave = dm.load(args.subject, "v-ave", task = args.task, desc = args.desc)
+        iave  = bundle["i-ave"]
+        vaves = bundle["v-ave"]  # {desc: v-ave object}, one or many
 
         iave = normalize_evoked(iave, "global", "zscore")
-        vave = normalize_evoked(vave, "global", "zscore")
+        vaves = {desc: normalize_evoked(vave, "global", "zscore") for desc, vave in vaves.items()}
 
         extent_mask = get_spike_extent_mask(iave.data.T, perc_max_amp=0.7)
         spurious_mask = get_spurious_mask(extent_mask, get_ch_positions(iave), spurious_dist=0.01)
-        plot_channel_grid(iave, {args.desc:vave}, extent_mask=extent_mask, spurious_mask=spurious_mask)
+        plot_channel_grid(iave, vaves, extent_mask=extent_mask, spurious_mask=spurious_mask)
 
     elif args.target == "stc":
-        stc = dm.load(args.subject, "stc", task=args.task, desc=args.desc)
-        fwd = dm.load(args.subject, "fwd")
-        plot_source_estimate(fwd["src"], stc, title=f"sub-{args.subject}: {args.desc}", ts_params={"absolute":True}).show()
+        stc = bundle["stc"]
+        fwd = bundle["fwd"]
+        desc_label = cli_entities.get("stc", {}).get("desc", "")
+        plot_source_estimate(fwd["src"], stc, title=f"sub-{args.subject}: {desc_label}", ts_params={"absolute":True}).show()
 
     elif args.target == "con":
-        con = dm.load(args.subject, "con", desc=args.desc)
-        plot_con_summary(con, args.subject)
+        plot_con_summary(bundle["con"], args.subject)
 
     elif args.target == "eigvec":
-        eig = dm.load(args.subject, "eig", desc = args.desc)
-        src = dm.load(args.subject, "fwd", desc="sim")["src"]
+        eig = bundle["eig"]
+        src = bundle["fwd"]["src"]
         plot_eigvec(src, eig["vec"], eig["val"]).show()
 
     elif args.target == "eigval":
-        eig = dm.load(args.subject, "eig", desc = args.desc)
-        plot_eigval(eig["val"], args.subject)
+        plot_eigval(bundle["eig"]["val"], args.subject)

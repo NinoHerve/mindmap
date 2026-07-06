@@ -156,8 +156,9 @@ def build_charm_path(
     sub_dir = Path(root) / f"sub-{sub_id}" / f"m2m_sub-{subject}"
 
     CHARM_MAP = {
-        "seg" : ("segmentation", "labeling.nii.gz"),
-        "lut" : ("segmentation", "labeling_LUT.txt"),
+        "seg"      : ("segmentation", "labeling.nii.gz"),
+        "lut"      : ("segmentation", "labeling_LUT.txt"),
+        "t1-charm" : ("", "T1.nii.gz"),
     }
 
     if datatype not in CHARM_MAP:

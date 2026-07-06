@@ -10,6 +10,7 @@ Last Modified: 2025-10-27
 License: MIT
 """
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,62 @@ from mindmap.viz.core import (
     metric_bar, metric_box, metric_heatmap, metric_violin, metric_relational
 )
 from mindmap.viz.dispatch import plot_brain_activity
+
+
+def _is_arraylike(val):
+    """Whether val should be treated as a per-point coordinate rather than a scalar tag."""
+    return isinstance(val, (list, tuple, np.ndarray, pd.Series))
+
+
+def _json_safe(val):
+    """Converts numpy/pandas scalars into plain JSON-serializable Python types."""
+    if isinstance(val, np.generic):
+        return val.item()
+    if isinstance(val, (np.bool_, bool)):
+        return bool(val)
+    return val
+
+
+def _entry_to_frame(entry, group_name):
+    """
+    Materializes a single registered entry into a long-format DataFrame slice.
+
+    entry["value"] is an array of shape (n_points,) for a single curve, or
+    (n_reps, n_points) for a stack of repeated observations (e.g. one curve
+    per simulation run) sharing the same point-wise coordinates.
+    """
+    value = np.atleast_1d(np.asarray(entry["value"]))
+    label, metric, coords = entry["label"], entry["metric"], entry["coords"]
+
+    base = {group_name: label, "Metric": metric}
+
+    if value.ndim == 1:
+        data = {**base, "Value": value}
+        for name, coord in coords.items():
+            data[name] = coord
+        return pd.DataFrame(data)
+
+    if value.ndim != 2:
+        raise ValueError(
+            f"Registered values must be 1D or 2D (got shape {value.shape} for "
+            f"label='{label}', metric='{metric}')."
+        )
+
+    # (n_reps, n_points): tile point-wise coordinates across reps, broadcast scalar
+    # coordinates as-is, and tag each row with its repetition index so that repeated
+    # curves (e.g. one per simulation run) stay distinguishable for CI estimation.
+    n_reps, n_points = value.shape
+    data = {**base, "Value": value.ravel(), "rep": np.repeat(np.arange(n_reps), n_points)}
+
+    for name, coord in coords.items():
+        coord_arr = np.asarray(coord) if _is_arraylike(coord) else None
+        if coord_arr is not None and coord_arr.shape[0] == n_points:
+            data[name] = np.tile(coord_arr, n_reps)
+        else:
+            data[name] = coord
+
+    return pd.DataFrame(data)
+
 
 class MetricSuite:
     """Manages metrics from a same study."""
@@ -39,7 +96,7 @@ class MetricSuite:
             - 'ave':mne.Evoked
         """
         self.name = name
-        self._data = []
+        self._entries = []
         self.group_name = group_name
         self.context = context or {}
         self._validate_context()
@@ -74,31 +131,42 @@ class MetricSuite:
                 )
 
     def register(self, label, metric, values, **coords):
-        """Adds results. 'values' can be a single number or a list/array."""
-        if not isinstance(values, (list, tuple, np.ndarray, pd.Series,)):
-            values = [values]
+        """
+        Adds a metric's results to the study.
 
-        n_obs = len(values)
+        'values' can be a scalar, a 1D array of shape (n_points,) for a single
+        curve/observation, or a 2D array of shape (n_reps, n_points) for a
+        stack of repeated observations (e.g. one curve per simulation run)
+        sharing the same point-wise coordinates. Coordinates whose length
+        matches the last axis of 'values' are treated as point-wise (e.g.
+        'times', 'recall'); anything else (scalar, or length-mismatched) is
+        kept as a constant tag broadcast to every row.
 
-        for i, val in enumerate(values):
-            entry = {
-                self.group_name: label,
-                "Metric": metric,
-                "Value": val,
-            }
+        Data is kept as arrays and only expanded into a long-format table
+        lazily, when `.dataframe`/`.plot()`/etc. are accessed - this keeps
+        registering large stacks (e.g. thousands of per-run curves) cheap.
+        """
+        value = np.asarray(values) if _is_arraylike(values) else np.asarray([values])
 
-            for c_name, c_val in coords.items():
-                if isinstance(c_val, (list, tuple, np.ndarray, pd.Series)):
-                    if not len(c_val) == n_obs:
-                        raise ValueError(
-                            "Coordinate lengths must be of the same length as the new metric."
-                            f"Instead, coordinate '{c_name}' has length {len(c_val)}."
-                        )
-                    entry[c_name] = c_val[i] if not isinstance(c_val, pd.Series) else c_val.iloc[i]
-                else:
-                    entry[c_name] = c_val
+        n_points = value.shape[-1]
+        for name, val in coords.items():
+            if _is_arraylike(val) and len(val) != n_points:
+                raise ValueError(
+                    "Coordinate lengths must match the last axis of 'values'."
+                    f"Instead, coordinate '{name}' has length {len(val)} for {n_points} points."
+                )
 
-            self._data.append(entry)
+        stored_coords = {
+            name: (np.asarray(val) if _is_arraylike(val) else val)
+            for name, val in coords.items()
+        }
+
+        self._entries.append({
+            "label": label,
+            "metric": metric,
+            "value": value,
+            "coords": stored_coords,
+        })
 
         return self
 
@@ -107,10 +175,37 @@ class MetricSuite:
         result = func(*args, **kwargs)
         return self.register(method_name, metric_name, result)
 
+    def reduce(self, func=np.mean):
+        """
+        Collapses every stacked (n_reps, n_points) entry (e.g. one curve per
+        simulation run) along the reps axis via `func`, leaving single curves
+        untouched. Returns a new, lightweight MetricSuite.
+
+        Materializing the full table for a study with thousands of raw per-run
+        curves and letting seaborn aggregate it (via `.plot()`) is correct but
+        slow (tens of seconds). Reducing first is a vectorized O(n) numpy op,
+        so `suite.reduce().plot(...)` is the fast path for a mean/summary
+        curve; keep using the un-reduced suite's `.plot()` when you actually
+        want per-run resolution (e.g. a bootstrapped CI band).
+
+        Parameters
+        ----------
+        func: callable(array, axis=0) -> array
+            Reduction applied along the reps axis, e.g. np.mean, np.median.
+        """
+        reduced = MetricSuite(name=self.name, group_name=self.group_name, context=self.context)
+        for e in self._entries:
+            value = func(e["value"], axis=0) if e["value"].ndim == 2 else e["value"]
+            reduced.register(e["label"], e["metric"], value, **e["coords"])
+        return reduced
+
     @property
     def dataframe(self):
-        """Dataframe property."""
-        return pd.DataFrame(self._data)
+        """Dataframe property. Materializes the long-format table on demand."""
+        if not self._entries:
+            return pd.DataFrame()
+        frames = [_entry_to_frame(e, self.group_name) for e in self._entries]
+        return pd.concat(frames, ignore_index=True)
 
     def get_filtered_df(self, metrics=None, labels=None):
         """Filter data"""
@@ -133,19 +228,44 @@ class MetricSuite:
 
     def save(self, folder: str | Path):
         """
-        Saves the MetricSuite to a CSV file.
-        Embeds object metadata safely as commented headers at the top.
+        Saves the MetricSuite to disk as a compact array store (data.npz) plus
+        a small metadata file (meta.json). Keeping arrays as arrays (rather
+        than exploding everything into a long-format CSV) is what makes this
+        cheap even for studies with thousands of registered per-run curves.
         """
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
 
-        # 1. Save metadata & metrics dataframe
-        csv_path = folder/"metrics.csv"
-        with open(folder, "w", encoding="utf-8") as f:
-            f.write(f"# metric_suite_name: {self.name}\n")
-            f.write(f"# metric_suite_group_name: {self.group_name}\n")
-        self.dataframe.to_csv(csv_path, mode="a", index=False, header=True)
-        
+        # 1. Save raw arrays + per-entry metadata
+        arrays = {}
+        entries_meta = []
+        for i, e in enumerate(self._entries):
+            arrays[f"entry{i}__value"] = e["value"]
+
+            scalar_coords = {}
+            array_coord_names = []
+            for c_name, c_val in e["coords"].items():
+                if isinstance(c_val, np.ndarray):
+                    arrays[f"entry{i}__coord__{c_name}"] = c_val
+                    array_coord_names.append(c_name)
+                else:
+                    scalar_coords[c_name] = _json_safe(c_val)
+
+            entries_meta.append({
+                "label": e["label"],
+                "metric": e["metric"],
+                "scalar_coords": scalar_coords,
+                "array_coord_names": array_coord_names,
+            })
+
+        np.savez(folder/"data.npz", **arrays)
+
+        with open(folder/"meta.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {"name": self.name, "group_name": self.group_name, "entries": entries_meta},
+                f, indent=2,
+            )
+
         # 2. Save MNE Context Objects if they exist
         if "ave" in self.context and self.context["ave"] is not None:
             ave_path = folder/"context-ave.fif"
@@ -156,42 +276,24 @@ class MetricSuite:
             mne.write_source_spaces(src_path, self.context["src"], overwrite=True, verbose="warning")
 
         print(f"MetricSuite and context successfully saved to folder: {folder}")
-    
+
     @staticmethod
     def load(folder: str | Path):
         """
-        Loads a MetricSuite from a custom CSV file, parsing out the embedded metadata headers.
+        Loads a MetricSuite from a folder written by `save()` (data.npz + meta.json).
         """
         folder = Path(folder)
         if not folder.exists():
             raise FileNotFoundError(f"Could not find folder '{folder}'.")
-        
-        csv_path = folder/"metrics.csv"
-        if not csv_path.exists():
-            raise FileNotFoundError(f"Could not find file '{csv_path.name}' inside metric folder.")
 
-        name = "Evaluation"
-        group_name = "Label"
+        meta_path = folder/"meta.json"
+        if not meta_path.exists():
+            raise FileNotFoundError(f"Could not find file '{meta_path.name}' inside metric folder.")
 
-        # 1. Parse the metadata headers from the top of the file
-        with open(csv_path, "r", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith("# ").strip():
-                    # Clean up the comment and split key/value
-                    clean_line = line.lstrip("# ").strip()
-                    if ":" in clean_line:
-                        key, val = clean_line.split(":", 1)
-                        key, val = key.strip(), val.strip()
-                        if key == "metric_suite_name":
-                            name = val
-                        elif key == "metric_suite_group_name":
-                            group_name = val
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
 
-                else:
-                    # Stop reading once we hit actual data rows
-                    break
-
-        # 2. Re-load MNE context components if files exist
+        # 1. Re-load MNE context components if files exist
         context = {}
 
         ave_path = folder/"context-ave.fif"
@@ -201,13 +303,19 @@ class MetricSuite:
         src_path = folder/"context-src.fif"
         if src_path.exists():
             context["src"] = mne.read_source_spaces(src_path, verbose=False)
-        
-        # 3. Reconstruct the base MetricSuite object
-        suite = MetricSuite(name=name, group_name=group_name, context=context)
 
-        # 3. Populate DaraFrame data
-        df = pd.read_csv(csv_path, comment="#")
-        suite._data = df.to_dict(orient="records")
+        # 2. Reconstruct the base MetricSuite object
+        suite = MetricSuite(name=meta["name"], group_name=meta["group_name"], context=context)
+
+        # 3. Repopulate entries from the array store
+        data_path = folder/"data.npz"
+        with np.load(data_path) as data:
+            for i, entry_meta in enumerate(meta["entries"]):
+                value = data[f"entry{i}__value"]
+                coords = dict(entry_meta["scalar_coords"])
+                for c_name in entry_meta["array_coord_names"]:
+                    coords[c_name] = data[f"entry{i}__coord__{c_name}"]
+                suite.register(entry_meta["label"], entry_meta["metric"], value, **coords)
 
         return suite
 

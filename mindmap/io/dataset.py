@@ -126,6 +126,7 @@ class DatasetManager:
 
         # add Charm registry
         self.add_datatype("seg", "charm", build_charm_path, self._load_seg)
+        self.add_datatype("t1-charm", "charm", build_charm_path, read_mri)
 
         # ------------------------------------------------
         # Build extension registry

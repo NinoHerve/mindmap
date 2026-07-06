@@ -17,11 +17,18 @@ import nibabel as nib
 from ...anatomy.utils import align_diffusion2subject
 
 def tract_endpoints(tracts: nib.streamlines.TrkFile) -> list[list, list]:
-    """Get endpoints of every tract as (x,y,z) coordinates."""
-    voxel_size = tracts.header["voxel_sizes"].reshape(1,-1)
+    """
+    Get endpoints of every tract as (x,y,z) coordinates, in [mm] (diffusion
+    RAS space), matching what `align_diffusion2subject` expects downstream.
 
-    endpoints1 = np.array([stream[0] for stream in tracts.streamlines]) / voxel_size
-    endpoints2 = np.array([stream[-1] for stream in tracts.streamlines]) / voxel_size
+    `tracts.streamlines` are already in [mm] (nibabel loads .trk streamlines
+    in RAS mm by default) -- do not divide by voxel size here. That used to
+    happen, which silently converted to voxel-index-like units; it was a
+    no-op for any 1mm-isotropic acquisition (dividing by 1), but would
+    silently corrupt endpoint alignment for any other voxel size.
+    """
+    endpoints1 = np.array([stream[0] for stream in tracts.streamlines])
+    endpoints2 = np.array([stream[-1] for stream in tracts.streamlines])
 
     return endpoints1, endpoints2
 
