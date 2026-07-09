@@ -95,6 +95,7 @@ class TimeMesh(BaseBrainPlotter):
             if titles and i < len(titles):
                 self.plotter.add_title(titles[i], font_size=10)
 
+            checkbox_row = 0
             for mesh in group:
                 # Assign parameters based on mesh type
                 params = getattr(mesh, "plot_kwargs", {})
@@ -103,7 +104,16 @@ class TimeMesh(BaseBrainPlotter):
                     self.plotter.add_mesh(mesh.hemi_r, scalars=mesh.scalar_name, **params)
 
                 elif isinstance(mesh, (ChannelMesh, OverlayMesh)):
-                    self.plotter.add_mesh(mesh.polydata, scalars=mesh.scalar_name, **params)
+                    actor = self.plotter.add_mesh(mesh.polydata, scalars=mesh.scalar_name, **params)
+                    if getattr(mesh, "toggle", False):
+                        # `position` is scoped to the active subplot's viewport, not the
+                        # window - verified empirically, so no per-subplot x offset is needed.
+                        self.plotter.add_checkbox_button_widget(
+                            actor.SetVisibility, value=True,
+                            position=(10, 10 + 40 * checkbox_row), size=25,
+                            color_on=params.get("color", "grey"),
+                        )
+                        checkbox_row += 1
 
         if self.max_states > 1:
             self.add_slider(label="Time [s]", rng=[self.times[0], self.times[-1]])

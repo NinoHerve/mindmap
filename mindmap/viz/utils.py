@@ -463,9 +463,10 @@ class ChannelMesh(BaseMesh):
 
 class OverlayMesh(BaseMesh):
     """Class to manage 3D overlayers."""
-    def __init__(self, polydata, scalar_name="overlay", **kwargs):
+    def __init__(self, polydata, scalar_name="overlay", toggle=False, **kwargs):
         super().__init__(times=[0], functional=np.zeros((polydata.n_points, 1)), scalar_name=scalar_name)
         self.polydata = polydata
+        self.toggle = toggle  # show a checkbox to hide/show this overlay (see TimeMesh)
 
         # Default aesthetics for overlays
         self.plot_kwargs = {

@@ -40,7 +40,7 @@ def plot_brain_activity(
     functionals : np.ndarray | mne.SourceEstimate | list[mne.SourceEstimate | np.ndarray] = None,
     sensors: mne.Evoked | list[mne.Evoked] = None,
     overlay : np.ndarray | nib.Nifti1Image | list[np.ndarray | nib.Nifti1Image] = None,
-    tkras2ras : np.ndarray | list[np.ndarray] = None,
+    ras2tkras : np.ndarray | list[np.ndarray] = None,
     title : str | list[str] = "",
     mesh_params : dict = None,
     func_params : dict = None,
@@ -61,8 +61,8 @@ def plot_brain_activity(
     overlay: np.ndarray (M,3) | nib.Nifti1Image
         Overlay defined as point cloud.
 
-    tkras2ras: np.ndarray
-        Affine transform (freesurfer ras -> T1 ras). Necessary to align MRI images with meshes.
+    ras2tkras: np.ndarray
+        Affine transform (T1 ras -> freesurfer ras). Necessary to align MRI images with meshes.
 
     mesh_params: dict
         key : value
@@ -86,8 +86,8 @@ def plot_brain_activity(
     # Normalize inputs
     # ------------------
 
-    source_space, functionals, sensors, overlay, tkras2ras, title = store_in_lists(
-        source_space, functionals, sensors, overlay, tkras2ras, title,
+    source_space, functionals, sensors, overlay, ras2tkras, title = store_in_lists(
+        source_space, functionals, sensors, overlay, ras2tkras, title,
     )
 
     mesh_params = mesh_params or {}
@@ -174,12 +174,12 @@ def plot_brain_activity(
         if overlay[i] is not None:
             over = overlay[i]
             if isinstance(over, nib.Nifti1Image):
-                poly = nib_to_polydata(over, trans=tkras2ras[i])
+                poly = nib_to_polydata(over, trans=ras2tkras[i])
             else:
                 poly = pv.PolyData(over)
 
             om = OverlayMesh(
-                overlay = poly,
+                polydata = poly,
                 scalar_name = "overlay",
                 **overlay_params,
             )

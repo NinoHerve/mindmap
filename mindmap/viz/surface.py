@@ -59,8 +59,8 @@ def plot_brain(
     overlay: np.ndarray (M,3) | nib.Nifti1Image
         Overlay defined as point cloud.
 
-    tkras2ras: np.ndarray
-        Affine transform (freesurfer ras -> T1 ras). Necessary to align MRI images with meshes.
+    ras2tkras: np.ndarray
+        Affine transform (T1 ras -> freesurfer ras). Necessary to align MRI images with meshes.
 
     brain_params: dict
         key : value
@@ -206,7 +206,7 @@ def plot_source_estimate(
     source_space   : mne.SourceSpaces | list[mne.SourceSpaces],
     timeseries     : mne.SourceEstimate | list[mne.SourceEstimate] = None,
     overlay        : np.ndarray | nib.Nifti1Image | list[np.ndarray] | list[nib.Nifti1Image] = None,
-    tkras2ras      : np.ndarray | list[np.ndarray] = None,
+    ras2tkras      : np.ndarray | list[np.ndarray] = None,
     title          : str | list[str] = "",
     mesh_params    : dict = None,
     ts_params      : dict = None,
@@ -226,8 +226,8 @@ def plot_source_estimate(
     overlay: np.ndarray (M,3) | nib.Nifti1Image
         Overlay defined as point cloud.
 
-    tkras2ras: np.ndarray
-        Affine transform (freesurfer ras -> T1 ras). Necessary to align MRI images with meshes.
+    ras2tkras: np.ndarray
+        Affine transform (T1 ras -> freesurfer ras). Necessary to align MRI images with meshes.
 
     mesh_params: dict
         key : value
@@ -251,8 +251,8 @@ def plot_source_estimate(
     # Normalize inputs
     # -----------------------
 
-    source_space, timeseries, overlay, tkras2ras, title = store_in_lists(
-        source_space, timeseries, overlay, tkras2ras, title,
+    source_space, timeseries, overlay, ras2tkras, title = store_in_lists(
+        source_space, timeseries, overlay, ras2tkras, title,
     )
 
     mesh_params    = mesh_params or {}
@@ -289,7 +289,7 @@ def plot_source_estimate(
 
     for i, over in enumerate(overlay):
         if isinstance(over, nib.Nifti1Image):
-            overlay[i] = nib_to_polydata(over, trans=tkras2ras[i])
+            overlay[i] = nib_to_polydata(over, trans=ras2tkras[i])
 
     overlay_params = {
         "color"      : "green",

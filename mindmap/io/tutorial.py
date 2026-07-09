@@ -22,6 +22,7 @@ import nibabel as nib
 
 from mindmap.analysis.functional.eeg.utils import scale_montage
 from mindmap.anatomy.parcellation.base import Parcellation
+from mindmap.anatomy.mri import read_mri
 from .dataset import DatasetManager
 
 
@@ -49,6 +50,8 @@ class TutoManager(DatasetManager):
         self.add_datatype("gold", "sim", self._build_path, mne.read_source_estimate)
         self.add_datatype("tractogram", "cmp", self._build_path, nib.streamlines.load)
         self.add_datatype("t12diff", "cmp", self._build_path, self._load_t12diff)
+        self.add_datatype("resec", "mm", self._build_path, read_mri)
+        self.add_datatype("t1w", "raw", self._build_path, lambda f: read_mri(f, mri_dtype="ants"))
 
     def load_ref(self, ref_key):
         # Make thalamic atlas exception.
@@ -122,6 +125,37 @@ class TutoManager(DatasetManager):
             else:
                 raise ValueError(f"No 'gold' standard for sub-{subject}.")
             
+        if suffix == "resec":
+            if "spike" in subject:
+                # manage bids entities
+                desc = kwargs.get("desc")
+                desc = f"_desc-{desc}" if desc else ""
+
+                resec_dir = root/f"sub-{subject}"/"anat"
+                return resec_dir/f"sub-{subject}{desc}_seg.nii.gz"
+
+            else:
+                raise ValueError(f"No 'resec' for sub-{subject}.")
+
+        if suffix == "t1w":
+            # Non-BIDS-conform pre-/post-op T1w files (e.g. sub-spike11) - bypass
+            # BIDS entity resolution and build the path directly.
+            session = kwargs.get("session")
+            if not session:
+                raise ValueError("suffix 't1w' requires a 'session' entity (e.g. 'preop'/'postop').")
+
+            res = kwargs.get("res")
+            res = f"_res-{res}" if res else ""
+
+            space = kwargs.get("space")
+            space = f"_space-{space}" if space else ""
+
+            desc = kwargs.get("desc")
+            desc = f"_desc-{desc}" if desc else ""
+
+            t1w_dir = root/f"sub-{subject}"/f"ses-{session}"/"anat"
+            return t1w_dir/f"sub-{subject}_ses-{session}{res}{space}{desc}_T1w.nii.gz"
+
         if suffix == "eeg-trans":
             return Path(".")
         
