@@ -35,7 +35,7 @@ TARGET_SPECS = {
         ObjectSpec(suffix="v-ave", multi=True),
     ],
     "stc": [
-        ObjectSpec(suffix="stc"),
+        ObjectSpec(suffix="stc", multi=True),
         ObjectSpec(suffix="fwd"),
     ],
     "con": [

@@ -3,9 +3,16 @@ This module performs unit tests for the analysis/connectivity/process.py module.
 """
 
 import numpy as np
+import scipy.sparse as sp
 import pytest
 
-from mindmap.analysis.connectivity.process import connectome_from_atlas
+from mindmap.analysis.connectivity.process import connectome_from_atlas, connectome_from_tracts
+
+
+class FakeTracts:
+    """Minimal stand-in for a loaded tractogram: just needs `.streamlines`."""
+    def __init__(self, streamlines):
+        self.streamlines = streamlines
 
 
 class FakeParcellation:
@@ -189,3 +196,130 @@ def test_connectome_from_atlas_strength_modulated_sparsity(three_region_source_s
     assert np.count_nonzero(ab_block) == 1   # weak -> low sparsity -> k_keep=1
     assert np.count_nonzero(ac_block) == 4   # strong -> high sparsity -> all kept
     assert np.all(bc_block == 0)             # atlas-unconnected pair untouched
+
+
+@pytest.fixture
+def four_dipole_source_space():
+    """
+    4 dipoles along the x-axis at 0, 2, 10, 12mm, all in one fake hemisphere.
+    `dist` (cortical-surface geodesic distance, needed by the `lengths=False`
+    Gaussian-smoothing path) is just the along-axis distance here, in
+    [m] -- matching real mne source spaces, since `_geodesic_gaussian_kernel`
+    converts to [mm] via `* 1000` (same convention as `connectome_from_geometry`).
+    """
+    positions_mm = np.array([[0, 0, 0], [2, 0, 0], [10, 0, 0], [12, 0, 0]], dtype=float)
+    positions_m = positions_mm / 1000.0
+    x_m = positions_m[:, 0]
+    dist = sp.csr_matrix(np.abs(x_m[:, None] - x_m[None, :]))
+
+    return [
+        {"rr": positions_m, "vertno": np.arange(4), "nuse": 4, "dist": dist},
+        {"rr": np.zeros((0, 3)), "vertno": np.array([], dtype=int), "nuse": 0,
+         "dist": sp.csr_matrix((0, 0))},
+    ]
+
+
+def test_connectome_from_tracts_requires_radius_for_source_space(four_dipole_source_space):
+    """A source space without a radius is ambiguous and should raise."""
+    tracts = FakeTracts([np.array([[0.5, 0, 0], [10.5, 0, 0]])])
+    with pytest.raises(AssertionError):
+        connectome_from_tracts(tracts, four_dipole_source_space, np.eye(4), ras2tkras=np.eye(4))
+
+
+def test_connectome_from_tracts_connects_by_nearest_neighbor_and_smooths(four_dipole_source_space):
+    """
+    `lengths=False` snaps each endpoint to its single nearest dipole (0 and
+    2, both within radius=3) rather than fanning out to every dipole in
+    reach (that fan-out is only for `lengths=True`, see
+    `test_connectome_from_tracts_length_is_plain_average`), then spreads
+    that raw nearest-neighbor connection to geometric neighbors via a
+    Gaussian smoothing kernel (Mansour et al. 2021).
+    """
+    tracts = FakeTracts([np.array([[0.5, 0, 0], [10.5, 0, 0]])])
+
+    con = connectome_from_tracts(
+        tracts, four_dipole_source_space, np.eye(4), ras2tkras=np.eye(4), radius=3.0,
+    )
+
+    assert con.shape == (4, 4)
+    assert np.allclose(con, con.T)
+    assert np.all(np.diagonal(con) == 0)
+
+    # smoothing only ever moves mass along the (0,2) connection this
+    # streamline actually contributed -- it never bridges within a side
+    assert con[0, 1] == 0
+    assert con[2, 3] == 0
+
+    # the directly-snapped pair keeps the most weight; the two "one hop
+    # away" pairs match exactly, by this fixture's symmetric geometry
+    assert con[0, 2] > con[0, 3] > 0
+    assert con[0, 2] > con[1, 3] > 0
+    assert con[0, 3] == pytest.approx(con[1, 2])
+
+    # total streamline mass is conserved by the kernel (rows sum to 1). The
+    # raw (pre-smoothing) connectome stores this one streamline's edge
+    # symmetrically (con[0,2]=con[2,0]=1, i.e. 2 units of raw mass), and
+    # summing the final symmetric result again counts each undirected edge
+    # from both sides, for a total of 2*2=4
+    assert con.sum() == pytest.approx(4.0)
+
+
+def test_connectome_from_tracts_drops_orphaned_streamlines(four_dipole_source_space):
+    """A streamline with no dipole within radius of an endpoint contributes nothing."""
+    tracts = FakeTracts([np.array([[0.5, 0, 0], [10.5, 0, 0]])])
+
+    con = connectome_from_tracts(
+        tracts, four_dipole_source_space, np.eye(4), ras2tkras=np.eye(4), radius=0.3,
+    )
+
+    assert np.all(con == 0)
+
+
+def test_connectome_from_tracts_length_is_plain_average():
+    """
+    Two streamlines share the (A,D) edge. Even though they have different
+    fan-out sizes at their start (streamline 1 reaches 2 dipoles, streamline
+    2 reaches 3), the reported length at (A,D) is the plain mean of their
+    two lengths -- a streamline's length is a property of that streamline,
+    not a mass, so it isn't down-weighted just because its own endpoint had
+    more candidate dipoles in reach. (C,D), only supported by streamline 2,
+    keeps exactly streamline 2's own length.
+    """
+    # A, B, C close together (start-side candidates), D far away (end-side, always alone)
+    positions_mm = np.array([
+        [0, 0, 0],      # A
+        [1, 0, 0],      # B
+        [2, 0, 0],      # C
+        [100, 0, 0],    # D
+    ], dtype=float)
+    source_space = [
+        {"rr": positions_mm / 1000.0, "vertno": np.arange(4), "nuse": 4},
+        {"rr": np.zeros((0, 3)), "vertno": np.array([], dtype=int), "nuse": 0},
+    ]
+    radius = 1.5
+
+    # streamline 1: start at x=0.4 -> reaches A (0.4mm), B (0.6mm), not C (1.6mm > radius)
+    stream1 = np.array([[0.4, 0, 0], [99.0, 0, 0]])
+    # streamline 2: start at x=1.0 -> reaches A (1.0mm), B (0mm), C (1.0mm), all <= radius
+    stream2 = np.array([[1.0, 0, 0], [100.5, 0, 0]])
+
+    tracts = FakeTracts([stream1, stream2])
+    len1 = np.linalg.norm(stream1[1] - stream1[0])
+    len2 = np.linalg.norm(stream2[1] - stream2[0])
+
+    con = connectome_from_tracts(
+        tracts, source_space, np.eye(4), ras2tkras=np.eye(4), radius=radius, lengths=True,
+    )
+
+    A, C, D = 0, 2, 3
+
+    expected_AD = np.mean([len1, len2])   # plain mean, not weighted by fan-out size
+    expected_CD = len2                    # only stream2 supports C
+
+    assert con[A, D] == pytest.approx(expected_AD)
+    assert con[C, D] == pytest.approx(expected_CD)
+
+    w1 = 1.0 / (2 * 1)
+    w2 = 1.0 / (3 * 1)
+    fanout_weighted = (w1 * len1 + w2 * len2) / (w1 + w2)
+    assert expected_AD != pytest.approx(fanout_weighted)   # not the old fan-out-weighted average

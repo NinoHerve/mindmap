@@ -98,8 +98,9 @@ import mne
 from mindmap.anatomy.parcellation.base import Parcellation
 from mindmap.anatomy.tractogram.processing import tract_endpoints, tract_lengths
 from mindmap.anatomy.utils import align_diffusion2subject
-from mindmap.anatomy.source_space.io import get_ndipole, get_dipole_positions
+from mindmap.anatomy.source_space.io import get_dipole_positions
 from mindmap.analysis.connectivity.utils import get_transformed_dipoles, get_dipole_region_labels
+from mindmap.analysis.connectivity.smooth import gaussian_kernel, smooth_connectome
 from mindmap.core.process import normalize_data
 
 
@@ -109,6 +110,9 @@ def connectome_from_tracts(
         t12diff   : np.ndarray,
         ras2tkras : np.ndarray = None,
         lengths   : bool = False,
+        radius    : float = None,
+        fwhm      : float = None,
+        epsilon   : float = 0.01,
         ) -> np.ndarray:
     """
     Compute a connectome from tracts.
@@ -123,14 +127,39 @@ def connectome_from_tracts(
 
     t12diff: np.ndarray (4,4)
         Individual space to diffusion MRI space affine transformation.
-    
+
     ras2tkras: np.ndarray (4,4)
         FreeSurfer conform space to individual space affine transform (required when using
         source space only).
 
     length: bool
-        Whether to weigth according to lengths (length is True) or number of fibers (length 
-        is False).
+        Whether to weigth according to lengths (length is True) or number of fibers (length
+        is False). At source-space resolution, these two use different
+        constructions (see `_connect_by_radius` and `_connect_by_smoothing`):
+        length is not a mass to conserve like a streamline count is, so it
+        is not treated like one.
+
+    radius: float
+        Required when `regions` is a source space. Maximum distance in [mm]
+        at which a streamline endpoint connects to a dipole. When
+        `lengths=True`, every dipole within this radius of an endpoint
+        connects (soft assignment, matching the positional uncertainty of
+        a streamline endpoint); when `lengths=False`, only the single
+        nearest dipole within this radius does (streamlines with no dipole
+        in reach are dropped either way). Not used when `regions` is a
+        Parcellation.
+
+    fwhm: float
+        Only used when `lengths=False` and `regions` is a source space:
+        full width at half maximum, in [mm], of the Gaussian kernel used to
+        smooth the raw nearest-dipole streamline-count connectome, following
+        Mansour et al. (2021, NeuroImage, Supplementary S.2.1). Defaults to
+        `radius` if not given.
+
+    epsilon: float
+        Only used when `lengths=False` and `regions` is a source space:
+        truncation parameter for the Gaussian smoothing kernel, see
+        `mindmap.analysis.connectivity.smooth.gaussian_kernel`.
 
     Returns
     -------
@@ -146,46 +175,52 @@ def connectome_from_tracts(
     if isinstance(regions, Parcellation):
         start_labels, end_labels = _label_by_region(starts, ends, regions)
         n = regions.n_regions
-    else:
-        assert ras2tkras is not None, "tkras2ras is required when using source spaces in order to map dipole positions to the T1-ras space."
-        start_labels, end_labels = _label_by_dipole(starts, ends, regions, ras2tkras)
-        n = get_ndipole(regions)
 
-    # build connectivity matrix
-    sc = np.zeros((n, n))
+        # build connectivity matrix
+        sc = np.zeros((n, n))
 
-    # if lengths is True apply fiber lengths as weights
+        # if lengths is True apply fiber lengths as weights
+        if lengths:
+            lengths_arr = tract_lengths(tracts)
+            sc_dict = defaultdict(list)     # dict to accumulate weights for each pairs
+
+            for start, end, weight in zip(start_labels, end_labels, lengths_arr):
+                # skip self-loops
+                if start == end:
+                    continue
+
+                # ensure directed pairs are treated the same
+                key = tuple(sorted((start, end)))
+                sc_dict[key].append(weight)
+
+            # apply average lengths as weight
+            for (start, end), weights in sc_dict.items():
+                avg_weight = np.mean(weights)
+                sc[start, end] = avg_weight
+                sc[end, start] = avg_weight
+
+        else:
+            for start, end in zip(start_labels, end_labels):
+                # skip self loops
+                if start == end:
+                    continue
+
+                # apply number of tracts as weights
+                # ensure undirectedness
+                sc[start, end] += 1
+                sc[end, start] += 1
+
+        return sc
+
+    # source-space (dipole-level)
+    assert ras2tkras is not None, "ras2tkras is required when using source spaces in order to map dipole positions to the T1-ras space."
+    assert radius is not None, "radius is required when using source spaces, to define how far a streamline endpoint may reach to connect to dipoles."
+
     if lengths:
-        lengths = tract_lengths(tracts)
-        sc_dict = defaultdict(list)     # dict to accumulate weights for each pairs
+        lengths_arr = tract_lengths(tracts)
+        return _connect_by_radius(starts, ends, regions, ras2tkras, radius, lengths_arr)
 
-        for start, end, weight in zip(start_labels, end_labels, lengths):
-            # skip self-loops
-            if start == end:
-                continue
-
-            # ensure directed pairs are treated the same
-            key = tuple(sorted((start, end)))
-            sc_dict[key].append(weight)
-
-        # apply average lengths as weight
-        for (start, end), weights in sc_dict.items():
-            avg_weight = np.mean(weights)
-            sc[start, end] = avg_weight
-            sc[end, start] = avg_weight
-
-    else:
-        for start, end in zip(start_labels, end_labels):
-            # skip self loops
-            if start == end:
-                continue
-
-            # apply number of tracts as weights
-            # ensure undirectedness
-            sc[start, end] += 1
-            sc[end, start] += 1
-
-    return sc
+    return _connect_by_smoothing(starts, ends, regions, ras2tkras, radius, fwhm or radius, epsilon)
 
 
 def _label_by_region(
@@ -200,7 +235,7 @@ def _label_by_region(
     ----------
     starts: np.ndarray (n,3)
         Starting points of tracts. In T1-ras space in [mm].
-    
+
     ends: np.ndarray (n,3)
         Ending points of tracts. In T1-ras space in [mm].
 
@@ -220,43 +255,211 @@ def _label_by_region(
 
     return start_labels, end_labels
 
-def _label_by_dipole(
+
+def _connect_by_radius(
         starts       : np.ndarray,
         ends         : np.ndarray,
         source_space : mne.SourceSpaces,
         ras2tkras    : np.ndarray,
-        ) -> tuple[list, list]:
+        radius       : float,
+        lengths      : np.ndarray,
+        ) -> np.ndarray:
     """
-    Label start and end points by closest dipole.
+    Build a dipole-level length connectome by connecting each streamline
+    endpoint to every dipole within `radius`, instead of snapping to a
+    single nearest dipole -- matching the true positional uncertainty of a
+    streamline endpoint rather than an arbitrary nearest-neighbor snap.
+
+    Each edge's weight is the plain (unweighted) mean of the raw lengths of
+    the streamlines that connect it. This is deliberately not a mass-
+    weighted average: a streamline's length is a property of that
+    streamline, not a mass to conserve, so it should not shrink just
+    because its endpoint happened to have more candidate dipoles within
+    reach than another streamline's. (Streamline count, in
+    `_connect_by_smoothing`, is a mass, and is treated accordingly.)
 
     Parameters
     ----------
-    starts: np.ndarray (n,3)
-        Starting points of tracts. In T1-ras space in [mm].
-    
-    ends: np.ndarray (n,3)
-        Ending points of tracts. In T1-ras space in [mm].
+    starts, ends: np.ndarray of shape (n, 3)
+        Streamline endpoints, in T1-ras space in [mm].
 
     source_space: mne.SourceSpaces
         Source space. Contains dipole positions in freesurfer space (tkras) in [m].
 
-    tkras2ras: np.ndarray (4,4)
-        Affine transformation (freesurfer space in [mm] -> T1-ras space in [mm])
+    ras2tkras: np.ndarray of shape (4,4)
+        Affine transform matrix from FreeSurfer to subject RAS.
+
+    radius: float
+        Maximum distance in [mm] at which a streamline endpoint connects to a dipole.
+
+    lengths: np.ndarray of shape (n,)
+        Per-streamline lengths.
 
     Returns
     -------
-    start_labels, end_labels: (np.ndarray (n,3), np.ndarray (n,3))
-        Associated dipole id for each endpoint.
+    sc: np.ndarray of shape (n_dipoles, n_dipoles)
+        Dipole-level length connectome. Streamlines with no dipole within
+        `radius` of one of their endpoints are dropped (contribute nothing).
     """
-    dipoles = get_dipole_positions(source_space) * 1000     # switch from [m] to [m]
-    dipoles = nib.affines.apply_affine(np.linalg.inv(ras2tkras), dipoles)
+    dipoles = get_transformed_dipoles(source_space, ras2tkras)
+    n_dipoles = dipoles.shape[0]
 
-    # find closest dipole using nearest neighbor
-    kd_tree         = sp.spatial.cKDTree(dipoles)
-    _, start_labels = kd_tree.query(starts)
-    _, end_labels   = kd_tree.query(ends)
+    tree = sp.spatial.cKDTree(dipoles)
+    start_neighbors = tree.query_ball_point(starts, radius)
+    end_neighbors = tree.query_ball_point(ends, radius)
 
-    return start_labels, end_labels
+    rows, cols, length_vals = [], [], []
+
+    for c, (si, ei) in enumerate(zip(start_neighbors, end_neighbors)):
+        if len(si) == 0 or len(ei) == 0:
+            continue    # streamline has no dipole in reach of one endpoint; drop it
+
+        si = np.asarray(si)
+        ei = np.asarray(ei)
+
+        ii, jj = np.meshgrid(si, ei, indexing="ij")
+        ii, jj = ii.ravel(), jj.ravel()
+
+        # this streamline's full (unweighted) length, assigned to every
+        # candidate edge it could plausibly support
+        lv = np.full(ii.shape, lengths[c])
+
+        # symmetric accumulation (undirected graph)
+        rows.append(ii); cols.append(jj); length_vals.append(lv)
+        rows.append(jj); cols.append(ii); length_vals.append(lv)
+
+    if not rows:
+        return np.zeros((n_dipoles, n_dipoles))
+
+    rows = np.concatenate(rows)
+    cols = np.concatenate(cols)
+    length_vals = np.concatenate(length_vals)
+
+    # coo_matrix sums duplicate (row, col) entries on conversion, which is
+    # exactly the accumulation this needs across streamlines/endpoint pairs;
+    # dividing the summed lengths by the summed count of contributors gives
+    # a plain mean
+    total_length = sp.sparse.coo_matrix((length_vals, (rows, cols)), shape=(n_dipoles, n_dipoles)).toarray()
+    n_contrib = sp.sparse.coo_matrix((np.ones_like(length_vals), (rows, cols)), shape=(n_dipoles, n_dipoles)).toarray()
+
+    sc = np.divide(total_length, n_contrib, out=np.zeros_like(total_length), where=n_contrib > 0)
+    np.fill_diagonal(sc, 0)
+
+    return sc
+
+
+def _connect_by_smoothing(
+        starts       : np.ndarray,
+        ends         : np.ndarray,
+        source_space : mne.SourceSpaces,
+        ras2tkras    : np.ndarray,
+        radius       : float,
+        fwhm         : float,
+        epsilon      : float,
+        ) -> np.ndarray:
+    """
+    Build a dipole-level streamline-count connectome following Mansour et
+    al. (2021, NeuroImage, Supplementary S.2.1): each streamline endpoint is
+    first snapped to its single nearest dipole (the streamline is dropped
+    if either endpoint has none within `radius`), giving a raw,
+    high-resolution streamline-count connectome; that raw connectome is
+    then smoothed with a Gaussian kernel over cortical-surface geodesic
+    distance (`fwhm`), spreading each edge's count to neighboring dipoles
+    so that sparse dipole-level sampling doesn't understate connectivity.
+    Total streamline mass is conserved by construction (`smooth_connectome`
+    spreads existing mass across neighbors; it does not create any).
+
+    This is deliberately a different construction from `_connect_by_radius`
+    (used when `lengths=True`): a streamline count is a mass, so spreading
+    it via a kernel and reconstituting the connectome from smoothed
+    incidence matrices is the right model; a length is not a mass, and is
+    instead handled with a plain mean over contributing streamlines.
+
+    Parameters
+    ----------
+    starts, ends: np.ndarray of shape (n, 3)
+        Streamline endpoints, in T1-ras space in [mm].
+
+    source_space: mne.SourceSpaces
+        Source space. Contains dipole positions in freesurfer space (tkras)
+        in [m], and per-hemisphere cortical-surface geodesic distances used
+        to build the smoothing kernel.
+
+    ras2tkras: np.ndarray of shape (4,4)
+        Affine transform matrix from FreeSurfer to subject RAS.
+
+    radius: float
+        Maximum distance in [mm] between a streamline endpoint and its
+        nearest dipole, for the streamline to be kept.
+
+    fwhm: float
+        Full width at half maximum, in [mm], of the Gaussian smoothing kernel.
+
+    epsilon: float
+        Smoothing-kernel truncation parameter, see
+        `mindmap.analysis.connectivity.smooth.gaussian_kernel`.
+
+    Returns
+    -------
+    sc: np.ndarray of shape (n_dipoles, n_dipoles)
+        Smoothed dipole-level streamline-count connectome.
+    """
+    dipoles = get_transformed_dipoles(source_space, ras2tkras)
+    n_dipoles = dipoles.shape[0]
+
+    tree = sp.spatial.cKDTree(dipoles)
+    start_dist, start_nn = tree.query(starts)
+    end_dist, end_nn = tree.query(ends)
+
+    # keep streamlines with a dipole in reach of both endpoints, dropping
+    # self-loops (both endpoints snapping to the same dipole) up front so
+    # they don't contaminate the smoothing step below
+    keep = (start_dist <= radius) & (end_dist <= radius) & (start_nn != end_nn)
+    start_nn, end_nn = start_nn[keep], end_nn[keep]
+
+    if start_nn.size == 0:
+        return np.zeros((n_dipoles, n_dipoles))
+
+    # canonicalize edge direction (store each pair once, as lo->hi) before
+    # counting, since a streamline's start/end is an arbitrary tracking
+    # artifact, not a meaningful direction: two streamlines between the same
+    # two dipoles traced in opposite directions must add up to a count of 2,
+    # not populate raw[i,j] and raw[j,i] separately as if they were
+    # different edges. Symmetrize afterwards -- `smooth_connectome` expects
+    # a symmetric connectome, like every other connectome in this module.
+    lo = np.minimum(start_nn, end_nn)
+    hi = np.maximum(start_nn, end_nn)
+    raw = sp.sparse.coo_matrix((np.ones(lo.size), (lo, hi)), shape=(n_dipoles, n_dipoles)).toarray()
+    raw = raw + raw.T
+
+    kernel = _geodesic_gaussian_kernel(source_space, fwhm, epsilon)
+
+    return smooth_connectome(raw, kernel)
+
+
+def _geodesic_gaussian_kernel(
+        source_space : mne.SourceSpaces,
+        fwhm         : float,
+        epsilon      : float,
+        ) -> sp.sparse.csr_matrix:
+    """
+    Block-diagonal Gaussian smoothing kernel across both hemispheres, built
+    from cortical-surface geodesic distance (`source_space[hemi]["dist"]`).
+
+    Cross-hemisphere smoothing is not attempted: surface geodesic distance
+    isn't defined between two separate hemisphere meshes -- the same
+    limitation `connectome_from_geometry` works around by handling
+    interhemispheric connections separately (there, via a direct Euclidean
+    distance cutoff instead of a kernel).
+    """
+    blocks = []
+
+    for hemi in [0, 1]:
+        vertices = source_space[hemi]["vertno"]
+        geodist = source_space[hemi]["dist"][vertices][:, vertices].tocsr() * 1000    # [mm]
+        blocks.append(gaussian_kernel(geodist, fwhm=fwhm, epsilon=epsilon, dim=2))
+
+    return sp.sparse.block_diag(blocks, format="csr")
 
 
 def connectome_from_geometry(

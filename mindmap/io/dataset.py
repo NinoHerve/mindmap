@@ -56,7 +56,7 @@ class DatasetManager:
 
         # bids layout (path builder for raw and mindmap)
         pybids_config = importlib.resources.files("mindmap.resources").joinpath("pybids_config.json")
-        self.layout = BIDSLayout(self.roots["raw"])
+        self.layout = BIDSLayout(self.roots["raw"], validate=False)
         self.layout.add_derivatives(self.roots["mm"], config=pybids_config)
 
         # list of dataset subjects

@@ -11,7 +11,7 @@ from mindmap.analysis.functional.eeg import get_ch_positions, normalize_evoked
 from mindmap.cli.resolve import resolve_bundle, resolve_path, parse_entity_flags
 from mindmap.cli.viz_specs import TARGET_SPECS
 from mindmap.viz import (
-    plot_brain, plot_source_estimate, plot_alignment, plot_leadfield,
+    plot_brain, plot_brain_activity, plot_alignment, plot_leadfield,
     plot_eigvec, plot_ieeg, plot_bem, plot_con_summary, plot_eigval,
     plot_channel_grid, plot_segmentation,
 )
@@ -45,11 +45,13 @@ def main():
         "--entity", "-e",
         action   = "append",
         default  = [],
-        metavar  = "SUFFIX:KEY=VALUE",
-        help     = "Pin a BIDS entity on a specific object to skip asking for it, e.g. "
-                    "-e i-ave:task=spk -e con:desc=geom. Repeatable, including several times "
-                    "for the same suffix. Anything left ambiguous after these filters is "
-                    "resolved interactively, entity by entity."
+        metavar  = "SUFFIX:KEY=VALUE[,KEY=VALUE...]",
+        help     = "Request one object by its (possibly partial) BIDS entities, e.g. "
+                    "-e stc:desc=cset,res=ico5. Repeat -e for the same suffix to request "
+                    "several objects for side-by-side comparison, e.g. -e stc:desc=cset "
+                    "-e stc:desc=sloreta (only for targets/suffixes that support it). "
+                    "Anything left ambiguous is resolved interactively, one entity at a "
+                    "time; answering blank means that entity must be absent from the file."
     )
 
     args = parser.parse_args()
@@ -73,14 +75,14 @@ def main():
     # Plot
     # -----
     if args.target == "charm":
-        ft1 = resolve_path(dm, args.subject, "t1-charm", cli_entities.get("t1-charm", {}))
-        fseg = resolve_path(dm, args.subject, "seg", cli_entities.get("seg", {}))
+        ft1 = resolve_path(dm, args.subject, "t1-charm", cli_entities.get("t1-charm", []))
+        fseg = resolve_path(dm, args.subject, "seg", cli_entities.get("seg", []))
         flut = str(fseg).replace(".nii.gz", "_LUT.txt")
         plot_segmentation(ft1, fseg, flut)
 
     elif args.target == "parc":
-        ft1 = resolve_path(dm, args.subject, "t1.mgz", cli_entities.get("t1.mgz", {}))
-        fseg = resolve_path(dm, args.subject, "dseg", cli_entities.get("dseg", {}))
+        ft1 = resolve_path(dm, args.subject, "t1.mgz", cli_entities.get("t1.mgz", []))
+        fseg = resolve_path(dm, args.subject, "dseg", cli_entities.get("dseg", []))
         flut = str(fseg).replace(".nii.gz", ".txt")  # dseg's LUT sidecar convention (see _load_parc)
         plot_segmentation(ft1, fseg, flut)
 
@@ -123,10 +125,13 @@ def main():
         plot_channel_grid(iave, vaves, extent_mask=extent_mask, spurious_mask=spurious_mask)
 
     elif args.target == "stc":
-        stc = bundle["stc"]
+        stcs = bundle["stc"]  # {label: stc}, one or many
         fwd = bundle["fwd"]
-        desc_label = cli_entities.get("stc", {}).get("desc", "")
-        plot_source_estimate(fwd["src"], stc, title=f"sub-{args.subject}: {desc_label}", ts_params={"absolute":True}).show()
+        plot_brain_activity(
+            fwd["src"], list(stcs.values()),
+            title=[f"sub-{args.subject}: {label}" for label in stcs],
+            func_params={"absolute": True, "normalize": "max"},
+        ).show()
 
     elif args.target == "con":
         plot_con_summary(bundle["con"], args.subject)

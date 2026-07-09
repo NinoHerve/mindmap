@@ -12,20 +12,30 @@ License: MIT
 
 import numpy as np
 import scipy as sp
-import sklearn
 
 
-def smooth_connectome(conn : np.ndarray, kernel) -> np.ndarray:
+def smooth_connectome(conn : np.ndarray, kernel : sp.sparse.csr_matrix) -> np.ndarray:
     """
     Smoothen connectome according to Sina Mansour et. al (2020)
+
+    Incidence matrices are built sparse rather than as a dense (n, n_edges)
+    array filled by a Python loop: each column has exactly one nonzero
+    entry per side, so a sparse construction is exact, not an
+    approximation. This is what makes the function usable at dipole-level
+    resolution (n and n_edges both up to ~10^4-10^5) -- the previous dense
+    version would already be gigabytes and slow to fill at that scale.
 
     Parameters
     ----------
     conn: np.ndarray (N,N)
-        Connectome.
+        Connectome. Must be symmetric, like every other connectome in this
+        module: each edge (i,j) is only ever read as `conn[i,j]`, so passing
+        a matrix with only one of `conn[i,j]`/`conn[j,i]` set would silently
+        treat that edge as having no weight from the unset side, corrupting
+        (typically zeroing) the output.
 
-    kernel: np.ndarray
-        Smoothing kernel
+    kernel: sp.sparse.csr_matrix (N,N)
+        Smoothing kernel, each row summing to 1.
 
     Returns
     -------
@@ -35,18 +45,23 @@ def smooth_connectome(conn : np.ndarray, kernel) -> np.ndarray:
     # define incidence matrices
     indices = np.argwhere(conn>0)
     n, s    = len(conn), len(indices)
-    M1, M2  = np.zeros((n,s)), np.zeros((n,s))
 
-    for i, j in enumerate(indices):
-        M1[j[0], i] = np.sqrt(conn[j[0],j[1]])
-        M2[j[1], i] = np.sqrt(conn[j[1],j[0]])
+    if s == 0:
+        return np.zeros((n, n))
+
+    sqrt_w = np.sqrt(conn[indices[:,0], indices[:,1]])
+    cols   = np.arange(s)
+
+    M1 = sp.sparse.csr_matrix((sqrt_w, (indices[:,0], cols)), shape=(n, s))
+    M2 = sp.sparse.csr_matrix((sqrt_w, (indices[:,1], cols)), shape=(n, s))
 
     # smooth incidence
-    M1s = (kernel.T @ M1)
-    M2s = (kernel.T @ M2)
+    M1s = kernel.T @ M1
+    M2s = kernel.T @ M2
 
     # compute smoothed structural connectome
     sc = (M1s @ M2s.T) + (M2s @ M1s.T)
+    sc = sc.toarray()
     sc = (sc + sc.T)/2
     np.fill_diagonal(sc, 0)
 
@@ -81,6 +96,8 @@ def gaussian_kernel(
     gaussian: sp.sparse.csr (N, N)
         Gaussian kernel for each node. The kernel distributes a weight arriving at node i between its neighbors.
     """
+    geodist = geodist.copy()   # don't mutate the caller's matrix below
+
     # gaussian variance
     sigma = fwhm / np.sqrt(8*np.log(2))
 
@@ -90,12 +107,13 @@ def gaussian_kernel(
     geodist[geodist>max_smoothing_distance] = 0
     geodist.eliminate_zeros()
 
-    # Smoothing kernel for each node
-    gaussian = -(geodist**2/(2*sigma**2))
+    # Smoothing kernel for each node. `geodist**2` would be matrix power
+    # (matrix-matrix multiplication) for a sparse matrix, not the
+    # elementwise square this needs -- `.power(2)` is the elementwise form.
+    gaussian = -(geodist.power(2)/(2*sigma**2))
     np.exp(gaussian.data, out=gaussian.data)
     gaussian += sp.sparse.eye(gaussian.shape[0], dtype=gaussian.dtype, format="csr")
-    gaussian /= sp.sparse.linalg.norm(gaussian, ord=1, axis=1)[:, None]
-    gaussian = sklearn.preprocessing.normalize(gaussian, norm="l1")     # sums to 1
+    gaussian /= sp.sparse.linalg.norm(gaussian, ord=1, axis=1)[:, None]     # rows sum to 1
 
     return gaussian
 
