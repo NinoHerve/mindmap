@@ -13,6 +13,7 @@ from .io import (
 from .process import (
     filter_dipoles_by_id_list,
     filter_dipoles_by_nifti_mask,
+    sample_nifti_at_source_space,
 )
 
 from .metric import (
@@ -30,5 +31,6 @@ __all__ = [
     "get_hemi_labels",
     "filter_dipoles_by_id_list",
     "filter_dipoles_by_nifti_mask",
+    "sample_nifti_at_source_space",
     "average_dipole_spacing",
 ]

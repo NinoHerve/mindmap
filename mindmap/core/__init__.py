@@ -7,7 +7,8 @@ from .metric import (
     compute_distances,
     extract_voxel_volume,
     point_to_area_distance,
-    calc_performance_curves,
+    calc_roc_curve,
+    calc_pr_curve,
 )
 
 from .utils import (
@@ -25,7 +26,11 @@ from .io import (
     get_config,
 )
 
-from .process import normalize_data
+from .process import (
+    normalize_data,
+    resample_pr_curve,
+    resample_roc_curve,
+)
 
 
 __all__ = [
@@ -43,5 +48,8 @@ __all__ = [
     "write_csv_row",
     "get_config",
     "create_dataset_description",
-    "calc_performance_curves",
+    "calc_roc_curve",
+    "calc_pr_curve",
+    "resample_pr_curve",
+    "resample_roc_curve",
 ]

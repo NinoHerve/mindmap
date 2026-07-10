@@ -24,7 +24,8 @@ from .metric import (
     find_spike_window,
     compute_evoked_confusion,
     compute_evoked_scores,
-    compute_evoked_curves,
+    compute_evoked_roc,
+    compute_evoked_pr,
     get_channel_distances,
 )
 
@@ -67,6 +68,7 @@ __all__ = [
     "find_spike_window",
     "compute_evoked_confusion",
     "compute_evoked_scores",
-    "compute_evoked_curves",
+    "compute_evoked_roc",
+    "compute_evoked_pr",
     "get_channel_distances",
 ]

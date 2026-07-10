@@ -17,7 +17,8 @@ from .process import (
 from .metric import (
     compute_stc_confusion,
     compute_stc_scores,
-    compute_stc_curves,
+    compute_stc_roc,
+    compute_stc_pr,
     compute_stc_correlation,
     compute_stc_cosine,
 )
@@ -41,7 +42,8 @@ __all__ = [
     "binarize_stc",
     "compute_stc_confusion",
     "compute_stc_scores",
-    "compute_stc_curves",
+    "compute_stc_roc",
+    "compute_stc_pr",
     "make_stc",
     "compute_stc_correlation",
     "compute_stc_cosine",

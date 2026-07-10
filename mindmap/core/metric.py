@@ -677,12 +677,12 @@ def calc_activity_scores(
         #"mcc": matthews_corrcoef(yt, yp),
     }
 
-def calc_performance_curves(
+def calc_roc_curve(
     y_true,
     y_pred,
 ) -> dict:
     """
-    Computes data for ROC and PR curves.
+    Computes data for a ROC curve.
 
     Parameters:
     ----------
@@ -692,22 +692,37 @@ def calc_performance_curves(
     y_pred: np.ndarray
         Continuous estimate.
     """
-    # flatten
     yt = y_true.ravel()
     yp = y_pred.ravel()
 
-    # compute ROC
     fpr, tpr, _ = roc_curve(yt, yp)
     roc_auc = auc(fpr, tpr)
 
-    # compute precision recall
+    return {"fpr": fpr, "tpr": tpr, "auc": roc_auc}
+
+
+def calc_pr_curve(
+    y_true,
+    y_pred,
+) -> dict:
+    """
+    Computes data for a precision-recall curve.
+
+    Parameters:
+    ----------
+    y_true: np.ndarray
+        Binarized ground truth.
+
+    y_pred: np.ndarray
+        Continuous estimate.
+    """
+    yt = y_true.ravel()
+    yp = y_pred.ravel()
+
     precision, recall, _ = precision_recall_curve(yt, yp, drop_intermediate=True)
     ap = average_precision_score(yt, yp)
 
-    return {
-        "roc": {"fpr": fpr, "tpr":tpr, "auc":roc_auc},
-        "pr": {"precision": precision, "recall": recall, "ap": ap}
-    }
+    return {"precision": precision, "recall": recall, "ap": ap}
 
 
 def calc_rdm(arr1, arr2):

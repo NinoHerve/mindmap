@@ -26,7 +26,8 @@ from mindmap.core.metric import (
 from mindmap.core.utils import get_spike_extent_mask, get_spurious_mask
 
 from mindmap.analysis.functional.common.metric import (
-    compute_mne_confusion, compute_mne_scores, compute_mne_curves,
+    compute_mne_confusion, compute_mne_scores,
+    compute_mne_roc, compute_mne_pr,
     compute_mne_correlation, compute_mne_cosine,
 )
 
@@ -838,33 +839,53 @@ def compute_evoked_scores(
     )
 
 
-def compute_evoked_curves(
+def compute_evoked_roc(
     evoked_true: mne.Evoked,
     evoked_pred: mne.Evoked,
 ) -> dict:
     """
-    Wrapper for `compute_mne_curves`.
+    Wrapper for `compute_mne_roc`.
 
     Parameters
     ----------
     evoked_true: mne.Evoked | mne.SourceEstimate
         Ground truth activity.
-    
+
     evoked_pred: mne.Evoked | mne.SourceEstimate
         Estimated activity.
 
-    true_threshold: dict
-        Keyword arguments for `binarize_mne_object`.
-
-    rng: tuple (float, float)
-        Range of data to consider for scoring.
-    
     Returns
     -------
     dict
-        Dictionary of True/False Positive/Negative.
+        Dictionary with 'fpr', 'tpr' and 'auc'.
     """
-    return compute_mne_curves(
+    return compute_mne_roc(
+        obj_true = evoked_true,
+        obj_pred = evoked_pred,
+    )
+
+
+def compute_evoked_pr(
+    evoked_true: mne.Evoked,
+    evoked_pred: mne.Evoked,
+) -> dict:
+    """
+    Wrapper for `compute_mne_pr`.
+
+    Parameters
+    ----------
+    evoked_true: mne.Evoked | mne.SourceEstimate
+        Ground truth activity.
+
+    evoked_pred: mne.Evoked | mne.SourceEstimate
+        Estimated activity.
+
+    Returns
+    -------
+    dict
+        Dictionary with 'precision', 'recall' and 'ap'.
+    """
+    return compute_mne_pr(
         obj_true = evoked_true,
         obj_pred = evoked_pred,
     )

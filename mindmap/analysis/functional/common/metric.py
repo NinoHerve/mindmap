@@ -17,7 +17,7 @@ import mne
 
 from mindmap.core.metric import (
     calc_confusion_matrix, calc_activity_scores,
-    calc_performance_curves, calc_correlation,
+    calc_roc_curve, calc_pr_curve, calc_correlation,
     calc_cosine,
 )
 from mindmap.analysis.functional.common.utils import (
@@ -209,34 +209,87 @@ def compute_mne_scores(
         return pd.DataFrame(results).set_index(label_name)
 
 
-def compute_mne_curves(
+def compute_mne_roc(
     obj_true: mne.Evoked | mne.SourceEstimate,
     obj_pred: mne.Evoked | mne.SourceEstimate,
 ) -> dict:
     """
-    Computes data for ROC and PR curves.
+    Computes data for a ROC curve.
 
     Parameters
     ----------
     obj_true: mne.Evoked | mne.SourceEstimate
         Binary ground truth activity.
-    
+
     obj_pred: mne.Evoked | mne.SourceEstimate
         Estimated activity.
 
-    true_threshold: dict
-        Keyword arguments for `binarize_mne_object`.
-    
     Returns
     -------
     dict
-        Dictionary of True/False Positive/Negative.
+        Dictionary with 'fpr', 'tpr' and 'auc'.
     """
-    # check if obj_true is binary
     if not is_binary_mne(obj_true):
-        raise TypeError("Ground truth needs to be binary to compute ROC and PR curves.")
+        raise TypeError("Ground truth needs to be binary to compute a ROC curve.")
 
     y_true = obj_true.data
     y_pred = np.abs(obj_pred.data)
 
-    return calc_performance_curves(y_true, y_pred)
+    return calc_roc_curve(y_true, y_pred)
+
+
+def compute_mne_pr(
+    obj_true: mne.Evoked | mne.SourceEstimate,
+    obj_pred: mne.Evoked | mne.SourceEstimate,
+) -> dict:
+    """
+    Computes data for a precision-recall curve.
+
+    Parameters
+    ----------
+    obj_true: mne.Evoked | mne.SourceEstimate
+        Binary ground truth activity.
+
+    obj_pred: mne.Evoked | mne.SourceEstimate
+        Estimated activity.
+
+    Returns
+    -------
+    dict
+        Dictionary with 'precision', 'recall' and 'ap'.
+    """
+    if not is_binary_mne(obj_true):
+        raise TypeError("Ground truth needs to be binary to compute a precision-recall curve.")
+
+    y_true = obj_true.data
+    y_pred = np.abs(obj_pred.data)
+
+    return calc_pr_curve(y_true, y_pred)
+
+
+def evaluate_resection_pr(
+    resection_vertex_mask: np.ndarray,
+    vertex_activity: np.ndarray,
+) -> dict:
+    """
+    Computes data for a precision-recall curve against a resection-mask ground truth.
+
+    Parameters
+    ----------
+    resection_vertex_mask: np.ndarray of shape (n_vertices,)
+        Binary ground truth, e.g. from
+        `mm.anatomy.source_space.sample_nifti_at_source_space`.
+
+    vertex_activity: np.ndarray of shape (n_vertices,)
+        Per-vertex estimated activity (e.g. peak amplitude of a
+        mne.SourceEstimate).
+
+    Returns
+    -------
+    dict
+        Dictionary with 'precision', 'recall' and 'ap'.
+    """
+    y_true = resection_vertex_mask.astype(int)
+    y_pred = np.abs(vertex_activity)
+
+    return calc_pr_curve(y_true, y_pred)

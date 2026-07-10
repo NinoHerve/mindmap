@@ -16,6 +16,54 @@ import pandas as pd
 import mne
 import nibabel as nib
 
+from mindmap.core.process import sample_volume_at_points
+
+
+def sample_nifti_at_source_space(
+    source_space: mne.SourceSpaces,
+    mask: nib.Nifti1Image,
+    ras2tkras: np.ndarray = None,
+) -> np.ndarray:
+    """
+    Sample a volumetric image at every in-use source-space vertex.
+
+    Parameters
+    ----------
+    source_space: mne.SourceSpaces
+        Source space (space-freesurfer). Only 'inuse' dipoles are sampled,
+        matching the vertex order of any mne.SourceEstimate built from it.
+
+    mask: nib.Nifti1Image
+        Volume to sample (e.g. a binary mask).
+
+    ras2tkras: np.ndarray (4,4)
+        Affine transform from subject/T1 scanner-RAS [mm] to FreeSurfer
+        surface-RAS (tkRAS) [mm]. Required whenever `source_space` and `mask`
+        don't already share the same world coordinate frame.
+
+    Returns
+    -------
+    np.ndarray of shape (n_inuse_vertices,)
+        Values of `mask` at each vertex, concatenated hemisphere by
+        hemisphere in the same order as `source_space`.
+    """
+    values = []
+
+    for src in source_space:
+        inuse = src["inuse"].astype(bool)
+        pos = src["rr"][inuse]*1000                     # dipole positions in talairach space [mm]
+
+        if ras2tkras is not None:
+            pos = nib.affines.apply_affine(np.linalg.inv(ras2tkras), pos)
+
+        # place sources in voxel space
+        pos_vox = nib.affines.apply_affine(np.linalg.inv(mask.affine), pos)
+
+        values.append(sample_volume_at_points(mask.get_fdata(), pos_vox))
+
+    return np.concatenate(values)
+
+
 def filter_dipoles_by_nifti_mask(
     source_space: mne.SourceSpaces,
     mask: nib.Nifti1Image,
@@ -41,23 +89,14 @@ def filter_dipoles_by_nifti_mask(
         Source space with updated 'inuse', 'use' and 'vertno' attributes.
     """
     source_space = source_space.copy()
+    values = sample_nifti_at_source_space(source_space, mask, ras2tkras)
 
+    offset = 0
     for src in source_space:
-        # select used dipoles
         inuse = src["inuse"].astype(bool)
-        pos = src["rr"][inuse]*1000                     # dipole positions in talairach space [mm]
-
-        if ras2tkras is not None:
-            pos = nib.affines.apply_affine(np.linalg.inv(ras2tkras), pos)
-
-        # place sources in voxel space
-        inv_affine = np.linalg.inv(mask.affine)
-        pos_vox = mne.transforms.apply_trans(inv_affine, pos)
-        pos_vox = np.round(pos_vox).astype(int)               # source positions in voxel space
-
-        # keep only sources inside GM mask
-        volume = mask.get_fdata()
-        keep = volume[pos_vox[:,0], pos_vox[:,1], pos_vox[:,2]].astype(bool)
+        n = np.sum(inuse)
+        keep = values[offset:offset + n].astype(bool)
+        offset += n
 
         new_inuse = np.zeros_like(inuse, dtype=bool)
         new_inuse[inuse] = keep

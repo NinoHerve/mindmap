@@ -13,7 +13,8 @@ import numpy as np
 import mne
 
 from mindmap.analysis.functional.common.metric import (
-    compute_mne_confusion, compute_mne_scores, compute_mne_curves,
+    compute_mne_confusion, compute_mne_scores,
+    compute_mne_roc, compute_mne_pr,
     compute_mne_correlation, compute_mne_cosine,
 )
 
@@ -161,27 +162,53 @@ def compute_stc_scores(
     )
 
 
-def compute_stc_curves(
+def compute_stc_roc(
     stc_true: mne.SourceEstimate,
     stc_pred: mne.SourceEstimate,
 ) -> dict:
     """
-    Wrapper for `compute_mne_curves`.
+    Wrapper for `compute_mne_roc`.
 
     Parameters
     ----------
     stc_true: mne.Evoked | mne.SourceEstimate
         Binary ground truth activity.
-    
+
     stc_pred: mne.Evoked | mne.SourceEstimate
         Estimated activity.
-    
+
     Returns
     -------
     dict
-        Dictionary of True/False Positive/Negative.
+        Dictionary with 'fpr', 'tpr' and 'auc'.
     """
-    return compute_mne_curves(
+    return compute_mne_roc(
+        obj_true = stc_true,
+        obj_pred = stc_pred,
+    )
+
+
+def compute_stc_pr(
+    stc_true: mne.SourceEstimate,
+    stc_pred: mne.SourceEstimate,
+) -> dict:
+    """
+    Wrapper for `compute_mne_pr`.
+
+    Parameters
+    ----------
+    stc_true: mne.Evoked | mne.SourceEstimate
+        Binary ground truth activity.
+
+    stc_pred: mne.Evoked | mne.SourceEstimate
+        Estimated activity.
+
+    Returns
+    -------
+    dict
+        Dictionary with 'precision', 'recall' and 'ap'.
+    """
+    return compute_mne_pr(
         obj_true = stc_true,
         obj_pred = stc_pred,
     )

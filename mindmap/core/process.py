@@ -9,7 +9,7 @@ License: MIT
 """
 
 import numpy as np
-from scipy.ndimage import shift
+from scipy.ndimage import shift, map_coordinates
 from scipy.stats import rankdata
 
 from mindmap.core.metric import compute_correlation
@@ -175,6 +175,122 @@ def normalize_timeserie_by_baseline(
     normalized = (timeserie - baseline_mean) / baseline_std
 
     return normalized.squeeze()
+
+
+def sample_volume_at_points(
+    volume: np.ndarray,
+    points: np.ndarray,
+    method: str = "nearest",
+    fill_value: float = 0,
+) -> np.ndarray:
+    """
+    Sample a volumetric array at continuous array-index coordinates.
+
+    Parameters
+    ----------
+    volume: np.ndarray of shape (X, Y, Z)
+        Volumetric data.
+
+    points: np.ndarray of shape (n_points, 3)
+        Coordinates into `volume`, expressed in array-index (voxel) space --
+        i.e. fractional indices, not world/scanner coordinates.
+
+    method: str ['nearest', 'linear']
+        Interpolation order.
+
+    fill_value: float
+        Value assigned to points falling outside `volume`.
+
+    Returns
+    -------
+    np.ndarray of shape (n_points,)
+        Sampled values.
+    """
+    order_map = {"nearest": 0, "linear": 1}
+    if method not in order_map:
+        raise ValueError(f"Unknown method '{method}'. Choose from {list(order_map)}.")
+
+    return map_coordinates(
+        volume,
+        points.T,
+        order=order_map[method],
+        mode="constant",
+        cval=fill_value,
+    )
+
+
+def resample_pr_curve(precision, recall, n_points=100):
+    """
+    Resamples a precision-recall curve onto a fixed, common recall grid.
+
+    A raw curve (e.g. from `mm.core.calc_pr_curve`) carries as many points as
+    there are unique prediction values, which gets unwieldy when pooling many
+    runs and makes curves from different runs impossible to average directly
+    (their recall values don't line up). Interpolating onto a shared grid
+    solves both: it bounds the point count and gives every run the same
+    x-axis so per-run curves can be averaged into a summary curve with a CI.
+
+    Uses the standard "interpolated precision" (max precision achievable at any
+    recall >= r), which also removes the sawtooth wiggle of the raw curve.
+
+    Parameters
+    ----------
+    precision, recall: array-like
+        Raw precision-recall curve, e.g. from `mm.core.calc_pr_curve`.
+
+    n_points: int
+        Number of points of the resampled curve.
+
+    Returns
+    -------
+    precision_grid, recall_grid: np.ndarray of shape (n_points,)
+    """
+    order = np.argsort(recall)
+    recall_sorted = np.asarray(recall)[order]
+    precision_sorted = np.asarray(precision)[order]
+
+    # best precision achievable at any recall >= r
+    envelope = np.maximum.accumulate(precision_sorted[::-1])[::-1]
+
+    recall_grid = np.linspace(0, 1, n_points)
+    precision_grid = np.interp(recall_grid, recall_sorted, envelope)
+
+    return precision_grid, recall_grid
+
+
+def resample_roc_curve(fpr, tpr, n_points=100):
+    """
+    Resamples a ROC curve onto a fixed, common false-positive-rate grid.
+
+    Same motivation as `resample_pr_curve` (bound the point count, give every
+    run a shared x-axis for averaging), but unlike precision-vs-recall, tpr is
+    already a proper non-decreasing function of fpr -- lowering the threshold
+    can only add to both the true- and false-positive counts. So there's no
+    sawtooth to remove here: this is a plain interpolation, with no envelope
+    step. Reusing `resample_pr_curve`'s envelope on (fpr, tpr) would collapse
+    the curve to a flat line at max(tpr), since the max of any suffix of an
+    already non-decreasing array is just its last element.
+
+    Parameters
+    ----------
+    fpr, tpr: array-like
+        Raw ROC curve, e.g. from `mm.core.calc_roc_curve`.
+
+    n_points: int
+        Number of points of the resampled curve.
+
+    Returns
+    -------
+    tpr_grid, fpr_grid: np.ndarray of shape (n_points,)
+    """
+    order = np.argsort(fpr)
+    fpr_sorted = np.asarray(fpr)[order]
+    tpr_sorted = np.asarray(tpr)[order]
+
+    fpr_grid = np.linspace(0, 1, n_points)
+    tpr_grid = np.interp(fpr_grid, fpr_sorted, tpr_sorted)
+
+    return tpr_grid, fpr_grid
 
 
 def binarize_signal(
