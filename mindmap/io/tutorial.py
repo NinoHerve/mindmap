@@ -41,6 +41,7 @@ class TutoManager(DatasetManager):
         self.add_root("cartool", self.config["DIR_CART"])
         self.add_root("cmp", self.config["DIR_CMP"])
         self.add_root("sim", self.config["DIR_SIM"])
+        self.add_root("ramps", self.config["DIR_RAMPS"])
 
         # add new datatype
         self.add_datatype("ave-temp", "mm", self._build_path, lambda f: mne.read_evokeds(f, verbose="warning")[0])
@@ -51,6 +52,7 @@ class TutoManager(DatasetManager):
         self.add_datatype("tractogram", "cmp", self._build_path, nib.streamlines.load)
         self.add_datatype("t12diff", "cmp", self._build_path, self._load_t12diff)
         self.add_datatype("resec", "mm", self._build_path, read_mri)
+        self.add_datatype("resec-ramp", "ramps", self._build_path, read_mri)
         self.add_datatype("t1w", "raw", self._build_path, lambda f: read_mri(f, mri_dtype="ants"))
 
     def load_ref(self, ref_key):
@@ -136,6 +138,16 @@ class TutoManager(DatasetManager):
 
             else:
                 raise ValueError(f"No 'resec' for sub-{subject}.")
+
+        if suffix == "resec-ramp":
+            # Non-BIDS-conform RAMPS pipeline output - bypass BIDS entity
+            # resolution and build the path directly.
+            space = kwargs.get("space")
+            if not space or space.lower() not in ("orig", "pre"):
+                raise ValueError("suffix 'resec-ramp' requires a 'space' entity ('orig' or 'pre').")
+
+            resec_dir = root/f"sub-{subject}"/"RAMPS_Resection_Mask_Output"
+            return resec_dir/f"RAMP_The_resection_mask_in_{space.upper()}.nii.gz"
 
         if suffix == "t1w":
             # Non-BIDS-conform pre-/post-op T1w files (e.g. sub-spike11) - bypass
