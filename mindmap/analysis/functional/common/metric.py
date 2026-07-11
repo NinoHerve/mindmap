@@ -14,11 +14,16 @@ import numpy as np
 import pandas as pd
 
 import mne
+import nibabel as nib
 
 from mindmap.core.metric import (
     calc_confusion_matrix, calc_activity_scores,
     calc_roc_curve, calc_pr_curve, calc_correlation,
-    calc_cosine,
+    calc_cosine, calc_hypergeometric_enrichment,
+    calc_fold_enrichment, label_clusters, point_to_area_distance,
+)
+from mindmap.anatomy.source_space import (
+    get_dipole_positions, sample_nifti_at_points, nifti_mask_to_points,
 )
 from mindmap.analysis.functional.common.utils import (
     is_binary_mne,
@@ -293,3 +298,387 @@ def evaluate_resection_pr(
     y_pred = np.abs(vertex_activity)
 
     return calc_pr_curve(y_true, y_pred)
+
+
+def find_peak_resection_distance(
+    vertex_activity: np.ndarray,
+    source_space: mne.SourceSpaces,
+    mask: nib.Nifti1Image,
+    ras2tkras: np.ndarray = None,
+) -> dict:
+    """
+    Euclidean distance from the single global-activity-maximum dipole to
+    the resection.
+
+    The classic ESI baseline this evaluation set was built to move past --
+    a multifocal map's real hit can be outvoted by a taller unrelated peak
+    elsewhere -- kept here as a comparison point against
+    `find_earliest_resection_cluster`/`evaluate_resection_pr`, not as the
+    primary metric.
+
+    Measures against the resection's own voxel geometry (via
+    `mm.anatomy.source_space.nifti_mask_to_points`), not a vertex-sampled
+    approximation of it: vertex-sampling the resection is the right ground
+    truth when comparing vertex-to-vertex against activity (PR/cluster
+    metrics need that correspondence), but it would bias a point-to-area
+    distance, since the true resected tissue can sit closer to the peak
+    than any vertex that happened to fall inside it, by up to the local
+    dipole spacing. The one exception is the inside/outside test at the
+    peak vertex's own position, which is exact regardless -- it's a direct
+    volume sample at that one point, not a search over neighboring
+    vertices.
+
+    Parameters
+    ----------
+    vertex_activity: np.ndarray of shape (n_vertices,)
+        Per-vertex estimated activity (e.g. peak amplitude of a
+        mne.SourceEstimate).
+
+    source_space: mne.SourceSpaces
+        Source space (space-freesurfer) `vertex_activity` was computed on,
+        same vertex order as any mne.SourceEstimate built from it.
+
+    mask: nib.Nifti1Image
+        Resection volume (e.g. a binary mask).
+
+    ras2tkras: np.ndarray (4,4), optional
+        Affine transform from subject/T1 scanner-RAS [mm] to FreeSurfer
+        surface-RAS (tkRAS) [mm]. Required whenever `source_space` and
+        `mask` don't already share the same world coordinate frame -- same
+        argument as `sample_nifti_at_source_space`.
+
+    Returns
+    -------
+    dict
+        'peak_vertex': int -- index of the global |activity| maximum.
+        'inside_resection': bool -- whether the peak vertex itself falls
+            inside the resection.
+        'distance_mm': float -- 0 if inside; else the Euclidean distance
+            from the peak vertex to the nearest resection voxel, in mm.
+    """
+    activity = np.abs(np.ravel(vertex_activity))
+    peak_vertex = int(np.argmax(activity))
+    peak_pos = get_dipole_positions(source_space)[peak_vertex] * 1000
+
+    inside = bool(sample_nifti_at_points(peak_pos[None, :], mask, ras2tkras)[0] > 0)
+    if inside:
+        return {"peak_vertex": peak_vertex, "inside_resection": True, "distance_mm": 0.0}
+
+    resection_points = nifti_mask_to_points(mask, ras2tkras)
+    distance = point_to_area_distance(peak_pos, resection_points, x=1)
+
+    return {"peak_vertex": peak_vertex, "inside_resection": False, "distance_mm": float(distance)}
+
+
+def find_best_enrichment(
+    vertex_activity: np.ndarray,
+    resection_vertex_mask: np.ndarray,
+    adjacency,
+    patch_area: np.ndarray,
+    thresholds: list,
+    min_cluster_area: float = 0,
+) -> pd.DataFrame:
+    """
+    Sweeps amplitude thresholds and reports the most enriched candidate cluster at each.
+
+    At each threshold, the top-N vertices by |activity| are clustered via
+    connected components on `adjacency`; every resulting cluster is scored
+    with `calc_hypergeometric_enrichment`/`calc_fold_enrichment` using
+    physical area (mm^2, from `patch_area`) rather than raw vertex counts --
+    keeping results comparable across source spaces built at different
+    resolutions. Only the most significant (lowest p-value) cluster per
+    threshold is kept.
+
+    Parameters
+    ----------
+    vertex_activity: np.ndarray of shape (n_vertices,)
+        Per-vertex estimated activity (e.g. peak amplitude of a
+        mne.SourceEstimate).
+
+    resection_vertex_mask: np.ndarray of shape (n_vertices,)
+        Binary ground truth, e.g. from
+        `mm.anatomy.source_space.sample_nifti_at_source_space`.
+
+    adjacency: scipy.sparse matrix of shape (n_vertices, n_vertices)
+        e.g. from `mm.anatomy.source_space.build_dipole_adjacency`. Depends
+        only on the source space, not on activity or threshold -- build once
+        per subject and reuse across every solver.
+
+    patch_area: np.ndarray of shape (n_vertices,)
+        Physical patch area (mm^2) per vertex, e.g. from
+        `mm.anatomy.source_space.build_dipole_patch_area`. Same
+        once-per-subject reuse as `adjacency`.
+
+    thresholds: list of int
+        Candidate cutoffs, each the number of top-|activity| vertices to
+        include before clustering.
+
+    min_cluster_area: float
+        Minimum physical area (mm^2) for a cluster to be scored; smaller
+        clusters are skipped. Defaults to 0 (no filtering).
+
+    Returns
+    -------
+    pd.DataFrame indexed by threshold
+        Columns: 'n_clusters', 'k_mm2', 'tp_mm2', 'precision', 'p_value',
+        'surprise' (-log10 p_value), 'fold_enrichment' -- for the best
+        (lowest p-value) cluster at that threshold. Rows where no cluster
+        meets `min_cluster_area` have NaN scores.
+    """
+    resection_vertex_mask = np.ravel(resection_vertex_mask).astype(bool)
+    n_positive = patch_area[resection_vertex_mask].sum()
+    population_size = patch_area.sum()
+
+    activity = np.abs(np.ravel(vertex_activity))
+    order = np.argsort(-activity)
+
+    results = []
+    for threshold in thresholds:
+        active_mask = np.zeros_like(activity, dtype=bool)
+        active_mask[order[:threshold]] = True
+
+        active_idx = np.nonzero(active_mask)[0]
+        labels, sizes = label_clusters(adjacency, active_mask)
+
+        best = {"n_clusters": len(sizes), "k_mm2": np.nan, "tp_mm2": np.nan,
+                "precision": np.nan, "p_value": np.nan, "surprise": np.nan,
+                "fold_enrichment": np.nan}
+        best_p = np.inf
+
+        for cluster_id in range(len(sizes)):
+            members = active_idx[labels == cluster_id]
+
+            k_mm2 = patch_area[members].sum()
+            if k_mm2 < min_cluster_area:
+                continue
+
+            tp_mm2 = patch_area[members[resection_vertex_mask[members]]].sum()
+            p = calc_hypergeometric_enrichment(k_mm2, tp_mm2, population_size, n_positive)
+
+            if p < best_p:
+                best_p = p
+                best = {
+                    "n_clusters": len(sizes),
+                    "k_mm2": k_mm2,
+                    "tp_mm2": tp_mm2,
+                    "precision": tp_mm2 / k_mm2 if k_mm2 > 0 else np.nan,
+                    "p_value": p,
+                    "surprise": -np.log10(p) if p > 0 else np.inf,
+                    "fold_enrichment": calc_fold_enrichment(k_mm2, tp_mm2, population_size, n_positive),
+                }
+
+        results.append({"threshold": threshold, **best})
+
+    return pd.DataFrame(results).set_index("threshold")
+
+
+def _find_qualifying_cluster(order, k, adjacency, patch_area, resection_vertex_mask, min_cluster_area):
+    """
+    Activates the top-k ranked vertices, clusters them, and returns the
+    member indices of the first cluster that is >= min_cluster_area and
+    overlaps the resection -- or None if no such cluster exists at this k.
+
+    Shared by `find_earliest_resection_cluster` (which only needs to know
+    whether one exists) and `reconstruct_resection_cluster` (which needs the
+    actual members to rebuild the map), so the "what counts as a qualifying
+    cluster" logic lives in exactly one place.
+    """
+    n = len(order)
+    active_mask = np.zeros(n, dtype=bool)
+    active_mask[order[:k]] = True
+
+    active_idx = np.nonzero(active_mask)[0]
+    labels, sizes = label_clusters(adjacency, active_mask)
+
+    for cluster_id in range(len(sizes)):
+        members = active_idx[labels == cluster_id]
+        if patch_area[members].sum() >= min_cluster_area and resection_vertex_mask[members].any():
+            return members
+
+    return None
+
+
+def find_earliest_resection_cluster(
+    vertex_activity: np.ndarray,
+    resection_vertex_mask: np.ndarray,
+    adjacency,
+    patch_area: np.ndarray,
+    min_cluster_area: float = 600.0,
+) -> dict:
+    """
+    How much of the cortex has to be marked active before a real cluster
+    first touches the resection.
+
+    Ranks vertices by |activity| and grows the active set from the top down.
+    A cluster only ever grows or merges as more vertices are added -- it
+    never shrinks -- so "does a cluster >= min_cluster_area already overlap
+    the resection" is monotonic in the threshold: once true, it stays true
+    (confirmed empirically on real data, zero counterexamples over a 200-point
+    scan across three solvers). That makes this a binary search for the
+    earliest crossing, not a full sweep.
+
+    Unlike `find_best_enrichment`, this reports no significance test --
+    purely "how early", so there's no dipole-count-vs-area independence
+    question to get wrong. `min_cluster_area` (mm^2) exists only to keep a
+    single lucky vertex from trivially counting as a "cluster"; the default
+    600 mm^2 is grounded in the literature-established minimum synchronously
+    active cortex needed to produce a visible interictal discharge, cross-
+    checked against a chance-level simulation on this exact source space
+    (see the notebook design-decision note).
+
+    Parameters
+    ----------
+    vertex_activity: np.ndarray of shape (n_vertices,)
+        Per-vertex estimated activity (e.g. peak amplitude of a
+        mne.SourceEstimate).
+
+    resection_vertex_mask: np.ndarray of shape (n_vertices,)
+        Binary ground truth, e.g. from
+        `mm.anatomy.source_space.sample_nifti_at_source_space`.
+
+    adjacency: scipy.sparse matrix of shape (n_vertices, n_vertices)
+        e.g. from `mm.anatomy.source_space.build_dipole_adjacency`.
+
+    patch_area: np.ndarray of shape (n_vertices,)
+        Physical patch area (mm^2) per vertex, e.g. from
+        `mm.anatomy.source_space.build_dipole_patch_area`.
+
+    min_cluster_area: float
+        Minimum physical area (mm^2) for a cluster to count.
+
+    Returns
+    -------
+    dict
+        'found': bool -- whether any qualifying cluster ever touches the
+            resection, even including every vertex.
+        'threshold': int -- rank at first crossing (vertices needed).
+        'fraction_of_cortex': float -- physical area of the *whole active set*
+            at that threshold (every cluster, not just the winning one), as a
+            fraction of total cortex area. How early a hit was found -- the
+            number to compare across solvers/subjects, lower is better.
+        'area_mm2': float -- same, in mm^2.
+        'cluster_area_mm2': float -- physical area of just the winning
+            cluster itself (a different, usually smaller, number than
+            `area_mm2`, which includes any other unrelated clusters active
+            at the same threshold).
+        'cluster_precision': float -- fraction of the winning cluster's own
+            area that's inside the resection. Answers a different question
+            than `fraction_of_cortex`: not how early the cluster was found,
+            but whether it's actually centered on the resection (high) or
+            merely grazing its edge while mostly sitting outside it (low) --
+            two clusters found at the same threshold can have very different
+            precision.
+    """
+    resection_vertex_mask = np.ravel(resection_vertex_mask).astype(bool)
+    activity = np.abs(np.ravel(vertex_activity))
+    order = np.argsort(-activity)
+    n = len(order)
+    total_area = patch_area.sum()
+
+    def has_qualifying_cluster(k):
+        return _find_qualifying_cluster(order, k, adjacency, patch_area, resection_vertex_mask, min_cluster_area) is not None
+
+    if not has_qualifying_cluster(n):
+        return {
+            "found": False, "threshold": n, "fraction_of_cortex": 1.0, "area_mm2": total_area,
+            "cluster_area_mm2": np.nan, "cluster_precision": np.nan,
+        }
+
+    lo, hi = 1, n
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if has_qualifying_cluster(mid):
+            hi = mid
+        else:
+            lo = mid + 1
+
+    area_included = patch_area[order[:lo]].sum()
+
+    members = _find_qualifying_cluster(order, lo, adjacency, patch_area, resection_vertex_mask, min_cluster_area)
+    cluster_area = patch_area[members].sum()
+    cluster_tp_area = patch_area[members[resection_vertex_mask[members]]].sum()
+
+    return {
+        "found": True,
+        "threshold": lo,
+        "fraction_of_cortex": area_included / total_area,
+        "area_mm2": area_included,
+        "cluster_area_mm2": cluster_area,
+        "cluster_precision": cluster_tp_area / cluster_area,
+    }
+
+
+def reconstruct_resection_cluster(
+    vertex_activity: np.ndarray,
+    resection_vertex_mask: np.ndarray,
+    adjacency,
+    patch_area: np.ndarray,
+    threshold: int,
+    min_cluster_area: float = 600.0,
+) -> dict:
+    """
+    Rebuilds the binary activity map at a specific threshold from
+    `find_earliest_resection_cluster`, isolating the cluster that touched
+    the resection.
+
+    Pass `threshold` from that function's return value (`hit["threshold"]`),
+    not a re-typed percentage: `fraction_of_cortex` is only shown rounded to
+    one decimal for display, and several of the real crossing points here are
+    a single vertex wide (see the binary-search verification), so
+    reconstructing a threshold from a rounded percentage risks landing one
+    vertex off the true boundary. The exact integer threshold has no such
+    risk.
+
+    Parameters
+    ----------
+    vertex_activity, resection_vertex_mask, adjacency, patch_area, min_cluster_area:
+        Same as `find_earliest_resection_cluster` -- pass the same values
+        used to obtain `threshold`.
+
+    threshold: int
+        Exact rank to rebuild the map at, e.g. `hit["threshold"]`.
+
+    Returns
+    -------
+    dict
+        'active_mask': np.ndarray of shape (n_vertices,), bool -- every
+            vertex active at this threshold (every cluster, not just the
+            one that touched the resection).
+        'cluster_mask': np.ndarray of shape (n_vertices,), bool, or None --
+            only the vertices of the specific cluster that overlaps the
+            resection *and* meets `min_cluster_area`. None if no cluster at
+            this threshold qualifies (e.g. a mismatched threshold/
+            min_cluster_area was passed).
+        'signed_map': np.ndarray of shape (n_vertices,), float -- every
+            cluster active at this threshold, regardless of size (no
+            `min_cluster_area` filtering here, unlike `cluster_mask`) --
+            +1 for vertices in a cluster that touches the resection at all,
+            -1 for vertices in a cluster that doesn't, 0 for inactive
+            vertices. Meant for visualizing how noisy the map actually is at
+            this threshold (how many other clusters exist besides the
+            qualifying one), not just the isolated winning cluster.
+    """
+    resection_vertex_mask = np.ravel(resection_vertex_mask).astype(bool)
+    activity = np.abs(np.ravel(vertex_activity))
+    order = np.argsort(-activity)
+    n = len(order)
+
+    active_mask = np.zeros(n, dtype=bool)
+    active_mask[order[:threshold]] = True
+
+    members = _find_qualifying_cluster(order, threshold, adjacency, patch_area, resection_vertex_mask, min_cluster_area)
+
+    cluster_mask = None
+    if members is not None:
+        cluster_mask = np.zeros(n, dtype=bool)
+        cluster_mask[members] = True
+
+    active_idx = np.nonzero(active_mask)[0]
+    labels, sizes = label_clusters(adjacency, active_mask)
+
+    signed_map = np.zeros(n)
+    for cluster_id in range(len(sizes)):
+        cluster_members = active_idx[labels == cluster_id]
+        signed_map[cluster_members] = 1.0 if resection_vertex_mask[cluster_members].any() else -1.0
+
+    return {"active_mask": active_mask, "cluster_mask": cluster_mask, "signed_map": signed_map}

@@ -128,6 +128,7 @@ def build_fs_path(
         "white"      : ("surf", "{hemi}.white"),
         "pial"       : ("surf", "{hemi}.pial"),
         "inflated"   : ("surf", "{hemi}.inflated"),
+        "area"       : ("surf", "{hemi}.area"),
         "vertex-ctx" : ("label", "{hemi}.cortex.label"),
         "bem"        : ("bem", ""),
     }

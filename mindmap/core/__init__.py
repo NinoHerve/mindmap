@@ -9,6 +9,9 @@ from .metric import (
     point_to_area_distance,
     calc_roc_curve,
     calc_pr_curve,
+    calc_hypergeometric_enrichment,
+    calc_fold_enrichment,
+    label_clusters,
 )
 
 from .utils import (
@@ -28,8 +31,10 @@ from .io import (
 
 from .process import (
     normalize_data,
+    paint_on_dense_mesh,
     resample_pr_curve,
     resample_roc_curve,
+    precision_at_recall,
 )
 
 
@@ -50,6 +55,11 @@ __all__ = [
     "create_dataset_description",
     "calc_roc_curve",
     "calc_pr_curve",
+    "calc_hypergeometric_enrichment",
+    "calc_fold_enrichment",
+    "label_clusters",
+    "paint_on_dense_mesh",
     "resample_pr_curve",
     "resample_roc_curve",
+    "precision_at_recall",
 ]

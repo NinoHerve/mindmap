@@ -483,46 +483,46 @@ def plot_pr(
     return fig, ax
 
 
-def metric_box(df, **kwargs):
+def metric_box(df, group_name="Method", **kwargs):
     """Default style: Boxplot with overlaid raw data points."""
     defaults = {"palette": "viridis", "linewidth": 1.5}
     params = {**defaults, **kwargs}
 
     g = sns.FacetGrid(df, col="Metric", sharey=False, col_wrap=3)
-    g.map_dataframe(sns.boxplot, x="Method", y="Value", hue="Method", **params)
-    g.map_dataframe(sns.stripplot, x="Method", y="Value", color=".2", alpha=0.4)
+    g.map_dataframe(sns.boxplot, x=group_name, y="Value", hue=group_name, **params)
+    g.map_dataframe(sns.stripplot, x=group_name, y="Value", color=".2", alpha=0.4)
     g.add_legend()
 
     return g
 
-def metric_violin(df, **kwargs):
+def metric_violin(df, group_name="Method", **kwargs):
     """Default style: Split or inner-quartile violin plots."""
     defaults = {"inner": "quartile", "palette": "muted", "cut":0}
     params = {**defaults, **kwargs}
 
     g = sns.FacetGrid(df, col="Metric", sharey=False, col_wrap=3)
-    g.map_dataframe(sns.violinplot, x="Method", y="Value", hue="Method", **params)
+    g.map_dataframe(sns.violinplot, x=group_name, y="Value", hue=group_name, **params)
     g.add_legend()
 
     return g
 
-def metric_bar(df, **kwargs):
+def metric_bar(df, group_name="Method", **kwargs):
     """Default style: Bar chart with error bars (confidence intervals)."""
     defaults = {"errorbar":"sd", "capsize": .1, "palette":"magma"}
     params = {**defaults, **kwargs}
 
     g = sns.FacetGrid(df, col="Metric", sharey=False, col_wrap=3)
-    g.map_dataframe(sns.barplot, x="Method", y="Value", hue="Method", **params)
+    g.map_dataframe(sns.barplot, x=group_name, y="Value", hue=group_name, **params)
     g.add_legend()
 
     return g
 
-def metric_heatmap(df, title="", **kwargs):
+def metric_heatmap(df, group_name="Method", title="", **kwargs):
     """Default style: Clean matrix with centered annotations."""
     defaults = {"cmap": "RdYlGn", "annot": True, "fmt": ".2f", "cbar_kws": {"label": "Average Value"}}
     params = {**defaults, **kwargs}
 
-    pivot = df.pivot_table(index="Method", columns="Metric", values="Value", aggfunc="mean")
+    pivot = df.pivot_table(index=group_name, columns="Metric", values="Value", aggfunc="mean")
     plt.figure(figsize=(10, 6))
     sns.heatmap(pivot, **params)
     plt.title(f"{title} Overview")

@@ -219,6 +219,21 @@ def sample_volume_at_points(
     )
 
 
+def _pr_envelope(precision, recall):
+    """
+    Sorts a PR curve by recall and computes the "best precision achievable at
+    any recall >= r" envelope -- shared by `resample_pr_curve` and
+    `precision_at_recall`, since both need it before interpolating.
+    """
+    order = np.argsort(recall)
+    recall_sorted = np.asarray(recall)[order]
+    precision_sorted = np.asarray(precision)[order]
+
+    envelope = np.maximum.accumulate(precision_sorted[::-1])[::-1]
+
+    return recall_sorted, envelope
+
+
 def resample_pr_curve(precision, recall, n_points=100):
     """
     Resamples a precision-recall curve onto a fixed, common recall grid.
@@ -245,17 +260,43 @@ def resample_pr_curve(precision, recall, n_points=100):
     -------
     precision_grid, recall_grid: np.ndarray of shape (n_points,)
     """
-    order = np.argsort(recall)
-    recall_sorted = np.asarray(recall)[order]
-    precision_sorted = np.asarray(precision)[order]
-
-    # best precision achievable at any recall >= r
-    envelope = np.maximum.accumulate(precision_sorted[::-1])[::-1]
+    recall_sorted, envelope = _pr_envelope(precision, recall)
 
     recall_grid = np.linspace(0, 1, n_points)
     precision_grid = np.interp(recall_grid, recall_sorted, envelope)
 
     return precision_grid, recall_grid
+
+
+def precision_at_recall(precision, recall, target_recall):
+    """
+    Interpolated precision at a fixed recall level.
+
+    Answers a narrower question than AUC-PR: of the vertices needed to reach
+    `target_recall`, how many were actually correct? This isolates "is the
+    confident top answer reliable" from whole-curve behavior -- AUC-PR can
+    rank a smoother, more spread-out method above one with a sharper, more
+    trustworthy top answer, since AUC-PR also credits tail behavior this
+    doesn't look at at all.
+
+    Uses the same "best precision achievable at any recall >= r" envelope as
+    `resample_pr_curve`, to avoid the raw curve's sawtooth noise.
+
+    Parameters
+    ----------
+    precision, recall: array-like
+        Raw precision-recall curve, e.g. from `mm.core.calc_pr_curve`.
+
+    target_recall: float
+        Recall level to evaluate precision at.
+
+    Returns
+    -------
+    float
+    """
+    recall_sorted, envelope = _pr_envelope(precision, recall)
+
+    return float(np.interp(target_recall, recall_sorted, envelope))
 
 
 def resample_roc_curve(fpr, tpr, n_points=100):
@@ -291,6 +332,40 @@ def resample_roc_curve(fpr, tpr, n_points=100):
     tpr_grid = np.interp(fpr_grid, fpr_sorted, tpr_sorted)
 
     return tpr_grid, fpr_grid
+
+
+def paint_on_dense_mesh(
+    values: np.ndarray,
+    vertex_map: np.ndarray,
+    fill_value: float = 0,
+) -> np.ndarray:
+    """
+    Broadcast sparse per-dipole values onto a dense mesh via a vertex map.
+
+    Parameters
+    ----------
+    values: np.ndarray of shape (n_dipoles, ...)
+        Sparse per-dipole values (e.g. source activity, or a binary mask) for
+        a single hemisphere. Any trailing dimensions (e.g. time) are carried
+        through unchanged.
+
+    vertex_map: np.ndarray of shape (n_dense_vertices,)
+        Per-dense-vertex index into `values` (its nearest dipole), or -1 for
+        vertices whose nearest dipole isn't in-use. See
+        `mm.anatomy.source_space.build_dense_vertex_map`.
+
+    fill_value: float
+        Value assigned to dense-mesh vertices mapped to -1.
+
+    Returns
+    -------
+    np.ndarray of shape (n_dense_vertices, ...)
+        `values` broadcast onto the dense mesh.
+    """
+    pad = np.full((1,) + values.shape[1:], fill_value, dtype=values.dtype)
+    padded = np.concatenate([values, pad], axis=0)
+
+    return padded[vertex_map]
 
 
 def binarize_signal(

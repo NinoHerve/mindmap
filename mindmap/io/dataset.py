@@ -119,6 +119,7 @@ class DatasetManager:
         self.add_datatype("white", "fs", self._build_fs_hemis, self._load_surface_hemis)
         self.add_datatype("pial", "fs", self._build_fs_hemis, self._load_surface_hemis)
         self.add_datatype("inflated", "fs", self._build_fs_hemis, self._load_surface_hemis)
+        self.add_datatype("area", "fs", self._build_fs_hemis, self._load_area_hemis)
         self.add_datatype("vertex-ctx", "fs", self._build_fs_hemis, self._read_cortex_labels)
         self.add_datatype("vol-info", "fs", lambda root, subject, _, **kwargs: build_fs_path(root, subject, "t1.mgz", **kwargs), make_volume_info)
         self.add_datatype("ras2tkras", "fs", lambda root, subject, _, **kwargs: build_fs_path(root, subject, "t1.mgz", **kwargs), self._load_ras2tkras)
@@ -293,6 +294,13 @@ class DatasetManager:
         """Duplicate loading for each hemisphere."""
         lh = nib.freesurfer.io.read_geometry(path[0])
         rh = nib.freesurfer.io.read_geometry(path[1])
+
+        return lh, rh
+
+    def _load_area_hemis(self, path):
+        """Load per-vertex surface area (mm^2) for each hemisphere."""
+        lh = nib.freesurfer.io.read_morph_data(path[0])
+        rh = nib.freesurfer.io.read_morph_data(path[1])
 
         return lh, rh
 

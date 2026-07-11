@@ -392,7 +392,7 @@ class MetricSuite:
         if kind not in plot_kind:
             raise ValueError(f"Kind '{kind}' not supported. Choose from {list(plot_kind.keys())}")
 
-        return plot_kind[kind](df, **kwargs)
+        return plot_kind[kind](df, group_name=self.group_name, **kwargs)
 
     def _plot_relational(self, df, x_coord, kind="line", **kwargs):
         """

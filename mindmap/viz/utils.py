@@ -20,6 +20,8 @@ import mne
 
 from mindmap.geometry.io import surf_to_polydata
 from mindmap.analysis.functional.eeg.io import get_ch_positions
+from mindmap.anatomy.source_space.process import build_dense_vertex_map
+from mindmap.core.process import paint_on_dense_mesh
 
 def store_in_lists(*args):
     """
@@ -226,40 +228,14 @@ def build_hemi_pair(src):
     hemi_r = surf_to_polydata(src[1]["rr"], src[1]["tris"])
 
     # dipole-vertex mapping
-    map_l = _vertex_to_dipole_map(src[0])
-    map_r = _vertex_to_dipole_map(src[1])
+    map_l = build_dense_vertex_map(src[0])
+    map_r = build_dense_vertex_map(src[1])
 
     # initialize scalar
     hemi_l["signal"] = np.zeros(hemi_l.n_points)
     hemi_r["signal"] = np.zeros(hemi_r.n_points)
 
     return hemi_l, hemi_r, map_l, map_r, src[0]["nuse"]
-
-
-def _vertex_to_dipole_map(src_hemi):
-    """
-    Convert src["nearest"] to a vertex -> dipole index map.
-
-    Vertices whose nearest dipole was masked (not in src["vertno"])
-    are assigned -1.
-    """
-    vertno = np.array(src_hemi["vertno"])
-    nearest = src_hemi["nearest"].copy()
-
-    # initialize all as masked
-    vertex_map = np.full(nearest.shape[0], -1, dtype=int)
-
-    valid = np.isin(nearest, vertno)
-    vertno_to_dip = {v: i for i, v in enumerate(vertno)}
-
-    # map only valid entries
-    vertex_map[valid] = np.fromiter(
-        (vertno_to_dip[v] for v in nearest[valid]),
-        dtype = int,
-        count = np.sum(valid),
-    )
-
-    return vertex_map
 
 
 def create_line_mesh(pts: np.ndarray) -> pv.PolyData:
@@ -342,8 +318,8 @@ class BrainMesh(BaseMesh):
         self.hemi_r = surf_to_polydata(src[1]["rr"], src[1]["tris"])
 
         # Mapping
-        self.map_l = self._vertex_to_dipole_map(src[0])
-        self.map_r = self._vertex_to_dipole_map(src[1])
+        self.map_l = build_dense_vertex_map(src[0])
+        self.map_r = build_dense_vertex_map(src[1])
         self.split = src[0]["nuse"]
 
         super().__init__(times=times, functional=functional, scalar_name=scalar_name)
@@ -367,46 +343,15 @@ class BrainMesh(BaseMesh):
             self.hemi_r[self.scalar_name] = np.zeros(self.hemi_r.n_points)
             self.update_signal(0)
             
-    @staticmethod
-    def _vertex_to_dipole_map(src_hemi):
-        """
-        Convert src["nearest"] to a vertex -> dipole index map.
-
-        Vertices whose nearest dipole was masked (not in src["vertno"])
-        are assigned -1.
-        """
-        vertno = np.array(src_hemi["vertno"])
-        nearest = src_hemi["nearest"].copy()
-
-        # initialize all as masked
-        vertex_map = np.full(nearest.shape[0], -1, dtype=int)
-
-        valid = np.isin(nearest, vertno)
-        vertno_to_dip = {v: i for i, v in enumerate(vertno)}
-
-        # map only valid entries
-        vertex_map[valid] = np.fromiter(
-            (vertno_to_dip[v] for v in nearest[valid]),
-            dtype = int,
-            count = np.sum(valid),
-        )
-
-        return vertex_map
-
-
     def update_signal(self, idx):
         """Maps signal to the actual PolyData objects for plotting."""
 
         if self.scalar_name is not None:
             signal = self.get_column(idx)
 
-            # append 0 for vertices mapped to -1
-            sig_l = np.concatenate([signal[:self.split], [0,0]])
-            sig_r = np.concatenate([signal[self.split:], [0,0]])
-
             # apply new signal
-            self.hemi_l[self.scalar_name][:] = sig_l[self.map_l]
-            self.hemi_r[self.scalar_name][:] = sig_r[self.map_r]
+            self.hemi_l[self.scalar_name][:] = paint_on_dense_mesh(signal[:self.split], self.map_l)
+            self.hemi_r[self.scalar_name][:] = paint_on_dense_mesh(signal[self.split:], self.map_r)
 
 
 class SourceMesh(BrainMesh):

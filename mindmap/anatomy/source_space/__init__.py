@@ -13,7 +13,12 @@ from .io import (
 from .process import (
     filter_dipoles_by_id_list,
     filter_dipoles_by_nifti_mask,
+    sample_nifti_at_points,
     sample_nifti_at_source_space,
+    nifti_mask_to_points,
+    build_dense_vertex_map,
+    build_dipole_adjacency,
+    build_dipole_patch_area,
 )
 
 from .metric import (
@@ -31,6 +36,11 @@ __all__ = [
     "get_hemi_labels",
     "filter_dipoles_by_id_list",
     "filter_dipoles_by_nifti_mask",
+    "sample_nifti_at_points",
     "sample_nifti_at_source_space",
+    "nifti_mask_to_points",
+    "build_dense_vertex_map",
+    "build_dipole_adjacency",
+    "build_dipole_patch_area",
     "average_dipole_spacing",
 ]

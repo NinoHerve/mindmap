@@ -20,6 +20,38 @@ import pyvista as pv
 
 
 
+def compute_vertex_areas(
+        rr   : np.ndarray,
+        tris : np.ndarray,
+) -> np.ndarray:
+    """
+    Physical surface area (mm^2) of each vertex's patch on a triangulated mesh.
+
+    Each triangle's area is split evenly across its 3 vertices and summed --
+    the same scheme FreeSurfer's own `?h.area` files use (verified to match
+    to within floating-point rounding on a real subject).
+
+    Parameters
+    ----------
+    rr: np.ndarray of shape (n_vertices, 3)
+        Vertex positions, in meters (mne.SourceSpaces convention).
+
+    tris: np.ndarray of shape (n_triangles, 3)
+        Triangle vertex indices.
+
+    Returns
+    -------
+    np.ndarray of shape (n_vertices,)
+        Per-vertex area in mm^2.
+    """
+    mesh = pv.PolyData(rr*1000, np.hstack([np.full((len(tris), 1), 3), tris]))
+    mesh = mesh.compute_cell_sizes(length=False, area=True, volume=False)
+
+    contributions = np.repeat(mesh["Area"]/3, 3)
+
+    return np.bincount(tris.ravel(), weights=contributions, minlength=len(rr))
+
+
 def project_points_to_surface(
         points         : np.ndarray,
         target_surface : pv.PolyData,

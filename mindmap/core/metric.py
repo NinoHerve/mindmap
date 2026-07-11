@@ -20,8 +20,8 @@ License: MIT
 
 import numpy as np
 import scipy.sparse as sp
-from scipy.stats import rankdata
-from scipy.sparse.csgraph import shortest_path
+from scipy.stats import rankdata, hypergeom
+from scipy.sparse.csgraph import shortest_path, connected_components
 from scipy.spatial import cKDTree
 from scipy.spatial.distance import cdist
 from sklearn.metrics import (
@@ -723,6 +723,119 @@ def calc_pr_curve(
     ap = average_precision_score(yt, yp)
 
     return {"precision": precision, "recall": recall, "ap": ap}
+
+
+def calc_hypergeometric_enrichment(
+    k: float,
+    tp: float,
+    population_size: float,
+    n_positive: float,
+) -> float:
+    """
+    Probability of matching a ground truth this well, by chance alone.
+
+    Models drawing `k` units without replacement from a finite population of
+    `population_size` units, `n_positive` of which are "positive" (e.g. inside
+    a resection). Returns the one-sided p-value P(X >= tp) under that null --
+    how surprising it is that `tp` of the `k` drawn units are positive.
+
+    Parameters
+    ----------
+    k: float
+        Candidate size (e.g. number of dipoles, or mm^2 of cortex). Rounded
+        to the nearest integer -- scipy.stats.hypergeom silently returns NaN
+        for non-integer parameters at real-world scale (confirmed: valid for
+        all-integer inputs, or all-float at small scale, but not mixed
+        large-and-fractional), so non-integer physical units (e.g. mm^2) need
+        a fixed, whole-unit resolution to stay numerically valid -- 1 mm^2
+        here.
+
+    tp: float
+        Number of `k` that are positive (e.g. inside the resection). Same
+        unit as `k` and `population_size`/`n_positive`.
+
+    population_size: float
+        Total population size (e.g. total dipoles, or total cortex mm^2).
+
+    n_positive: float
+        Number of positive units in the population (e.g. resection size).
+
+    Returns
+    -------
+    float
+        P(X >= tp), the hypergeometric p-value. 1.0 if tp <= 0.
+    """
+    if tp <= 0:
+        return 1.0
+
+    k, tp = round(k), round(tp)
+    population_size, n_positive = round(population_size), round(n_positive)
+
+    return float(hypergeom.sf(tp - 1, population_size, n_positive, k))
+
+
+def calc_fold_enrichment(
+    k: float,
+    tp: float,
+    population_size: float,
+    n_positive: float,
+) -> float:
+    """
+    Effect-size companion to `calc_hypergeometric_enrichment`.
+
+    How many times denser in positives the candidate is than the population
+    base rate -- rewards purity independent of candidate size, unlike the
+    p-value, which rewards size independent of purity. Report both together
+    (e.g. as a volcano plot) rather than either alone.
+
+    Parameters
+    ----------
+    k, tp, population_size, n_positive: float
+        See `calc_hypergeometric_enrichment`.
+
+    Returns
+    -------
+    float
+        (tp / k) / (n_positive / population_size). 0 if tp <= 0.
+    """
+    if tp <= 0 or k <= 0:
+        return 0.0
+
+    base_rate = n_positive / population_size
+    return (tp / k) / base_rate
+
+
+def label_clusters(
+    adjacency: sp.spmatrix,
+    active_mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Groups the active subset of a graph into connected components.
+
+    Parameters
+    ----------
+    adjacency: scipy.sparse matrix of shape (n_nodes, n_nodes)
+        Adjacency over the full node set.
+
+    active_mask: np.ndarray of shape (n_nodes,), bool
+        Which nodes to cluster (e.g. vertices above an amplitude threshold).
+
+    Returns
+    -------
+    labels: np.ndarray of shape (n_active,)
+        Cluster label for each active node, in the same order as
+        `np.nonzero(active_mask)[0]`.
+
+    sizes: np.ndarray of shape (n_clusters,)
+        Number of nodes in each cluster, indexed by label.
+    """
+    active_idx = np.nonzero(active_mask)[0]
+    sub_adjacency = adjacency[active_idx][:, active_idx]
+
+    _, labels = connected_components(sub_adjacency, directed=False)
+    sizes = np.bincount(labels)
+
+    return labels, sizes
 
 
 def calc_rdm(arr1, arr2):
