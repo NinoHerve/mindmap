@@ -7,8 +7,10 @@ used elsewhere in this section (mne.SourceSpaces, Parcellation): they
 extract dipole coordinates/labels and delegate the actual computation to
 `mindmap.core.metric`, which only needs plain numpy arrays and stays
 reusable outside of this section. `density`, `small_world_sigma`,
-`rich_club_curve` and `modularity` need no such wrapping -- they already
-take a bare adjacency matrix -- so they are re-exported as-is.
+`rich_club_curve`, `modularity`, `rewire_connectome`,
+`perturb_connectome_weights` and `permute_connectome_weights` need no such
+wrapping -- they already take a bare adjacency matrix -- so they are
+re-exported as-is.
 
 See `process.py`'s module docstring for the literature and target ranges
 behind these metrics.
@@ -31,6 +33,9 @@ from mindmap.core.metric import (
     distance_decay_fit,
     hemispheric_symmetry,
     block_conservation,
+    rewire_connectome,
+    perturb_connectome_weights,
+    permute_connectome_weights,
 )
 from mindmap.anatomy.parcellation.base import Parcellation
 from mindmap.anatomy.source_space.io import get_dipole_positions, get_hemi_labels
@@ -81,4 +86,7 @@ __all__ = [
     "distance_decay_fit_from_source_space",
     "hemispheric_symmetry_from_source_space",
     "block_conservation_from_atlas",
+    "rewire_connectome",
+    "perturb_connectome_weights",
+    "permute_connectome_weights",
 ]

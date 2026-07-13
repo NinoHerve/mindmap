@@ -26,6 +26,7 @@ dependencies = [
     "scikit-learn>=0.0.1",
     "scikit-image>=0.0.1",
     "bctpy>=0.0.1",
+    "statsmodels>=0.0.1",
 ]
 
 [project.optional-dependencies]

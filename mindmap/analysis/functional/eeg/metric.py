@@ -29,6 +29,8 @@ from mindmap.analysis.functional.common.metric import (
     compute_mne_confusion, compute_mne_scores,
     compute_mne_roc, compute_mne_pr,
     compute_mne_correlation, compute_mne_cosine,
+    compute_mne_pattern_geometry_correlation,
+    compute_mne_explained_variance, compute_mne_ssim,
 )
 
 from .io import get_ch_positions
@@ -349,6 +351,7 @@ def compute_evoked_correlation(
     evoked_pred: mne.Evoked,
     mode: str = "temporal",
     method: str = "pearson",
+    polarity_invariant: bool = False,
 ) -> np.ndarray | float:
     """
     Compute correlation between two evoked objects.
@@ -369,6 +372,12 @@ def compute_evoked_correlation(
     method: str ['pearson', 'spearman', 'log-envelope']
         Correlation method.
 
+    polarity_invariant: bool
+        If True, returns |corr| instead of corr, so an overall sign flip
+        (e.g. an arbitrary polarity/reference convention) doesn't score as a
+        worse match than a perfectly in-phase one. See
+        `mindmap.core.metric.calc_correlation`.
+
     Returns
     -------
     corr: float or np.ndarray
@@ -382,6 +391,7 @@ def compute_evoked_correlation(
         evoked_pred,
         mode = mode,
         method = method,
+        polarity_invariant = polarity_invariant,
     )
 
 
@@ -389,6 +399,7 @@ def compute_evoked_cosine(
     evoked_true: mne.Evoked,
     evoked_pred: mne.Evoked,
     mode: str = "temporal",
+    polarity_invariant: bool = False,
 ) -> np.ndarray | float:
     """
     Compute cosine between two evoked objects.
@@ -406,8 +417,9 @@ def compute_evoked_cosine(
         - 'temporal': Correlation across time for each channel -> (n_channels,)
         - 'sptio-temporal': Flattened correlation -> scalar
 
-    method: str ['pearson', 'spearman', 'log-envelope']
-        Correlation method.
+    polarity_invariant: bool
+        If True, returns |cos| instead of cos -- see
+        `mindmap.core.metric.calc_cosine`.
 
     Returns
     -------
@@ -421,6 +433,7 @@ def compute_evoked_cosine(
         evoked_true,
         evoked_pred,
         mode = mode,
+        polarity_invariant = polarity_invariant,
     )
 
 
@@ -460,6 +473,117 @@ def compute_evoked_corr_matrix(
     # compute correlation matrix
     return calc_correlation_matrix(data1, data2, method=method, eps=1e-8)
 
+
+def compute_evoked_pattern_geometry_correlation(
+    evoked_true: mne.Evoked,
+    evoked_pred: mne.Evoked,
+    method: str = "pearson",
+    compare_method: str = "spearman",
+) -> float:
+    """
+    Second-order ("representational similarity") comparison between two
+    evoked objects: whether the geometry of how the spatial pattern
+    evolves across time matches, rather than the raw topographies
+    themselves. See `mindmap.core.metric.calc_pattern_geometry_correlation`
+    for the full explanation.
+
+    Parameters
+    ----------
+    evoked_true: mne.Evoked
+        Reference activity (e.g. True iEEG).
+
+    evoked_pred: mne.Evoked
+        Estimated activity (e.g. virtual iEEG).
+
+    method: str ['pearson', 'spearman', 'log-envelope']
+        Method used to build each evoked's own dissimilarity matrix.
+
+    compare_method: str ['pearson', 'spearman', 'log-envelope']
+        Method used for the final comparison between the two dissimilarity
+        matrices.
+
+    Returns
+    -------
+    float
+    """
+    if not same_evoked(evoked_true, evoked_pred):
+        raise ValueError("Evokeds must have same channels and timepoints.")
+
+    return compute_mne_pattern_geometry_correlation(
+        evoked_true, evoked_pred, method=method, compare_method=compare_method,
+    )
+
+
+def compute_evoked_explained_variance(
+    evoked_true: mne.Evoked,
+    evoked_pred: mne.Evoked,
+    mode: str = "spatio-temporal",
+    polarity_invariant: bool = False,
+) -> np.ndarray | float:
+    """
+    Compute explained variance (R^2) between two evoked objects. Unlike
+    correlation/cosine, this is sensitive to amplitude scale -- see
+    `mindmap.core.metric.calc_explained_variance`.
+
+    Parameters
+    ----------
+    evoked_true: mne.Evoked
+        Reference activity (e.g. True iEEG).
+
+    evoked_pred: mne.Evoked
+        Estimated activity (e.g. virtual iEEG).
+
+    mode: str ['spatial', 'temporal', 'spatio-temporal']
+
+    polarity_invariant: bool
+        If True, also scores against a sign-flipped evoked_pred and keeps
+        whichever is higher -- see
+        `mindmap.core.metric.calc_explained_variance`.
+
+    Returns
+    -------
+    r2: float | np.ndarray
+    """
+    if not same_evoked(evoked_true, evoked_pred):
+        raise ValueError("Evokeds must have same channels and timepoints.")
+
+    return compute_mne_explained_variance(evoked_true, evoked_pred, mode=mode, polarity_invariant=polarity_invariant)
+
+
+def compute_evoked_ssim(
+    evoked_true: mne.Evoked,
+    evoked_pred: mne.Evoked,
+    win_size: int = 7,
+    data_range: float = None,
+) -> float:
+    """
+    Compute Structural Similarity (SSIM) between two evoked objects,
+    treating their data as a 2D (channels x time) signal -- see
+    `mindmap.core.metric.calc_ssim`.
+
+    Parameters
+    ----------
+    evoked_true: mne.Evoked
+        Reference activity (e.g. True iEEG).
+
+    evoked_pred: mne.Evoked
+        Estimated activity (e.g. virtual iEEG).
+
+    win_size: int
+        Sliding comparison window size, clamped to fit the data if needed.
+
+    data_range: float, optional
+        Dynamic range of the data. Defaults to the joint range of both
+        evokeds.
+
+    Returns
+    -------
+    float
+    """
+    if not same_evoked(evoked_true, evoked_pred):
+        raise ValueError("Evokeds must have same channels and timepoints.")
+
+    return compute_mne_ssim(evoked_true, evoked_pred, win_size=win_size, data_range=data_range)
 
 
 def compute_minimum_distance(
@@ -759,6 +883,56 @@ def compute_evoked_rem(
         evk_est.data,
         axis = mode_map[mode],
     )
+
+
+def compute_evoked_rem_correlation(
+    evoked_ref: mne.Evoked,
+    evoked_est: mne.Evoked,
+    mode: str = "temporal",
+    rng: tuple[float, float] = (None, None),
+) -> np.ndarray | float:
+    """
+    Reduces `compute_evoked_rem`'s full relative-energy map to a score per
+    element of `mode`'s axis: how well the estimate's energy distribution
+    tracks the reference's own normalized energy distribution.
+
+    `compute_evoked_rem(evoked_ref, evoked_est, mode)` returns
+    est_energy / sum(ref_energy along mode's axis) -- not yet comparable to
+    a single ideal target. Calling it a second time with the reference
+    against itself, `compute_evoked_rem(evoked_ref, evoked_ref, mode)`,
+    gives exactly that target (the reference's own normalized energy
+    profile, which by construction sums to 1 along the reduced axis).
+    Correlating the two maps *along the axis mode already reduced over*
+    answers "does the estimate's energy distribution match the reference's"
+    per channel (mode="temporal") or per timepoint (mode="spatial") --
+    mirroring `compute_evoked_correlation`/`compute_evoked_cosine`'s
+    per-mode granularity, rather than collapsing straight to one number.
+
+    Parameters
+    ----------
+    evoked_ref: mne.Evoked
+        Reference evoked.
+
+    evoked_est: mne.Evoked
+        Estimated evoked.
+
+    mode: str ['spatial', 'temporal']
+        Passed through to `compute_evoked_rem`.
+        - 'spatial': one score per timepoint -> (n_timepoints,)
+        - 'temporal': one score per channel -> (n_channels,)
+
+    rng: tuple[float, float]
+        Time window passed through to `compute_evoked_rem`.
+
+    Returns
+    -------
+    float | np.ndarray
+    """
+    rem_ideal = compute_evoked_rem(evoked_ref, evoked_ref, mode=mode, rng=rng)
+    rem_actual = compute_evoked_rem(evoked_ref, evoked_est, mode=mode, rng=rng)
+
+    mode_map = {"spatial": 0, "temporal": 1}
+    return calc_correlation(rem_ideal, rem_actual, method="pearson", axis=mode_map[mode])
 
 
 def compute_evoked_confusion(

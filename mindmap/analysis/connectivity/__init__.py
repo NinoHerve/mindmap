@@ -26,6 +26,9 @@ from .metric import (
     distance_decay_fit_from_source_space,
     hemispheric_symmetry_from_source_space,
     block_conservation_from_atlas,
+    rewire_connectome,
+    perturb_connectome_weights,
+    permute_connectome_weights,
 )
 
 __all__ = [
@@ -43,4 +46,7 @@ __all__ = [
     "distance_decay_fit_from_source_space",
     "hemispheric_symmetry_from_source_space",
     "block_conservation_from_atlas",
+    "rewire_connectome",
+    "perturb_connectome_weights",
+    "permute_connectome_weights",
 ]

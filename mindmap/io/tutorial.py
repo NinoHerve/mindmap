@@ -21,6 +21,7 @@ import mne
 import nibabel as nib
 
 from mindmap.analysis.functional.eeg.utils import scale_montage
+from mindmap.analysis.simulation.components import Source
 from mindmap.anatomy.parcellation.base import Parcellation
 from mindmap.anatomy.mri import read_mri
 from .dataset import DatasetManager
@@ -49,6 +50,7 @@ class TutoManager(DatasetManager):
         self.add_datatype("ieeg", None, self._build_path, self._load_eeg)
         self.add_datatype("eeg-trans", "mm", self._build_path, load_identity_trans)
         self.add_datatype("gold", "sim", self._build_path, mne.read_source_estimate)
+        self.add_datatype("source", "sim", self._build_path, Source.load)
         self.add_datatype("tractogram", "cmp", self._build_path, nib.streamlines.load)
         self.add_datatype("t12diff", "cmp", self._build_path, self._load_t12diff)
         self.add_datatype("resec", "mm", self._build_path, read_mri)
@@ -126,7 +128,19 @@ class TutoManager(DatasetManager):
 
             else:
                 raise ValueError(f"No 'gold' standard for sub-{subject}.")
-            
+
+        if suffix == "source":
+            if "simf" in subject:
+                run = kwargs.get("run")
+                if not run:
+                    raise ValueError("suffix 'source' requires a 'run' entity.")
+
+                src_dir = root/f"sub-{subject}"/"sources"
+                return src_dir/f"run-{int(run):03d}_source.json"
+
+            else:
+                raise ValueError(f"No 'source' ground truth for sub-{subject}.")
+
         if suffix == "resec":
             if "spike" in subject:
                 # manage bids entities

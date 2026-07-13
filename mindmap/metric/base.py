@@ -11,6 +11,9 @@ License: MIT
 """
 
 import json
+import os
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +25,34 @@ from mindmap.viz.core import (
     metric_bar, metric_box, metric_heatmap, metric_violin, metric_relational
 )
 from mindmap.viz.dispatch import plot_brain_activity
+
+
+def _atomic_replace(path: Path, write_func):
+    """
+    Writes `path` by first calling `write_func(tmp_path)` to fully write the
+    content to a temporary sibling file, then atomically replacing `path`
+    with it via `os.replace` (atomic on both POSIX and Windows).
+
+    Guarantees `path` is always either its previous complete content or the
+    new complete content -- never a truncated/partial file -- even if the
+    process is killed mid-write. Plain `open(path, "w")` / `np.savez(path)`
+    truncate the destination immediately, so a crash mid-write would
+    otherwise destroy the previous good save, not just fail to add the new
+    one.
+
+    `tmp_path` keeps `path`'s full original filename as its tail (only a
+    unique token is prefixed), since some writers (numpy, MNE) validate or
+    auto-append a specific suffix -- e.g. MNE's source-space writer checks
+    for a "-src.fif" ending, which a token spliced in before the extension
+    would break, but a prefix never touches.
+    """
+    tmp_path = path.with_name(f".tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}-{path.name}")
+    try:
+        write_func(tmp_path)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 def _is_arraylike(val):
@@ -81,14 +112,29 @@ def _entry_to_frame(entry, group_name):
 
 class MetricSuite:
     """Manages metrics from a same study."""
-    def __init__(self, name="Evaluation", group_name="Label", context=None):
+    def __init__(self, name="Evaluation", group_name="Label", subject=None, metadata=None, context=None):
         """
         Docstring for __init__
-        
+
         Parameters
         ----------
         name: str
             Study name
+
+        subject: str, optional
+            Identifier for the subject/patient this suite's entries belong
+            to (e.g. "sub-01"). Automatically tagged as a "Subject" column
+            on every entry registered via `register()`, so per-subject
+            suites can later be pooled with `MetricSuite.concat` for
+            group-level analysis. Can be overridden per-entry via
+            `register(..., subject=...)`.
+
+        metadata: dict, optional
+            Free-form provenance to carry alongside the results (e.g.
+            solver parameters, dataset path, a git commit, a one-line
+            description) -- saved and reloaded as-is, so a folder written
+            by `save()` documents its own context rather than being just
+            numbers. Must be JSON-serializable.
 
         context: dict
             Context for 3D plotting.
@@ -98,6 +144,12 @@ class MetricSuite:
         self.name = name
         self._entries = []
         self.group_name = group_name
+        self.subject = subject
+
+        if metadata is not None and not isinstance(metadata, dict):
+            raise TypeError("metadata must be a dictionary.")
+        self.metadata = metadata or {}
+
         self.context = context or {}
         self._validate_context()
 
@@ -130,7 +182,7 @@ class MetricSuite:
                     f"got {type(self.context['src']).__name__} instead."
                 )
 
-    def register(self, label, metric, values, **coords):
+    def register(self, label, metric, values, subject=None, **coords):
         """
         Adds a metric's results to the study.
 
@@ -145,7 +197,20 @@ class MetricSuite:
         Data is kept as arrays and only expanded into a long-format table
         lazily, when `.dataframe`/`.plot()`/etc. are accessed - this keeps
         registering large stacks (e.g. thousands of per-run curves) cheap.
+
+        Parameters
+        ----------
+        subject: str, optional
+            Overrides this suite's `self.subject` for this entry only.
+            Stored as a "Subject" tag, the same constant-tag mechanism as
+            any other coordinate. Omit to use the suite's default (set via
+            `MetricSuite(subject=...)`), which is None (no "Subject"
+            column at all) unless configured.
         """
+        effective_subject = subject if subject is not None else self.subject
+        if effective_subject is not None:
+            coords = {**coords, "Subject": effective_subject}
+
         value = np.asarray(values) if _is_arraylike(values) else np.asarray([values])
 
         n_points = value.shape[-1]
@@ -193,7 +258,10 @@ class MetricSuite:
         func: callable(array, axis=0) -> array
             Reduction applied along the reps axis, e.g. np.mean, np.median.
         """
-        reduced = MetricSuite(name=self.name, group_name=self.group_name, context=self.context)
+        reduced = MetricSuite(
+            name=self.name, group_name=self.group_name, subject=self.subject,
+            metadata=self.metadata, context=self.context,
+        )
         for e in self._entries:
             value = func(e["value"], axis=0) if e["value"].ndim == 2 else e["value"]
             reduced.register(e["label"], e["metric"], value, **e["coords"])
@@ -207,7 +275,7 @@ class MetricSuite:
         frames = [_entry_to_frame(e, self.group_name) for e in self._entries]
         return pd.concat(frames, ignore_index=True)
 
-    def get_filtered_df(self, metrics=None, labels=None):
+    def get_filtered_df(self, metrics=None, labels=None, subjects=None):
         """Filter data"""
         df = self.dataframe
         if df.empty:
@@ -219,6 +287,11 @@ class MetricSuite:
         if labels:
             labels = [labels] if isinstance(labels, str) else labels
             df = df[df[self.group_name].isin(labels)]
+        if subjects:
+            if "Subject" not in df.columns:
+                raise ValueError("No subjects have been registered in this MetricSuite.")
+            subjects = [subjects] if isinstance(subjects, str) else subjects
+            df = df[df["Subject"].isin(subjects)]
 
         return df
 
@@ -226,14 +299,29 @@ class MetricSuite:
         """Quick statistical overview."""
         return self.dataframe.groupby(["Metric", self.group_name])["Value"].agg(["mean", "std", "count"])
 
-    def save(self, folder: str | Path):
+    def save(self, folder: str | Path, overwrite: bool = False):
         """
         Saves the MetricSuite to disk as a compact array store (data.npz) plus
         a small metadata file (meta.json). Keeping arrays as arrays (rather
         than exploding everything into a long-format CSV) is what makes this
         cheap even for studies with thousands of registered per-run curves.
+
+        Parameters
+        ----------
+        folder: str | Path
+
+        overwrite: bool
+            If False (default), refuses to write into a folder that already
+            holds a previous save (i.e. has a meta.json), so a typo'd or
+            reused path can't silently destroy an earlier study's results.
         """
         folder = Path(folder)
+
+        if (folder/"meta.json").exists() and not overwrite:
+            raise FileExistsError(
+                f"'{folder}' already contains a saved MetricSuite. Use overwrite=True to replace it."
+            )
+
         folder.mkdir(parents=True, exist_ok=True)
 
         # 1. Save raw arrays + per-entry metadata
@@ -258,24 +346,91 @@ class MetricSuite:
                 "array_coord_names": array_coord_names,
             })
 
-        np.savez(folder/"data.npz", **arrays)
+        _atomic_replace(folder/"data.npz", lambda p: np.savez(p, **arrays))
 
-        with open(folder/"meta.json", "w", encoding="utf-8") as f:
-            json.dump(
-                {"name": self.name, "group_name": self.group_name, "entries": entries_meta},
-                f, indent=2,
+        # 2. Save MNE Context Objects if they exist -- and remove any stale
+        # one left over from a previous save into this same folder that no
+        # longer applies (e.g. this suite's context dropped 'ave'/'src').
+        ave_path = folder/"context-ave.fif"
+        if self.context.get("ave") is not None:
+            _atomic_replace(ave_path, lambda p: self.context["ave"].save(p, overwrite=True, verbose="warning"))
+        elif ave_path.exists():
+            ave_path.unlink()
+
+        src_path = folder/"context-src.fif"
+        if self.context.get("src") is not None:
+            _atomic_replace(
+                src_path,
+                lambda p: mne.write_source_spaces(p, self.context["src"], overwrite=True, verbose="warning"),
             )
+        elif src_path.exists():
+            src_path.unlink()
 
-        # 2. Save MNE Context Objects if they exist
-        if "ave" in self.context and self.context["ave"] is not None:
-            ave_path = folder/"context-ave.fif"
-            self.context["ave"].save(ave_path, overwrite=True, verbose="warning")
+        # 3. Write meta.json last, atomically, and only once the data/context
+        # it describes is already safely on disk -- so a crash can never
+        # leave a meta.json that references entries data.npz doesn't have
+        # yet (the reverse -- data.npz holding entries meta.json hasn't
+        # caught up to describing yet -- is harmless: load() only reads what
+        # meta.json points to).
+        def _write_meta(p):
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "name": self.name,
+                        "group_name": self.group_name,
+                        "subject": self.subject,
+                        "metadata": self.metadata,
+                        "saved_at": datetime.now().isoformat(),
+                        "entries": entries_meta,
+                    },
+                    f, indent=2,
+                )
 
-        if "src" in self.context and self.context["src"] is not None:
-            src_path = folder/"context-src.fif"
-            mne.write_source_spaces(src_path, self.context["src"], overwrite=True, verbose="warning")
+        _atomic_replace(folder/"meta.json", _write_meta)
 
         print(f"MetricSuite and context successfully saved to folder: {folder}")
+
+    @staticmethod
+    def peek(folder: str | Path) -> dict:
+        """
+        Lightweight inspection of a folder written by `save()`, without
+        loading the array data or MNE context files.
+
+        Reads only meta.json -- cheap even when the study has thousands of
+        registered entries or a large `mne.SourceSpaces` context. Useful for
+        deciding whether a saved folder is worth a full `load()`, e.g. when
+        scanning many per-subject folders before combining them.
+
+        Parameters
+        ----------
+        folder: str | Path
+
+        Returns
+        -------
+        dict
+            'name', 'group_name', 'subject', 'metadata', 'saved_at',
+            'n_entries', 'metrics' (sorted set of registered metric names),
+            'labels' (sorted set of registered group_name values).
+        """
+        folder = Path(folder)
+        meta_path = folder/"meta.json"
+        if not meta_path.exists():
+            raise FileNotFoundError(f"Could not find file '{meta_path.name}' inside metric folder.")
+
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+
+        entries = meta.get("entries", [])
+        return {
+            "name": meta["name"],
+            "group_name": meta["group_name"],
+            "subject": meta.get("subject"),
+            "metadata": meta.get("metadata", {}),
+            "saved_at": meta.get("saved_at"),
+            "n_entries": len(entries),
+            "metrics": sorted({e["metric"] for e in entries}),
+            "labels": sorted({e["label"] for e in entries}),
+        }
 
     @staticmethod
     def load(folder: str | Path):
@@ -305,7 +460,10 @@ class MetricSuite:
             context["src"] = mne.read_source_spaces(src_path, verbose=False)
 
         # 2. Reconstruct the base MetricSuite object
-        suite = MetricSuite(name=meta["name"], group_name=meta["group_name"], context=context)
+        suite = MetricSuite(
+            name=meta["name"], group_name=meta["group_name"], subject=meta.get("subject"),
+            metadata=meta.get("metadata"), context=context,
+        )
 
         # 3. Repopulate entries from the array store
         data_path = folder/"data.npz"
@@ -319,8 +477,110 @@ class MetricSuite:
 
         return suite
 
+    @classmethod
+    def concat(cls, suites, name="Combined"):
+        """
+        Combines multiple MetricSuites -- typically one per subject, each
+        loaded via `load()` -- into a single suite for group-level analysis.
 
-    def plot(self, metrics=None, labels=None, coord=None, kind=None, **kwargs):
+        Each input suite's entries are pooled as-is: any "Subject" tag
+        already on them (from `MetricSuite(subject=...)` or a per-call
+        `register(..., subject=...)`) is preserved, since this only merges
+        already-registered entries -- it doesn't add subject tags itself.
+
+        `context` (used for `.plot(kind="vista")` spatial/brain plots) is
+        not carried over: a merged multi-subject suite generally can't
+        share one `src`/`ave` context across subjects, so spatial plotting
+        on the result isn't supported unless you set `.context` afterwards
+        to something valid for whichever subject(s) you're plotting.
+
+        Parameters
+        ----------
+        suites: list of MetricSuite
+            Suites to combine. Must all share the same `group_name` --
+            construct each per-subject suite with the same one (the
+            default, "Label", already matches unless overridden).
+
+        name: str
+            Name for the combined suite.
+
+        Returns
+        -------
+        MetricSuite
+        """
+        if not suites:
+            raise ValueError("`suites` must contain at least one MetricSuite.")
+
+        group_name = suites[0].group_name
+        for s in suites:
+            if s.group_name != group_name:
+                raise ValueError(
+                    "Cannot combine suites with different group_name "
+                    f"('{group_name}' vs '{s.group_name}')."
+                )
+
+        combined = cls(name=name, group_name=group_name)
+        for s in suites:
+            combined._entries.extend(s._entries)
+
+        return combined
+
+    @classmethod
+    def load_many(cls, folders, name="Combined"):
+        """
+        Loads multiple folders written by `save()` and combines them into a
+        single suite -- the common "one folder per subject, analyze as a
+        group" workflow in one call instead of a hand-written load+concat loop.
+
+        Parameters
+        ----------
+        folders: list of str | Path
+
+        name: str
+            Name for the combined suite.
+
+        Returns
+        -------
+        MetricSuite
+        """
+        suites = [cls.load(folder) for folder in folders]
+        return cls.concat(suites, name=name)
+
+    @classmethod
+    def load_study(cls, root: str | Path, name: str = None):
+        """
+        Loads every subject subfolder under `root` and combines them into a
+        single suite.
+
+        Expects the directory layout produced by saving one MetricSuite per
+        subject into `root/<subject>/` -- i.e. every immediate subdirectory
+        of `root` that contains a meta.json (its own `save()` output).
+        Subfolders without one (stray non-MetricSuite directories) are
+        skipped silently.
+
+        Parameters
+        ----------
+        root: str | Path
+
+        name: str, optional
+            Name for the combined suite. Defaults to the root folder's name.
+
+        Returns
+        -------
+        MetricSuite
+        """
+        root = Path(root)
+        if not root.exists():
+            raise FileNotFoundError(f"Could not find folder '{root}'.")
+
+        folders = sorted(p for p in root.iterdir() if p.is_dir() and (p/"meta.json").exists())
+        if not folders:
+            raise FileNotFoundError(f"No saved MetricSuite folders (with a meta.json) found under '{root}'.")
+
+        return cls.load_many(folders, name=name or root.name)
+
+
+    def plot(self, metrics=None, labels=None, subjects=None, coord=None, kind=None, **kwargs):
         """
         Flexible plotting interface.
 
@@ -331,7 +591,11 @@ class MetricSuite:
 
         labels: list | str
             Filter for specific labels.
-        
+
+        subjects: list | str, optional
+            Filter for specific subjects (the "Subject" column registered
+            via `MetricSuite(subject=...)` / `register(..., subject=...)`).
+
         coord: str, optional
             The coordinate column name to use as the X-axis. If provided, triggers
             a relational plot.
@@ -341,10 +605,12 @@ class MetricSuite:
             for relational layouts.
 
         **kwargs:
-            Passed to the underlying Seaborn/Matplotlib functions.
+            Passed to the underlying Seaborn/Matplotlib functions. Pass
+            `group_name="Subject"` to facet/color by subject instead of by
+            the suite's default grouping column.
         """
         # get data
-        df = self.get_filtered_df(metrics, labels)
+        df = self.get_filtered_df(metrics, labels, subjects)
 
         if df.empty:
             print("Query returned no data.")
@@ -392,16 +658,17 @@ class MetricSuite:
         if kind not in plot_kind:
             raise ValueError(f"Kind '{kind}' not supported. Choose from {list(plot_kind.keys())}")
 
-        return plot_kind[kind](df, group_name=self.group_name, **kwargs)
+        kwargs.setdefault("group_name", self.group_name)
+        return plot_kind[kind](df, **kwargs)
 
     def _plot_relational(self, df, x_coord, kind="line", **kwargs):
         """
         Plot relational plot.
         """
+        kwargs.setdefault("group_name", self.group_name)
         return metric_relational(
             df,
             coords = [x_coord],
-            hue = self.group_name,
             kind = kind,
             **kwargs,
         )

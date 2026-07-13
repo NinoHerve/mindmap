@@ -21,6 +21,7 @@ from mindmap.core.metric import (
     calc_roc_curve, calc_pr_curve, calc_correlation,
     calc_cosine, calc_hypergeometric_enrichment,
     calc_fold_enrichment, label_clusters, point_to_area_distance,
+    calc_pattern_geometry_correlation, calc_explained_variance, calc_ssim,
 )
 from mindmap.anatomy.source_space import (
     get_dipole_positions, sample_nifti_at_points, nifti_mask_to_points,
@@ -35,10 +36,11 @@ def compute_mne_correlation(
     obj_pred: mne.Evoked | mne.SourceEstimate,
     mode: str = "spatio-temporal",
     method: str = "pearson",
+    polarity_invariant: bool = False,
 ) -> float | np.ndarray:
     """
     Compute correlation.
-    
+
     Parameters
     ----------
     obj_true: mne.Evoked | mne.SourceEstimate
@@ -48,6 +50,9 @@ def compute_mne_correlation(
         Estimated activity.
 
     mode: str ['spatial', 'temporal', 'spatio-temporal']
+
+    polarity_invariant: bool
+        If True, returns |corr| -- see `mindmap.core.metric.calc_correlation`.
 
     Returns
     -------
@@ -62,7 +67,7 @@ def compute_mne_correlation(
     target_axis = axis_map[mode]
     center_axis = axis_map["temporal"] if target_axis is None else target_axis
 
-    return calc_correlation(y_true, y_pred, method, target_axis, center_axis)
+    return calc_correlation(y_true, y_pred, method, target_axis, center_axis, polarity_invariant)
 
 
 def compute_mne_cosine(
@@ -70,10 +75,11 @@ def compute_mne_cosine(
     obj_pred: mne.Evoked | mne.SourceEstimate,
     mode: str = "spatio-temporal",
     absolute: bool = False,
+    polarity_invariant: bool = False,
 ) -> float | np.ndarray:
     """
     Compute cosine similarity.
-    
+
     Parameters
     ----------
     obj_true: mne.Evoked | mne.SourceEstimate
@@ -83,7 +89,10 @@ def compute_mne_cosine(
         Estimated activity.
 
     mode: str ['spatial', 'temporal', 'spatio-temporal']
-    
+
+    polarity_invariant: bool
+        If True, returns |cos| -- see `mindmap.core.metric.calc_cosine`.
+
     Returns
     -------
     cos: float | np.ndarray
@@ -96,7 +105,112 @@ def compute_mne_cosine(
     axis_map = {"spatio-temporal": None, "spatial": 0, "temporal": 1}
     target_axis = axis_map[mode]
 
-    return calc_cosine(y_true, y_pred, target_axis, absolute)
+    return calc_cosine(y_true, y_pred, target_axis, absolute, polarity_invariant)
+
+
+def compute_mne_pattern_geometry_correlation(
+    obj_true: mne.Evoked | mne.SourceEstimate,
+    obj_pred: mne.Evoked | mne.SourceEstimate,
+    method: str = "pearson",
+    compare_method: str = "spearman",
+) -> float:
+    """
+    Second-order ("representational similarity") comparison of how the
+    spatial pattern's geometry evolves across time. See
+    `calc_pattern_geometry_correlation` for the full explanation.
+
+    Parameters
+    ----------
+    obj_true: mne.Evoked | mne.SourceEstimate
+        Ground truth activity.
+
+    obj_pred: mne.Evoked | mne.SourceEstimate
+        Estimated activity.
+
+    method: str ['pearson', 'spearman', 'log-envelope']
+        Method used to build each object's own dissimilarity matrix.
+
+    compare_method: str ['pearson', 'spearman', 'log-envelope']
+        Method used for the final comparison between the two dissimilarity
+        matrices.
+
+    Returns
+    -------
+    float
+    """
+    return calc_pattern_geometry_correlation(
+        obj_true.data, obj_pred.data, method=method, compare_method=compare_method,
+    )
+
+
+def compute_mne_explained_variance(
+    obj_true: mne.Evoked | mne.SourceEstimate,
+    obj_pred: mne.Evoked | mne.SourceEstimate,
+    mode: str = "spatio-temporal",
+    polarity_invariant: bool = False,
+) -> float | np.ndarray:
+    """
+    Compute explained variance (R^2). See `calc_explained_variance` --
+    unlike correlation/cosine, this is sensitive to amplitude scale.
+
+    Parameters
+    ----------
+    obj_true: mne.Evoked | mne.SourceEstimate
+        Ground truth activity.
+
+    obj_pred: mne.Evoked | mne.SourceEstimate
+        Estimated activity.
+
+    mode: str ['spatial', 'temporal', 'spatio-temporal']
+
+    polarity_invariant: bool
+        If True, also scores against a sign-flipped obj_pred and keeps
+        whichever is higher -- see `mindmap.core.metric.calc_explained_variance`.
+
+    Returns
+    -------
+    r2: float | np.ndarray
+    """
+    y_true = obj_true.data
+    y_pred = obj_pred.data
+
+    axis_map = {"spatio-temporal": None, "spatial": 0, "temporal": 1}
+    target_axis = axis_map[mode]
+    center_axis = axis_map["temporal"] if target_axis is None else target_axis
+
+    return calc_explained_variance(y_true, y_pred, target_axis, center_axis, polarity_invariant)
+
+
+def compute_mne_ssim(
+    obj_true: mne.Evoked | mne.SourceEstimate,
+    obj_pred: mne.Evoked | mne.SourceEstimate,
+    win_size: int = 7,
+    data_range: float = None,
+) -> float:
+    """
+    Compute Structural Similarity (SSIM), treating the object's data as a
+    2D (channels/vertices x time) signal. See `calc_ssim`.
+
+    Parameters
+    ----------
+    obj_true: mne.Evoked | mne.SourceEstimate
+        Ground truth activity.
+
+    obj_pred: mne.Evoked | mne.SourceEstimate
+        Estimated activity.
+
+    win_size: int
+        Sliding comparison window size, clamped to fit the data if needed.
+
+    data_range: float, optional
+        Dynamic range of the data. Defaults to the joint range of both
+        objects.
+
+    Returns
+    -------
+    float
+    """
+    return calc_ssim(obj_true.data, obj_pred.data, win_size=win_size, data_range=data_range)
 
 
 def compute_mne_confusion(
@@ -368,6 +482,66 @@ def find_peak_resection_distance(
     distance = point_to_area_distance(peak_pos, resection_points, x=1)
 
     return {"peak_vertex": peak_vertex, "inside_resection": False, "distance_mm": float(distance)}
+
+
+def find_peak_localization_error(
+    vertex_activity: np.ndarray,
+    true_source_mask: np.ndarray,
+    dipole_positions: np.ndarray,
+) -> dict:
+    """
+    Euclidean distance from the single global-activity-maximum vertex to
+    the true simulated source region.
+
+    The simulation-ground-truth analogue of `find_peak_resection_distance`:
+    same classic localization-error baseline (single loudest vertex vs. a
+    known true region, 0 if it lands inside), just against a source region
+    already known in vertex space (e.g. from a simulation's
+    `Source.select_targets(source_space, parc, ras2tkras)`) rather than one
+    that needs resolving from a volumetric nifti mask -- so unlike the
+    resection case, no affine/voxel-sampling step is needed here: the
+    "inside" test and the distance's target cloud both come directly from
+    `true_source_mask`, since the ground truth was defined on this exact
+    vertex grid to begin with (nothing lossy about working vertex-to-vertex
+    here, unlike sampling a real anatomical resection onto a decimated
+    source space). Blind to multifocal maps by the same construction as
+    `find_peak_resection_distance` -- read alongside a cluster/PR-style
+    metric, not as the sole score.
+
+    Parameters
+    ----------
+    vertex_activity: np.ndarray of shape (n_vertices,)
+        Per-vertex estimated activity (e.g. a reconstructed
+        mne.SourceEstimate's data at one timepoint).
+
+    true_source_mask: np.ndarray of shape (n_vertices,), bool
+        Ground-truth vertex mask for the true simulated source, e.g. from
+        `Source.select_targets(source_space, parc, ras2tkras)`.
+
+    dipole_positions: np.ndarray of shape (n_vertices, 3)
+        Vertex coordinates in tkRAS [mm], e.g.
+        `mm.anatomy.source_space.get_dipole_positions(src) * 1000`, same
+        vertex order as `vertex_activity`/`true_source_mask`.
+
+    Returns
+    -------
+    dict
+        'peak_vertex': int -- index of the global |activity| maximum.
+        'inside_source': bool -- whether the peak vertex itself is part of
+            the true source region.
+        'distance_mm': float -- 0 if inside; else the Euclidean distance
+            from the peak vertex to the nearest true-source vertex, in mm.
+    """
+    true_source_mask = np.ravel(true_source_mask).astype(bool)
+    activity = np.abs(np.ravel(vertex_activity))
+    peak_vertex = int(np.argmax(activity))
+
+    if true_source_mask[peak_vertex]:
+        return {"peak_vertex": peak_vertex, "inside_source": True, "distance_mm": 0.0}
+
+    distance = point_to_area_distance(dipole_positions[peak_vertex], dipole_positions[true_source_mask], x=1)
+
+    return {"peak_vertex": peak_vertex, "inside_source": False, "distance_mm": float(distance)}
 
 
 def find_best_enrichment(

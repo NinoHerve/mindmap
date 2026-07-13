@@ -28,6 +28,7 @@ from sklearn.metrics import (
     confusion_matrix, accuracy_score, precision_score, recall_score, f1_score,
     roc_curve, precision_recall_curve, auc, average_precision_score,
 )
+from skimage.metrics import structural_similarity
 
 import bct
 
@@ -198,6 +199,7 @@ def calc_correlation(
     method: str = "pearson",
     axis: int = None,
     center_axis: str | int | None = "default",
+    polarity_invariant: bool = False,
 ) -> np.ndarray | float:
     """
     Correlation between two arrays.
@@ -218,8 +220,17 @@ def calc_correlation(
         - 1: along timepoints for each sample -> (n_samples,)
 
     center_axis: str | int | None
-        Axis along which to average reference. Default chooses the same as the 
+        Axis along which to average reference. Default chooses the same as the
         'axis' argument.
+
+    polarity_invariant: bool
+        If True, returns |corr| instead of corr -- for when an overall sign
+        flip (e.g. an arbitrary polarity/reference convention) shouldn't be
+        scored as a worse match than a perfectly in-phase one. Applied to
+        the finished coefficient, not the raw data: correlating
+        abs(arr1)/abs(arr2) instead would measure magnitude/envelope
+        co-modulation, a different and weaker property than "same shape, up
+        to one sign flip".
 
     eps: float
         Small constant added before log to avoid log(0)
@@ -279,6 +290,8 @@ def calc_correlation(
     arr2_normed = np.divide(arr2_c, norm2, out=np.zeros_like(arr2_c), where=norm2 > eps)
 
     corr = np.sum(arr1_normed * arr2_normed, axis=axis)
+    if polarity_invariant:
+        corr = np.abs(corr)
 
     return corr.item() if corr.size == 1 else corr
 
@@ -287,6 +300,7 @@ def calc_cosine(
     arr2: np.ndarray,
     axis: int = None,
     absolute: bool = False,
+    polarity_invariant: bool = False,
 ) -> np.ndarray | float:
     """
     Compute Cosine Similarity between two arrays.
@@ -295,13 +309,24 @@ def calc_cosine(
     ----------
     arr1, arr2: np.ndarray
         Input arrays of identical shape.
-    
+
     axis: int or None
         Axis along which to compute similarity.
         None flattens arrays (global similarity).
-    
+
     absolute: bool
-        If True, computes similarity on the absolute magnitudes.
+        If True, computes similarity on the absolute magnitudes -- i.e.
+        whether the two arrays' magnitude/envelope co-varies, regardless of
+        the sign at any given point. A different (weaker) property than
+        `polarity_invariant` below: this changes what's being measured, not
+        just the sign of the reported result.
+
+    polarity_invariant: bool
+        If True, returns |cos| instead of cos -- for when an overall sign
+        flip (e.g. an arbitrary polarity/reference convention) shouldn't be
+        scored as a worse match than a perfectly in-phase one. Applied to
+        the finished coefficient: still requires the two arrays to actually
+        vary together (up to one sign flip), unlike `absolute` above.
 
     Returns
     -------
@@ -320,9 +345,11 @@ def calc_cosine(
         arr1_64 = np.abs(arr1_64)
         arr2_64 = np.abs(arr2_64)
 
-    # norms
-    norm1 = np.linalg.norm(arr1_64, axis=axis)
-    norm2 = np.linalg.norm(arr2_64, axis=axis)
+    # norms (keepdims so they broadcast back against arr1_64/arr2_64 below,
+    # not just against axis=None's scalar or axis=0's coincidentally-aligned
+    # trailing dimension -- axis=1 needs the kept dim to broadcast at all)
+    norm1 = np.linalg.norm(arr1_64, axis=axis, keepdims=True)
+    norm2 = np.linalg.norm(arr2_64, axis=axis, keepdims=True)
 
     # safely normalize
     eps = np.finfo(np.float64).eps
@@ -332,6 +359,8 @@ def calc_cosine(
 
     # cosine similarity
     cos = np.sum(arr1_normed * arr2_normed, axis=axis)
+    if polarity_invariant:
+        cos = np.abs(cos)
 
     return cos.item() if cos.size == 1 else cos
 
@@ -394,8 +423,195 @@ def calc_correlation_matrix(
         arr2_n = np.divide(arr2_c, norm2, out=np.zeros_like(arr2_c), where=norm2 > 1e-12)
 
         return arr1_n @ arr2_n.T
-    
+
     raise ValueError(f"Unknown method '{method}'")
+
+
+def calc_pattern_geometry_correlation(
+    arr_true: np.ndarray,
+    arr_pred: np.ndarray,
+    method: str = "pearson",
+    compare_method: str = "spearman",
+) -> float:
+    """
+    Second-order ("representational similarity") comparison: instead of
+    comparing arr_true and arr_pred directly, compares whether the
+    *geometry* of how their columns relate to each other matches -- e.g.
+    whether the topography at time i is similarly (dis)similar to the
+    topography at time j in both arr_true and arr_pred. Robust to a global
+    difference in how the two arrays' own internal geometry is scaled,
+    which a direct column-wise correlation would still be sensitive to.
+
+    Builds a dissimilarity matrix per array (1 - pairwise correlation
+    between columns, via `calc_correlation_matrix`), then correlates the
+    two matrices' upper triangles.
+
+    Parameters
+    ----------
+    arr_true, arr_pred: np.ndarray of shape (n_features, n_conditions)
+        e.g. (n_channels, n_timepoints): each column is one condition's
+        spatial pattern, compared pairwise against every other column.
+
+    method: str ['pearson', 'spearman', 'log-envelope']
+        Method used to build each array's own dissimilarity matrix.
+
+    compare_method: str ['pearson', 'spearman', 'log-envelope']
+        Method used for the final comparison between the two dissimilarity
+        matrices. Spearman (rank-based) is standard RSA practice, since it
+        only requires the two geometries to be monotonically related, not
+        linearly.
+
+    Returns
+    -------
+    float
+    """
+    if arr_true.shape != arr_pred.shape:
+        raise ValueError(
+            f"Shape mismatch: arr_true {arr_true.shape} and arr_pred {arr_pred.shape} must be identical."
+        )
+
+    dissim_true = 1 - calc_correlation_matrix(arr_true.T, arr_true.T, method=method)
+    dissim_pred = 1 - calc_correlation_matrix(arr_pred.T, arr_pred.T, method=method)
+
+    iu = np.triu_indices(dissim_true.shape[0], k=1)
+
+    return calc_correlation(dissim_true[iu], dissim_pred[iu], method=compare_method, axis=None)
+
+
+def calc_explained_variance(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    axis: int = None,
+    center_axis: str | int | None = "default",
+    polarity_invariant: bool = False,
+) -> np.ndarray | float:
+    """
+    Explained variance / R^2 = 1 - SS_res/SS_tot.
+
+    Unlike `calc_correlation`/`calc_cosine`, this is sensitive to amplitude
+    scale: a prediction that's a perfectly-shaped but rescaled copy of
+    y_true (e.g. half amplitude) is penalized here even though it would
+    score a perfect correlation. Complements correlation/cosine rather than
+    replacing them.
+
+    Parameters
+    ----------
+    y_true, y_pred: np.ndarray
+        Arrays of identical shape.
+
+    axis: int or None
+        Axis along which to compute R^2 (mirrors `calc_correlation`):
+        - None: spatio-temporal (flatten both dims) -> scalar
+        - 0: along samples at each timepoint -> (n_timepoints,)
+        - 1: along timepoints for each sample -> (n_samples,)
+
+    center_axis: str | int | None
+        Axis along which to compute y_true's mean for SS_tot. Default
+        chooses the same as `axis`.
+
+    polarity_invariant: bool
+        If True, also computes R^2 against a sign-flipped y_pred and keeps
+        whichever is higher, per output element. R^2 isn't a signed
+        quantity the way correlation/cosine are -- a polarity flip doesn't
+        just flip its sign, it inflates SS_res (a flipped-but-otherwise-
+        perfect prediction scores strongly negative, not -1) -- so unlike
+        `calc_correlation`/`calc_cosine`'s `polarity_invariant`, `abs()` of
+        the score can't undo it; the two candidate reconstructions have to
+        actually be compared instead.
+
+    Returns
+    -------
+    r2: np.ndarray | float
+        Returns 0 where y_true has zero variance along `axis`.
+    """
+    if y_true.shape != y_pred.shape:
+        raise ValueError(
+            f"Shape mismatch: y_true {y_true.shape} and y_pred {y_pred.shape} must be identical."
+        )
+
+    c_axis = axis if center_axis == "default" else center_axis
+
+    y_true_64 = y_true.astype(np.float64)
+    y_pred_64 = y_pred.astype(np.float64)
+
+    ss_tot = np.sum((y_true_64 - y_true_64.mean(axis=c_axis, keepdims=True)) ** 2, axis=axis)
+    eps = np.finfo(np.float64).eps
+    ss_tot_arr = np.atleast_1d(ss_tot).astype(np.float64)
+
+    def _r2_from_residual(diff):
+        ss_res = np.sum(diff ** 2, axis=axis)
+        ratio = np.divide(ss_res, ss_tot, out=np.ones_like(ss_tot_arr), where=ss_tot > eps)
+        return np.where(ss_tot > eps, 1 - ratio, 0.0)
+
+    r2 = _r2_from_residual(y_true_64 - y_pred_64)
+
+    if polarity_invariant:
+        r2_flipped = _r2_from_residual(y_true_64 + y_pred_64)
+        r2 = np.maximum(r2, r2_flipped)
+
+    r2 = np.asarray(r2)
+    return r2.item() if r2.size == 1 else r2
+
+
+def calc_ssim(
+    arr_true: np.ndarray,
+    arr_pred: np.ndarray,
+    win_size: int = 7,
+    data_range: float = None,
+) -> float:
+    """
+    Structural Similarity (SSIM) between two arrays, treating them as a 2D
+    signal (e.g. channels x time) rather than flattening or reducing along
+    an axis -- captures local joint structure (a patch of channels over a
+    short time window) that a single flattened correlation/cosine score can
+    average away.
+
+    `win_size` is clamped down to the largest odd size that fits the
+    smaller data dimension, since scikit-image requires an odd window no
+    larger than the smallest axis -- relevant for iEEG data, which can have
+    channel counts well under the default win_size=7. Channel order is used
+    as-is; reordering channels by spatial proximity (which would change the
+    local-window result) is not attempted here.
+
+    Parameters
+    ----------
+    arr_true, arr_pred: np.ndarray of shape (n_features, n_conditions)
+        e.g. (n_channels, n_timepoints).
+
+    win_size: int
+        Side length of the sliding comparison window. Must be odd; even
+        values are decremented by 1. Clamped down to fit
+        `min(arr_true.shape)` if needed.
+
+    data_range: float, optional
+        Dynamic range of the data (max - min), required by SSIM for
+        floating-point input. Defaults to the joint range of both arrays.
+
+    Returns
+    -------
+    float
+    """
+    if arr_true.shape != arr_pred.shape:
+        raise ValueError(
+            f"Shape mismatch: arr_true {arr_true.shape} and arr_pred {arr_pred.shape} must be identical."
+        )
+
+    if data_range is None:
+        joint = np.concatenate([arr_true.ravel(), arr_pred.ravel()])
+        data_range = float(joint.max() - joint.min())
+
+    win = min(win_size, min(arr_true.shape))
+    if win % 2 == 0:
+        win -= 1
+    win = max(win, 1)
+
+    score = structural_similarity(
+        arr_true, arr_pred,
+        win_size=win,
+        data_range=data_range,
+    )
+
+    return float(score)
 
 
 def calc_pairwise_dist(array1, array2, output_type="scalar"):
@@ -1246,3 +1462,217 @@ def block_conservation(fine_adj: np.ndarray, block_labels: np.ndarray, coarse_ad
     mean_bias = np.mean((recovered_vals - coarse_vals) / coarse_vals)
 
     return {"r": r, "mae": mae, "mean_bias": mean_bias, "n_pairs": int(coarse_vals.size)}
+
+
+# -----------------------------------------------------------------------
+# Graph / connectome perturbations
+#
+# For stress-testing connectome-prior methods (e.g. wCSET/CSET, see
+# mindmap.analysis.functional.inverse.solvers) against uncertainty in the
+# structural connectome they take as input. Two independent axes:
+# `rewire_connectome` corrupts topology (which edges exist) while carrying
+# weights along with their edge; `perturb_connectome_weights` and
+# `permute_connectome_weights` corrupt weight magnitude while leaving
+# topology untouched. Keeping the two axes independent lets a caller
+# attribute a method's performance drop to "wrong structure" versus "wrong
+# weight" rather than a conflated single "amount of sabotage" knob.
+#
+# Like `binarize`/`small_world_sigma` above, these treat edge weights as an
+# opaque magnitude and never assume they represent connection strength
+# versus length -- multiplicative rewiring/noise/permutation all commute
+# with that ambiguity, so nothing here needs to guess at it.
+# -----------------------------------------------------------------------
+
+def rewire_connectome(
+    adj: np.ndarray,
+    n_rewire: int = 5,
+    mask: np.ndarray = None,
+    connected: bool = False,
+    seed: int | None = None,
+) -> np.ndarray:
+    """
+    Degree-preserving random rewiring of a connectome (Maslov & Sneppen 2002
+    configuration-model null) -- the topology-uncertainty counterpart to
+    `perturb_connectome_weights`/`permute_connectome_weights` below.
+
+    `n_rewire=0` leaves `adj` untouched; a handful of rewires already
+    saturates towards a fully randomized network with the same degree
+    sequence -- the same null network `small_world_sigma` builds internally
+    via `bct.randmio_und` for its own averaging, exposed here directly as a
+    first-class perturbation instead of an internal implementation detail.
+    There's no simple linear map from `n_rewire` to "fraction of edges
+    corrupted": mixing saturates quickly (rarely needing more than
+    ~10-20 for a fully mixed network), so sweep `n_rewire` itself as the
+    severity axis rather than trying to reparametrize it as a percentage.
+
+    Edge weights (whatever they represent -- connection strength, length,
+    streamline count) travel with their edge during a swap; per
+    `bct.randmio_und`'s own documentation it does not preserve their
+    *distribution*, only which edge holds which original value.
+
+    Parameters
+    ----------
+    adj: np.ndarray of shape (n, n)
+        Adjacency matrix (weighted or binary, undirected).
+
+    n_rewire: int
+        Rewiring parameter: each edge is rewired approximately this many
+        times. 0 is a no-op.
+
+    mask: np.ndarray of shape (n, n), bool, optional
+        Symmetric mask of entries that must come out of this function
+        exactly as they went in -- neither rewired away nor overwritten by
+        an incoming swap. `bct.randmio_und` has no native concept of a
+        protected edge, so masked entries are zeroed out of the matrix
+        handed to it (making them invisible to the rewiring, as if those
+        node pairs were never connected) and spliced back in afterwards.
+        That guarantees masked entries are unchanged in the output, but as
+        a consequence the degree-preservation guarantee formally holds for
+        the *unmasked* subgraph, not the full graph -- nodes touching a
+        masked edge can end up with their degree off by about the number
+        of masked edges touching them. Negligible when `mask` covers a
+        small fraction of edges (e.g. protecting a handful of edges of
+        interest); not appropriate if `mask` covers most of the graph.
+        This is a real improvement over the legacy
+        `mindmap/OLD/utils/dmri.py::sabotage_connectome`, which only ever
+        protected masked edges from *deletion*, not from being silently
+        overwritten by a newly added one.
+
+    connected: bool
+        If True, use `bct.randmio_und_connected` instead, which
+        additionally guarantees the result stays a single connected
+        component (the input must already be connected). Relevant since a
+        structural connectome is typically assumed connected.
+
+    seed: int, optional
+        Seed for the rewiring RNG.
+
+    Returns
+    -------
+    np.ndarray of shape (n, n)
+        Rewired adjacency matrix.
+    """
+    if n_rewire <= 0:
+        return adj.copy()
+
+    rewire_fn = bct.randmio_und_connected if connected else bct.randmio_und
+    rng = np.random.default_rng(seed)
+    bct_seed = int(rng.integers(0, 2**32 - 1))
+
+    if mask is None:
+        rewired, _ = rewire_fn(adj, n_rewire, seed=bct_seed)
+        return rewired
+
+    mask = mask.astype(bool)
+    free_adj = adj * (~mask)
+
+    rewired, _ = rewire_fn(free_adj, n_rewire, seed=bct_seed)
+    rewired[mask] = adj[mask]
+
+    return rewired
+
+
+def perturb_connectome_weights(
+    adj: np.ndarray,
+    sigma: float,
+    mask: np.ndarray = None,
+    seed: int | None = None,
+) -> np.ndarray:
+    """
+    Multiplicative log-normal noise on existing edge weights, topology
+    untouched -- the continuous weight-uncertainty axis, independent of
+    `rewire_connectome`'s topology corruption.
+
+    Only nonzero (existing) entries of `adj` are perturbed and no new
+    edges are created: `sigma=0` is an exact no-op, and larger `sigma`
+    increasingly decorrelates a weight from its original value without
+    ever changing which edges exist.
+
+    Parameters
+    ----------
+    adj: np.ndarray of shape (n, n)
+        Weighted adjacency matrix, undirected.
+
+    sigma: float
+        Log-normal noise scale. Each existing edge weight w becomes
+        w * exp(sigma * Z), Z ~ N(0,1) -- one Z per edge, shared between
+        (i,j) and (j,i) so the result stays symmetric.
+
+    mask: np.ndarray of shape (n, n), bool, optional
+        Symmetric mask of entries excluded from the noise.
+
+    seed: int, optional
+        Seed for the noise RNG.
+
+    Returns
+    -------
+    np.ndarray of shape (n, n)
+        Weight-perturbed adjacency matrix.
+    """
+    adj = adj.astype(float)
+
+    if sigma == 0:
+        return adj.copy()
+
+    rng = np.random.default_rng(seed)
+    n = adj.shape[0]
+
+    log_noise = np.triu(rng.normal(0, sigma, size=(n, n)), k=1)
+    log_noise = log_noise + log_noise.T
+
+    edge_mask = adj != 0
+    if mask is not None:
+        edge_mask &= ~mask.astype(bool)
+
+    result = adj.copy()
+    result[edge_mask] *= np.exp(log_noise[edge_mask])
+
+    return result
+
+
+def permute_connectome_weights(
+    adj: np.ndarray,
+    mask: np.ndarray = None,
+    seed: int | None = None,
+) -> np.ndarray:
+    """
+    Shuffle existing edge weights across existing edge positions --
+    topology and the weight *distribution* both untouched. The discrete
+    "right graph shape, wrong which edge is strong" endpoint, complementary
+    to `perturb_connectome_weights`'s continuous noise (and what
+    `perturb_connectome_weights` approaches as sigma grows very large).
+
+    Parameters
+    ----------
+    adj: np.ndarray of shape (n, n)
+        Weighted adjacency matrix, undirected.
+
+    mask: np.ndarray of shape (n, n), bool, optional
+        Symmetric mask of edges excluded from the shuffle: their weight
+        stays fixed in place, and their value isn't drawn into the pool
+        shuffled among the other edges.
+
+    seed: int, optional
+        Seed for the shuffle RNG.
+
+    Returns
+    -------
+    np.ndarray of shape (n, n)
+        Adjacency matrix with the same topology and the same multiset of
+        edge weights as `adj`, reassigned to different edge positions.
+    """
+    adj = adj.astype(float)
+    rng = np.random.default_rng(seed)
+
+    edge_mask = np.triu(adj != 0, k=1)
+    if mask is not None:
+        edge_mask &= ~np.triu(mask.astype(bool), k=1)
+
+    rows, cols = np.nonzero(edge_mask)
+    shuffled = rng.permutation(adj[rows, cols])
+
+    result = adj.copy()
+    result[rows, cols] = shuffled
+    result[cols, rows] = shuffled
+
+    return result

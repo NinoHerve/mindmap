@@ -483,57 +483,137 @@ def plot_pr(
     return fig, ax
 
 
-def metric_box(df, group_name="Method", **kwargs):
-    """Default style: Boxplot with overlaid raw data points."""
-    defaults = {"palette": "viridis", "linewidth": 1.5}
+def _set_facet_title(g, title):
+    """Shared suptitle handling for the FacetGrid-based metric_* plots below."""
+    if title:
+        g.fig.suptitle(title)
+        g.fig.subplots_adjust(top=0.85)
+
+
+def metric_box(
+    df, group_name="Method", palette="viridis", title=None,
+    col_wrap=3, sharex=False, sharey=False, height=3, aspect=1,
+    **kwargs,
+):
+    """
+    Default style: Boxplot with overlaid raw data points.
+
+    Parameters
+    ----------
+    palette: str | list | dict
+        Color palette for the `group_name` levels -- anything seaborn's
+        `palette` argument accepts.
+
+    title: str, optional
+        Figure-level suptitle.
+
+    col_wrap, sharex, sharey, height, aspect
+        Forwarded to the underlying `sns.FacetGrid` (one facet per metric).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    defaults = {"linewidth": 1.5}
     params = {**defaults, **kwargs}
 
-    g = sns.FacetGrid(df, col="Metric", sharey=False, col_wrap=3)
-    g.map_dataframe(sns.boxplot, x=group_name, y="Value", hue=group_name, **params)
+    g = sns.FacetGrid(df, col="Metric", sharex=sharex, sharey=sharey, col_wrap=col_wrap, height=height, aspect=aspect)
+    g.map_dataframe(sns.boxplot, x=group_name, y="Value", hue=group_name, palette=palette, **params)
     g.map_dataframe(sns.stripplot, x=group_name, y="Value", color=".2", alpha=0.4)
     g.add_legend()
+    _set_facet_title(g, title)
 
-    return g
+    return g.fig
 
-def metric_violin(df, group_name="Method", **kwargs):
-    """Default style: Split or inner-quartile violin plots."""
-    defaults = {"inner": "quartile", "palette": "muted", "cut":0}
+def metric_violin(
+    df, group_name="Method", palette="muted", title=None,
+    col_wrap=3, sharex=False, sharey=False, height=3, aspect=1,
+    **kwargs,
+):
+    """
+    Default style: Split or inner-quartile violin plots.
+
+    See `metric_box` for the shared `palette`/`title`/layout parameters.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    defaults = {"inner": "quartile", "cut": 0}
     params = {**defaults, **kwargs}
 
-    g = sns.FacetGrid(df, col="Metric", sharey=False, col_wrap=3)
-    g.map_dataframe(sns.violinplot, x=group_name, y="Value", hue=group_name, **params)
+    g = sns.FacetGrid(df, col="Metric", sharex=sharex, sharey=sharey, col_wrap=col_wrap, height=height, aspect=aspect)
+    g.map_dataframe(sns.violinplot, x=group_name, y="Value", hue=group_name, palette=palette, **params)
     g.add_legend()
+    _set_facet_title(g, title)
 
-    return g
+    return g.fig
 
-def metric_bar(df, group_name="Method", **kwargs):
-    """Default style: Bar chart with error bars (confidence intervals)."""
-    defaults = {"errorbar":"sd", "capsize": .1, "palette":"magma"}
+def metric_bar(
+    df, group_name="Method", palette="magma", title=None,
+    col_wrap=3, sharex=False, sharey=False, height=3, aspect=1,
+    **kwargs,
+):
+    """
+    Default style: Bar chart with error bars (confidence intervals).
+
+    See `metric_box` for the shared `palette`/`title`/layout parameters.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    defaults = {"errorbar": "sd", "capsize": .1}
     params = {**defaults, **kwargs}
 
-    g = sns.FacetGrid(df, col="Metric", sharey=False, col_wrap=3)
-    g.map_dataframe(sns.barplot, x=group_name, y="Value", hue=group_name, **params)
+    g = sns.FacetGrid(df, col="Metric", sharex=sharex, sharey=sharey, col_wrap=col_wrap, height=height, aspect=aspect)
+    g.map_dataframe(sns.barplot, x=group_name, y="Value", hue=group_name, palette=palette, **params)
     g.add_legend()
+    _set_facet_title(g, title)
 
-    return g
+    return g.fig
 
-def metric_heatmap(df, group_name="Method", title="", **kwargs):
-    """Default style: Clean matrix with centered annotations."""
-    defaults = {"cmap": "RdYlGn", "annot": True, "fmt": ".2f", "cbar_kws": {"label": "Average Value"}}
+def metric_heatmap(df, group_name="Method", cmap="RdYlGn", title=None, figsize=(10, 6), **kwargs):
+    """
+    Default style: Clean matrix with centered annotations.
+
+    Parameters
+    ----------
+    cmap: str | Colormap
+        Color map for the matrix -- the heatmap analogue of `metric_box`'s
+        `palette` (a continuous color scale here, rather than a discrete
+        color per group).
+
+    title: str, optional
+        Axes title. Unlike the FacetGrid-based plots above, left unset (no
+        "Overview" placeholder) when not provided.
+
+    figsize: tuple
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    defaults = {"annot": True, "fmt": ".2f", "cbar_kws": {"label": "Average Value"}}
     params = {**defaults, **kwargs}
 
     pivot = df.pivot_table(index=group_name, columns="Metric", values="Value", aggfunc="mean")
-    plt.figure(figsize=(10, 6))
-    sns.heatmap(pivot, **params)
-    plt.title(f"{title} Overview")
+    fig, ax = plt.subplots(figsize=figsize)
+    sns.heatmap(pivot, cmap=cmap, ax=ax, **params)
+    if title:
+        ax.set_title(title)
 
-    return plt.gca()
+    return fig
 
 
-def metric_relational(df, coords, hue=None, kind="line", **kwargs):
+def metric_relational(
+    df, coords, group_name=None, kind="line", palette=None, title=None,
+    col_wrap=3, sharex=False, sharey=False, height=3, aspect=1,
+    **kwargs,
+):
     """
     Relational plot that automatically detect the correct X-axis per metric
-    
+
     Parameters
     ----------
     df : pd.DataFrame
@@ -542,8 +622,25 @@ def metric_relational(df, coords, hue=None, kind="line", **kwargs):
     coords: list
         List of all potential coordinate columns (e.g., ['time', 'freq'])
 
-    hue : str
-        The column for color encoding (e.g. 'Lable')
+    group_name : str
+        The column for color encoding (e.g. 'Label') -- same name/role as
+        `metric_box`'s `group_name`, for a consistent API across plot kinds.
+
+    palette: str | list | dict
+        Color palette for the `group_name` levels -- anything seaborn's
+        `palette` argument accepts. Must be set on the FacetGrid itself
+        (not on the per-facet lineplot/scatterplot call), since that's what
+        actually drives the color cycle here.
+
+    title: str, optional
+        Figure-level suptitle.
+
+    col_wrap, sharex, sharey, height, aspect
+        Forwarded to the underlying `sns.FacetGrid` (one facet per metric).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
     """
     def _sub_plotter(data, **inner_kwargs):
         valid_coords = [c for c in coords if data[c].notna().any()]
@@ -575,14 +672,18 @@ def metric_relational(df, coords, hue=None, kind="line", **kwargs):
     g = sns.FacetGrid(
         df,
         col = "Metric",
-        hue = hue,
-        sharex = False,
-        sharey = False,
-        col_wrap = 3,
+        hue = group_name,
+        palette = palette,
+        sharex = sharex,
+        sharey = sharey,
+        col_wrap = col_wrap,
+        height = height,
+        aspect = aspect,
     )
 
     # map the internal plotter to the grid
     g.map_dataframe(_sub_plotter, **kwargs)
     g.add_legend()
+    _set_facet_title(g, title)
 
-    return g
+    return g.fig

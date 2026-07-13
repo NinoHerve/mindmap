@@ -12,6 +12,14 @@ from mindmap.core.metric import (
     distance_decay_fit,
     hemispheric_symmetry,
     block_conservation,
+    rewire_connectome,
+    perturb_connectome_weights,
+    permute_connectome_weights,
+    calc_correlation,
+    calc_cosine,
+    calc_pattern_geometry_correlation,
+    calc_explained_variance,
+    calc_ssim,
 )
 
 
@@ -31,6 +39,20 @@ def erdos_renyi(n, p, seed=0):
     adj = (rng.random((n, n)) < p).astype(int)
     adj = np.triu(adj, 1)
     return adj + adj.T
+
+
+def weighted_erdos_renyi(n, p, seed=0):
+    """Random undirected weighted graph: erdos_renyi topology, uniform(1,10) weights."""
+    rng = np.random.default_rng(seed)
+    adj = erdos_renyi(n, p, seed=seed).astype(float)
+    weights = np.triu(rng.uniform(1, 10, size=adj.shape), k=1)
+    weights = weights + weights.T
+    return adj * weights
+
+
+def degree_sequence(adj):
+    """Sorted per-node degree (nonzero-entry count), for order-independent comparison."""
+    return np.sort(np.count_nonzero(adj, axis=1))
 
 
 def two_block_graph(sizes, p_in, p_out, seed=0):
@@ -179,3 +201,244 @@ def test_block_conservation_exact_recovery():
     assert result["mae"] == pytest.approx(0.0)
     assert result["mean_bias"] == pytest.approx(0.0)
     assert result["n_pairs"] == 2  # upper triangle: (0,1) and (1,2)
+
+
+# -----------------------------------------------------------------------
+# Graph / connectome perturbations
+# -----------------------------------------------------------------------
+
+def test_rewire_connectome_noop_at_zero():
+    """n_rewire=0 must return the connectome unchanged."""
+    adj = erdos_renyi(30, 0.2, seed=0)
+    rewired = rewire_connectome(adj, n_rewire=0)
+    assert np.array_equal(rewired, adj)
+
+
+def test_rewire_connectome_preserves_degree_sequence():
+    """Rewiring relabels which edges exist but must preserve each node's degree."""
+    adj = erdos_renyi(50, 0.15, seed=1)
+    rewired = rewire_connectome(adj, n_rewire=10, seed=2)
+
+    assert np.array_equal(degree_sequence(adj), degree_sequence(rewired))
+    assert not np.array_equal(adj, rewired)
+
+
+def test_rewire_connectome_preserves_weight_multiset():
+    """Weights travel with their edge during a swap: same multiset of nonzero values."""
+    adj = weighted_erdos_renyi(40, 0.2, seed=3)
+    rewired = rewire_connectome(adj, n_rewire=10, seed=4)
+
+    orig = np.sort(adj[np.triu_indices_from(adj, k=1)])
+    new = np.sort(rewired[np.triu_indices_from(rewired, k=1)])
+
+    np.testing.assert_allclose(orig[orig != 0], new[new != 0])
+
+
+def test_rewire_connectome_respects_mask_both_directions():
+    """
+    A masked present edge must never be deleted, and a masked absent pair
+    must never receive a new edge -- unlike the legacy sabotage_connectome,
+    which only protected masked edges from deletion.
+    """
+    n = 30
+    adj = erdos_renyi(n, 0.3, seed=5).astype(float)
+    adj[0, 1] = adj[1, 0] = 1.0  # force a protected edge to exist
+    adj[2, 3] = adj[3, 2] = 0.0  # force a protected non-edge to stay absent
+
+    mask = np.zeros_like(adj, dtype=bool)
+    mask[0, 1] = mask[1, 0] = True
+    mask[2, 3] = mask[3, 2] = True
+
+    rewired = rewire_connectome(adj, n_rewire=15, mask=mask, seed=6)
+
+    assert rewired[0, 1] == 1.0 and rewired[1, 0] == 1.0
+    assert rewired[2, 3] == 0.0 and rewired[3, 2] == 0.0
+
+
+def test_rewire_connectome_reproducible_with_seed():
+    """Same seed must give bit-identical output across repeated calls."""
+    adj = erdos_renyi(40, 0.2, seed=7)
+    r1 = rewire_connectome(adj, n_rewire=10, seed=8)
+    r2 = rewire_connectome(adj, n_rewire=10, seed=8)
+    assert np.array_equal(r1, r2)
+
+
+def test_perturb_connectome_weights_noop_at_sigma_zero():
+    """sigma=0 must be an exact no-op."""
+    adj = weighted_erdos_renyi(30, 0.2, seed=10)
+    perturbed = perturb_connectome_weights(adj, sigma=0)
+    np.testing.assert_allclose(perturbed, adj)
+
+
+def test_perturb_connectome_weights_preserves_topology():
+    """Weight noise must never create or remove an edge, only rescale existing ones."""
+    adj = weighted_erdos_renyi(30, 0.2, seed=11)
+    perturbed = perturb_connectome_weights(adj, sigma=0.5, seed=12)
+
+    assert np.array_equal(adj != 0, perturbed != 0)
+    assert not np.allclose(adj, perturbed)
+
+
+def test_perturb_connectome_weights_respects_mask():
+    """A masked edge's weight must be left exactly as-is."""
+    n = 20
+    adj = weighted_erdos_renyi(n, 0.3, seed=13)
+    adj[0, 1] = adj[1, 0] = 5.0
+
+    mask = np.zeros_like(adj, dtype=bool)
+    mask[0, 1] = mask[1, 0] = True
+
+    perturbed = perturb_connectome_weights(adj, sigma=1.0, mask=mask, seed=14)
+
+    assert perturbed[0, 1] == 5.0 and perturbed[1, 0] == 5.0
+
+
+def test_perturb_connectome_weights_reproducible_with_seed():
+    """Same seed must give bit-identical output across repeated calls."""
+    adj = weighted_erdos_renyi(30, 0.2, seed=15)
+    p1 = perturb_connectome_weights(adj, sigma=0.3, seed=16)
+    p2 = perturb_connectome_weights(adj, sigma=0.3, seed=16)
+    np.testing.assert_allclose(p1, p2)
+
+
+def test_permute_connectome_weights_preserves_multiset_and_topology():
+    """Shuffling weights must leave topology and the weight multiset untouched."""
+    adj = weighted_erdos_renyi(30, 0.2, seed=20)
+    permuted = permute_connectome_weights(adj, seed=21)
+
+    assert np.array_equal(adj != 0, permuted != 0)
+
+    orig = np.sort(adj[np.triu_indices_from(adj, k=1)])
+    new = np.sort(permuted[np.triu_indices_from(permuted, k=1)])
+
+    np.testing.assert_allclose(orig[orig != 0], new[new != 0])
+
+
+def test_permute_connectome_weights_respects_mask():
+    """A masked edge's weight must stay in place and out of the shuffled pool."""
+    n = 20
+    adj = weighted_erdos_renyi(n, 0.3, seed=22)
+    adj[0, 1] = adj[1, 0] = 999.0  # distinctive protected weight
+
+    mask = np.zeros_like(adj, dtype=bool)
+    mask[0, 1] = mask[1, 0] = True
+
+    permuted = permute_connectome_weights(adj, mask=mask, seed=23)
+
+    assert permuted[0, 1] == 999.0 and permuted[1, 0] == 999.0
+
+    others = permuted.copy()
+    others[0, 1] = others[1, 0] = 0
+    assert not np.any(others == 999.0)
+
+
+# -----------------------------------------------------------------------
+# Fidelity metrics (correlation/cosine axis broadcast, pattern geometry,
+# explained variance, SSIM)
+# -----------------------------------------------------------------------
+
+def test_calc_cosine_temporal_axis_does_not_crash():
+    """
+    Regression test: calc_cosine used to compute norms without keepdims,
+    which silently relied on axis=0's norm shape happening to align with
+    the array's trailing dimension -- axis=1 (temporal mode: per-channel
+    norm across time) had no such coincidence and raised a broadcast
+    ValueError. Identical arrays should give cosine similarity 1 per channel.
+    """
+    rng = np.random.default_rng(0)
+    arr = rng.normal(size=(6, 40))
+
+    cos = calc_cosine(arr, arr, axis=1)
+
+    assert cos.shape == (6,)
+    np.testing.assert_allclose(cos, 1.0)
+
+
+def test_calc_pattern_geometry_correlation_identical():
+    """Identical input must score ~1: the pattern geometry is trivially preserved."""
+    rng = np.random.default_rng(1)
+    arr = rng.normal(size=(8, 50))
+
+    score = calc_pattern_geometry_correlation(arr, arr)
+
+    assert score == pytest.approx(1.0, abs=1e-6)
+
+
+def test_calc_explained_variance_identical_and_scale_sensitive():
+    """
+    Identical input scores a perfect 1.0. A perfectly-shaped but rescaled
+    copy (half amplitude) must be penalized -- unlike correlation, which
+    stays 1.0 under any positive rescaling.
+    """
+    rng = np.random.default_rng(2)
+    arr = rng.normal(size=(8, 50))
+
+    assert calc_explained_variance(arr, arr) == pytest.approx(1.0)
+
+    r2_scaled = calc_explained_variance(arr, arr * 0.5)
+    corr_scaled = np.corrcoef(arr.ravel(), (arr * 0.5).ravel())[0, 1]
+
+    assert r2_scaled < 1.0
+    assert corr_scaled == pytest.approx(1.0)
+
+
+def test_calc_ssim_identical_and_small_channel_count():
+    """Identical input scores ~1, and a small channel count (5) must not raise a win_size error."""
+    rng = np.random.default_rng(3)
+    arr = rng.normal(size=(8, 60))
+
+    assert calc_ssim(arr, arr) == pytest.approx(1.0)
+
+    small_arr = rng.normal(size=(5, 60))
+    assert calc_ssim(small_arr, small_arr) == pytest.approx(1.0)
+
+
+def test_polarity_invariant_correlation_and_cosine():
+    """
+    A perfectly anti-correlated pair (an overall sign flip) scores -1
+    without polarity_invariant, and +1 with it -- an unrelated pair stays
+    near 0 either way, since abs() of noise is still noise.
+    """
+    rng = np.random.default_rng(4)
+    arr = rng.normal(size=(6, 40))
+    flipped = -arr
+
+    assert calc_correlation(arr, flipped, axis=None) == pytest.approx(-1.0)
+    assert calc_correlation(arr, flipped, axis=None, polarity_invariant=True) == pytest.approx(1.0)
+
+    cos = calc_cosine(arr, flipped, axis=1)
+    cos_pi = calc_cosine(arr, flipped, axis=1, polarity_invariant=True)
+    np.testing.assert_allclose(cos, -1.0)
+    np.testing.assert_allclose(cos_pi, 1.0)
+
+    unrelated = rng.normal(size=(6, 40))
+    corr_unrelated = calc_correlation(arr, unrelated, axis=None)
+    corr_unrelated_pi = calc_correlation(arr, unrelated, axis=None, polarity_invariant=True)
+    assert corr_unrelated_pi == pytest.approx(abs(corr_unrelated))
+
+
+def test_polarity_invariant_explained_variance():
+    """
+    A perfectly anti-correlated pair scores strongly negative R^2 (SS_res is
+    inflated by the flip, not just sign-negated) without polarity_invariant,
+    and a perfect 1.0 with it, since the sign-flipped candidate has zero
+    residual. An unrelated pair isn't rescued either way, since flipping a
+    decorrelated signal doesn't make it a better predictor.
+    """
+    rng = np.random.default_rng(5)
+    arr = rng.normal(size=(6, 40))
+    flipped = -arr
+
+    r2 = calc_explained_variance(arr, flipped, axis=None)
+    r2_pi = calc_explained_variance(arr, flipped, axis=None, polarity_invariant=True)
+
+    assert r2 < -1.0
+    assert r2_pi == pytest.approx(1.0)
+
+    unrelated = rng.normal(size=(6, 40))
+    r2_unrelated = calc_explained_variance(arr, unrelated, axis=None)
+    r2_unrelated_pi = calc_explained_variance(arr, unrelated, axis=None, polarity_invariant=True)
+    assert r2_unrelated_pi == pytest.approx(max(
+        r2_unrelated,
+        calc_explained_variance(arr, -unrelated, axis=None),
+    ))
