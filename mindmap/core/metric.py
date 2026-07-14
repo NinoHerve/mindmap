@@ -1572,6 +1572,335 @@ def rewire_connectome(
     return rewired
 
 
+def swap_rewire_connectome(
+    adj: np.ndarray,
+    n_swaps: int,
+    mask: np.ndarray = None,
+    seed: int | None = None,
+    batch_size: int = 1500,
+    max_rounds: int = 200_000,
+) -> np.ndarray:
+    """
+    Degree-preserving double-edge-swap rewiring (Maslov & Sneppen 2002
+    configuration-model null), controlled by an *exact swap count* rather
+    than `rewire_connectome`'s sweep count.
+
+    Motivation: `rewire_connectome`'s `n_rewire` is passed to
+    `bct.randmio_und` as `itr`, which internally becomes `itr *= n_edges`
+    -- so `n_rewire=1` already schedules one attempted swap per edge in
+    the whole graph. On a large sparse connectome (e.g. ~7500 nodes,
+    ~218k edges, <1% density) that means even the smallest nonzero
+    `n_rewire` already saturates close to full randomization: there's no
+    `n_rewire` value that reliably lands at "20% of edges changed" versus
+    "60% changed" versus "100%" -- everything above ~1 looks the same.
+    Sweeping severity by `n_rewire` is the wrong knob for a graph this
+    size; sweeping by the actual number of swaps performed is not, and
+    that's what this function exposes directly.
+
+    Each swap picks two existing edges (a,b) and (c,d) uniformly at
+    random and replaces them with (a,d) and (c,b) -- or (a,c) and (d,b),
+    decided by a random 50/50 flip so both rewiring directions are
+    explored, matching `bct.randmio_und`'s own approach -- provided all
+    4 endpoints are distinct and neither new edge already exists.
+    Weights travel with their edge, same as `rewire_connectome`.
+    Implemented as a vectorized batch process (propose many candidate
+    swaps per round, reject invalid ones, then keep only the subset
+    whose 4 endpoints don't overlap any other survivor in the same
+    round so the whole batch can be applied in one array update) rather
+    than `bct.randmio_und`'s scalar Python loop -- on the connectome
+    above, full mixing (n_swaps ~ n_edges) takes under a second versus
+    minutes.
+
+    There's no exact analogue of "n_rewire=20 is roughly fully mixed"
+    here either: the fraction of edges that end up different from the
+    original rises with `n_swaps` along a saturating, coupon-collector-
+    shaped curve, asymptoting below 1.0 -- around ~98-99% for a graph at
+    this density, not 100%. That's because a swap's new edge position is
+    drawn from *all* node pairs, not just pairs excluding the original
+    edge positions, so a freshly rewired graph and the original one are
+    expected to coincide on a small number of edges by chance alone
+    (roughly `density * n_edges`). This is a real statistical property
+    of a degree-preserving redraw at this density, not a bug -- when
+    calibrating `n_swaps` to a target severity, treat the empirically
+    measured plateau as the practical ceiling rather than assuming
+    `n_swaps = n_edges` reaches 100% "different".
+
+    Parameters
+    ----------
+    adj: np.ndarray of shape (n, n)
+        Adjacency matrix (weighted or binary, undirected, no self-loops).
+
+    n_swaps: int
+        Exact number of successful double-edge swaps to perform. 0 is a
+        no-op.
+
+    mask: np.ndarray of shape (n, n), bool, optional
+        Symmetric mask of entries that must come out of this function
+        exactly as they went in. Same mechanism and caveat as
+        `rewire_connectome`'s `mask`: masked entries are zeroed out of
+        the matrix before rewiring (invisible to the algorithm as
+        candidate edges to swap away) and spliced back in afterwards,
+        which can silently overwrite a new edge a swap happened to place
+        at a masked-absent position -- fine for a `mask` covering a
+        small fraction of the graph, not appropriate for one covering
+        most of it.
+
+    seed: int, optional
+        Seed for the rewiring RNG.
+
+    batch_size: int
+        Upper bound on candidate swaps proposed per round before
+        filtering -- the actual per-round batch is also capped relative
+        to node count (`n // 12`), since the endpoint-disjointness filter
+        rejects almost everything once a round's node draws (4 per
+        candidate) start approaching `n`, by a birthday-paradox effect.
+        Larger batches mean fewer rounds but a lower per-round acceptance
+        rate; the default is a reasonable middle ground, not tuned per
+        graph.
+
+    max_rounds: int
+        Safety cap on the number of batch rounds. Raises `RuntimeError`
+        if `n_swaps` isn't reached within this budget, rather than
+        silently returning a partially-rewired result.
+
+    Returns
+    -------
+    np.ndarray of shape (n, n)
+        Rewired adjacency matrix.
+    """
+    if not np.array_equal(adj, adj.T):
+        raise ValueError("swap_rewire_connectome: adj must be symmetric (undirected)")
+
+    if n_swaps <= 0:
+        return adj.copy()
+
+    if mask is not None:
+        mask = mask.astype(bool)
+        free_adj = adj * (~mask)
+        rewired = swap_rewire_connectome(free_adj, n_swaps, seed=seed, batch_size=batch_size, max_rounds=max_rounds)
+        rewired[mask] = adj[mask]
+        return rewired
+
+    n = adj.shape[0]
+    rng = np.random.default_rng(seed)
+
+    rows, cols = np.triu_indices(n, k=1)
+    edge_mask = adj[rows, cols] != 0
+    ei, ej = rows[edge_mask].copy(), cols[edge_mask].copy()
+    n_edges = len(ei)
+
+    R = adj.copy()
+    remaining = n_swaps
+    rounds = 0
+
+    while remaining > 0 and rounds < max_rounds:
+        rounds += 1
+        b = min(batch_size, n_edges // 2, max(4, n // 12))
+        pick = rng.choice(n_edges, size=2 * b, replace=False)
+        e1, e2 = pick[:b], pick[b:]
+
+        a, bb = ei[e1], ej[e1]
+        c, d = ei[e2], ej[e2]
+
+        flip = rng.random(b) < 0.5
+        c, d = np.where(flip, d, c), np.where(flip, c, d)
+
+        ok = (a != c) & (a != d) & (bb != c) & (bb != d)
+        a, bb, c, d, e1, e2 = a[ok], bb[ok], c[ok], d[ok], e1[ok], e2[ok]
+        if len(a) == 0:
+            continue
+
+        ok = (R[a, d] == 0) & (R[c, bb] == 0)
+        a, bb, c, d, e1, e2 = a[ok], bb[ok], c[ok], d[ok], e1[ok], e2[ok]
+        if len(a) == 0:
+            continue
+
+        # keep only proposals whose 4 endpoints appear nowhere else in this
+        # round's survivors -> fully node-disjoint, safe to apply as one
+        # vectorized update with no ordering hazard between proposals.
+        nodes = np.stack([a, bb, c, d], axis=1)
+        counts = np.bincount(nodes.ravel(), minlength=n)
+        ok = np.all(counts[nodes] == 1, axis=1)
+        a, bb, c, d, e1, e2 = a[ok], bb[ok], c[ok], d[ok], e1[ok], e2[ok]
+        if len(a) == 0:
+            continue
+
+        if len(a) > remaining:
+            a, bb, c, d, e1, e2 = (x[:remaining] for x in (a, bb, c, d, e1, e2))
+
+        w_ab, w_cd = R[a, bb], R[c, d]
+
+        R[a, bb] = 0
+        R[bb, a] = 0
+        R[c, d] = 0
+        R[d, c] = 0
+        R[a, d] = w_ab
+        R[d, a] = w_ab
+        R[c, bb] = w_cd
+        R[bb, c] = w_cd
+
+        ei[e1] = a
+        ej[e1] = d
+        ei[e2] = c
+        ej[e2] = bb
+
+        remaining -= len(a)
+
+    if remaining > 0:
+        raise RuntimeError(
+            f"swap_rewire_connectome: only {n_swaps - remaining}/{n_swaps} swaps applied "
+            f"within max_rounds={max_rounds}; the requested n_swaps may be unreachable at "
+            f"this graph's size/density (see the docstring's note on the ~98-99%-not-100% "
+            f"asymptote), or max_rounds needs raising."
+        )
+
+    return R
+
+
+def perturb_connectome_topology(
+    adj: np.ndarray,
+    n_deletions: int,
+    n_additions: int,
+    deletion_weights: np.ndarray = None,
+    addition_weights: np.ndarray = None,
+    mask: np.ndarray = None,
+    seed: int | None = None,
+) -> np.ndarray:
+    """
+    Independent random deletion and addition of edges -- the non-degree-
+    preserving counterpart to `swap_rewire_connectome`/`rewire_connectome`.
+
+    Those two only ever *permute* a fixed edge set: same edges in, same
+    edges out, just relabeled. That's the right null model for "the
+    topology is randomly shuffled but the connectome's coarse statistics
+    (degree sequence, edge count) are still correct" -- but it can't
+    represent what real dMRI/tractography errors actually look like: a
+    pipeline doesn't conserve a node's total connection count while
+    getting individual edges wrong, it genuinely misses some true
+    connections and hallucinates some spurious ones (see
+    `dmri_uncertainty_weights_from_source_space` in
+    `mindmap.analysis.connectivity.metric` for weights calibrated to that
+    literature). This function is the more general primitive underneath
+    both a "brutal", fully unconstrained corruption (uniform sampling,
+    the default) and that dMRI-realistic one (spatially-biased sampling
+    via `deletion_weights`/`addition_weights`).
+
+    Deletions and additions are drawn independently and simultaneously
+    from the *original* `adj` (an edge can never be both deleted and
+    immediately re-added, or vice versa, since a deletion candidate is by
+    definition an existing edge and an addition candidate is by
+    definition not) via weighted sampling without replacement
+    (Efraimidis-Spirakis: draw `key = -log(u) / weight` per candidate,
+    `u ~ Uniform(0,1)`, keep the smallest `n` keys -- equivalent to
+    weighted sampling without replacement, and fully vectorized, unlike
+    `numpy.random.Generator.choice(..., p=..., replace=False)`, which
+    doesn't scale to the ~10^7 candidate positions a connectome this size
+    has). Uniform sampling (`deletion_weights`/`addition_weights=None`,
+    the default) skips the weighting machinery entirely and just draws
+    uniformly at random.
+
+    New edges' weights are drawn uniformly at random (with replacement)
+    from `adj`'s existing nonzero-weight multiset -- the same "treat
+    weights as an opaque magnitude, reuse what's already there" approach
+    `permute_connectome_weights` uses below, rather than inventing a
+    weight model from nothing.
+
+    Parameters
+    ----------
+    adj: np.ndarray of shape (n, n)
+        Adjacency matrix (weighted or binary, undirected, no self-loops).
+
+    n_deletions: int
+        Number of existing edges to remove.
+
+    n_additions: int
+        Number of new edges to add. Can differ from `n_deletions` --
+        unlike `swap_rewire_connectome`, total edge count is not
+        conserved here; that's the point.
+
+    deletion_weights: np.ndarray of shape (n, n), optional
+        Relative sampling weight per existing edge (only entries at
+        existing edges are used). None (default) samples deletions
+        uniformly at random.
+
+    addition_weights: np.ndarray of shape (n, n), optional
+        Relative sampling weight per non-edge position. None (default)
+        samples additions uniformly at random.
+
+    mask: np.ndarray of shape (n, n), bool, optional
+        Symmetric mask of entries that must come out of this function
+        exactly as they went in. Unlike `rewire_connectome`'s mask (which
+        zeroes masked entries out before rewiring and splices them back
+        in afterwards -- an approximation that degrades as the mask
+        covers more of the graph), this function simply excludes masked
+        positions from both the deletion and addition candidate pools up
+        front, which is an exact guarantee regardless of how much of the
+        graph `mask` covers.
+
+    seed: int, optional
+        Seed for the sampling RNG.
+
+    Returns
+    -------
+    np.ndarray of shape (n, n)
+        Adjacency matrix with `n_deletions` existing edges removed and
+        `n_additions` new edges added.
+    """
+    n = adj.shape[0]
+    rng = np.random.default_rng(seed)
+
+    rows, cols = np.triu_indices(n, k=1)
+    values = adj[rows, cols]
+    is_edge = values != 0
+
+    if mask is not None:
+        not_masked = ~mask.astype(bool)[rows, cols]
+    else:
+        not_masked = np.ones(len(is_edge), dtype=bool)
+
+    del_candidates = np.flatnonzero(is_edge & not_masked)
+    add_candidates = np.flatnonzero(~is_edge & not_masked)
+
+    if n_deletions > len(del_candidates):
+        raise ValueError(
+            f"perturb_connectome_topology: requested n_deletions={n_deletions} but only "
+            f"{len(del_candidates)} unmasked existing edges are available"
+        )
+    if n_additions > len(add_candidates):
+        raise ValueError(
+            f"perturb_connectome_topology: requested n_additions={n_additions} but only "
+            f"{len(add_candidates)} unmasked non-edge positions are available"
+        )
+
+    def weighted_sample(candidates, weights, k):
+        if k == 0:
+            return candidates[:0]
+        if weights is None:
+            return rng.choice(candidates, size=k, replace=False)
+        w = weights[rows[candidates], cols[candidates]]
+        with np.errstate(divide="ignore"):
+            # a weight of exactly 0 -> key=+inf -> that candidate is never
+            # among the smallest k, i.e. never selected. Intentional.
+            keys = -np.log(rng.random(len(candidates))) / w
+        top_k = np.argpartition(keys, k - 1)[:k]
+        return candidates[top_k]
+
+    del_idx = weighted_sample(del_candidates, deletion_weights, n_deletions)
+    add_idx = weighted_sample(add_candidates, addition_weights, n_additions)
+
+    R = adj.copy()
+
+    R[rows[del_idx], cols[del_idx]] = 0
+    R[cols[del_idx], rows[del_idx]] = 0
+
+    if n_additions > 0:
+        new_weights = rng.choice(values[is_edge], size=n_additions, replace=True)
+        R[rows[add_idx], cols[add_idx]] = new_weights
+        R[cols[add_idx], rows[add_idx]] = new_weights
+
+    return R
+
+
 def perturb_connectome_weights(
     adj: np.ndarray,
     sigma: float,

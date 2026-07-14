@@ -27,6 +27,9 @@ from .metric import (
     hemispheric_symmetry_from_source_space,
     block_conservation_from_atlas,
     rewire_connectome,
+    swap_rewire_connectome,
+    perturb_connectome_topology,
+    dmri_uncertainty_weights_from_source_space,
     perturb_connectome_weights,
     permute_connectome_weights,
 )
@@ -47,6 +50,9 @@ __all__ = [
     "hemispheric_symmetry_from_source_space",
     "block_conservation_from_atlas",
     "rewire_connectome",
+    "swap_rewire_connectome",
+    "perturb_connectome_topology",
+    "dmri_uncertainty_weights_from_source_space",
     "perturb_connectome_weights",
     "permute_connectome_weights",
 ]

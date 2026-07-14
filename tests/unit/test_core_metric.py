@@ -13,6 +13,8 @@ from mindmap.core.metric import (
     hemispheric_symmetry,
     block_conservation,
     rewire_connectome,
+    swap_rewire_connectome,
+    perturb_connectome_topology,
     perturb_connectome_weights,
     permute_connectome_weights,
     calc_correlation,
@@ -261,6 +263,175 @@ def test_rewire_connectome_reproducible_with_seed():
     r1 = rewire_connectome(adj, n_rewire=10, seed=8)
     r2 = rewire_connectome(adj, n_rewire=10, seed=8)
     assert np.array_equal(r1, r2)
+
+
+def test_swap_rewire_connectome_noop_at_zero():
+    """n_swaps=0 must return the connectome unchanged."""
+    adj = erdos_renyi(30, 0.2, seed=0)
+    rewired = swap_rewire_connectome(adj, n_swaps=0)
+    assert np.array_equal(rewired, adj)
+
+
+def test_swap_rewire_connectome_preserves_degree_sequence():
+    """Rewiring relabels which edges exist but must preserve each node's degree."""
+    adj = erdos_renyi(50, 0.15, seed=1)
+    rewired = swap_rewire_connectome(adj, n_swaps=30, seed=2)
+
+    assert np.array_equal(degree_sequence(adj), degree_sequence(rewired))
+    assert not np.array_equal(adj, rewired)
+
+
+def test_swap_rewire_connectome_preserves_weight_multiset():
+    """Weights travel with their edge during a swap: same multiset of nonzero values."""
+    adj = weighted_erdos_renyi(40, 0.2, seed=3)
+    rewired = swap_rewire_connectome(adj, n_swaps=30, seed=4)
+
+    orig = np.sort(adj[np.triu_indices_from(adj, k=1)])
+    new = np.sort(rewired[np.triu_indices_from(rewired, k=1)])
+
+    np.testing.assert_allclose(orig[orig != 0], new[new != 0])
+
+
+def test_swap_rewire_connectome_conserves_edge_count():
+    """Each swap trades 2 edges for 2 different edges: total edge count is exact."""
+    adj = erdos_renyi(50, 0.15, seed=1)
+    rewired = swap_rewire_connectome(adj, n_swaps=30, seed=2)
+
+    assert np.count_nonzero(rewired) == np.count_nonzero(adj)
+
+
+def test_swap_rewire_connectome_respects_mask_both_directions():
+    """
+    A masked present edge must never be deleted, and a masked absent pair
+    must never receive a new edge.
+    """
+    n = 30
+    adj = erdos_renyi(n, 0.3, seed=5).astype(float)
+    adj[0, 1] = adj[1, 0] = 1.0  # force a protected edge to exist
+    adj[2, 3] = adj[3, 2] = 0.0  # force a protected non-edge to stay absent
+
+    mask = np.zeros_like(adj, dtype=bool)
+    mask[0, 1] = mask[1, 0] = True
+    mask[2, 3] = mask[3, 2] = True
+
+    rewired = swap_rewire_connectome(adj, n_swaps=15, mask=mask, seed=6)
+
+    assert rewired[0, 1] == 1.0 and rewired[1, 0] == 1.0
+    assert rewired[2, 3] == 0.0 and rewired[3, 2] == 0.0
+
+
+def test_swap_rewire_connectome_reproducible_with_seed():
+    """Same seed must give bit-identical output across repeated calls."""
+    adj = erdos_renyi(40, 0.2, seed=7)
+    r1 = swap_rewire_connectome(adj, n_swaps=30, seed=8)
+    r2 = swap_rewire_connectome(adj, n_swaps=30, seed=8)
+    assert np.array_equal(r1, r2)
+
+
+def test_perturb_connectome_topology_net_edge_count():
+    """Total edge count must change by exactly n_additions - n_deletions."""
+    adj = erdos_renyi(50, 0.15, seed=1)
+    n_edges_before = np.count_nonzero(adj) // 2
+
+    rewired = perturb_connectome_topology(adj, n_deletions=10, n_additions=15, seed=2)
+    n_edges_after = np.count_nonzero(rewired) // 2
+
+    assert n_edges_after == n_edges_before - 10 + 15
+
+
+def test_perturb_connectome_topology_changes_degree_sequence():
+    """Unlike swap_rewire_connectome, degree sequence is not preserved in general."""
+    adj = erdos_renyi(50, 0.2, seed=1)
+    rewired = perturb_connectome_topology(adj, n_deletions=10, n_additions=5, seed=2)
+    assert not np.array_equal(degree_sequence(adj), degree_sequence(rewired))
+
+
+def test_perturb_connectome_topology_weighted_deletion_is_deterministic():
+    """A deletion_weights array with all mass on one edge must always select it."""
+    adj = erdos_renyi(20, 0.3, seed=1).astype(float)
+    edges = np.argwhere(np.triu(adj, k=1))
+    i, j = edges[0]
+
+    weights = np.zeros_like(adj)
+    weights[i, j] = weights[j, i] = 1.0
+
+    rewired = perturb_connectome_topology(adj, n_deletions=1, n_additions=0, deletion_weights=weights, seed=3)
+    assert rewired[i, j] == 0 and rewired[j, i] == 0
+
+
+def test_perturb_connectome_topology_weighted_addition_is_deterministic():
+    """An addition_weights array with all mass on one non-edge must always select it."""
+    n = 20
+    adj = erdos_renyi(n, 0.3, seed=1).astype(float)
+    non_edges = np.argwhere(np.triu(adj == 0, k=1))
+    i, j = non_edges[0]
+
+    weights = np.zeros_like(adj)
+    weights[i, j] = weights[j, i] = 1.0
+
+    rewired = perturb_connectome_topology(adj, n_deletions=0, n_additions=1, addition_weights=weights, seed=4)
+    assert rewired[i, j] != 0 and rewired[j, i] != 0
+
+
+def test_perturb_connectome_topology_respects_mask_both_directions():
+    """A masked present edge must never be deleted, and a masked absent pair must never receive a new edge."""
+    n = 30
+    adj = erdos_renyi(n, 0.3, seed=5).astype(float)
+    adj[0, 1] = adj[1, 0] = 1.0  # force a protected edge to exist
+    adj[2, 3] = adj[3, 2] = 0.0  # force a protected non-edge to stay absent
+
+    mask = np.zeros_like(adj, dtype=bool)
+    mask[0, 1] = mask[1, 0] = True
+    mask[2, 3] = mask[3, 2] = True
+
+    rewired = perturb_connectome_topology(adj, n_deletions=5, n_additions=5, mask=mask, seed=6)
+
+    assert rewired[0, 1] == 1.0 and rewired[1, 0] == 1.0
+    assert rewired[2, 3] == 0.0 and rewired[3, 2] == 0.0
+
+
+def test_perturb_connectome_topology_reproducible_with_seed():
+    """Same seed must give bit-identical output across repeated calls."""
+    adj = erdos_renyi(40, 0.2, seed=7)
+    r1 = perturb_connectome_topology(adj, n_deletions=10, n_additions=10, seed=8)
+    r2 = perturb_connectome_topology(adj, n_deletions=10, n_additions=10, seed=8)
+    assert np.array_equal(r1, r2)
+
+
+def test_perturb_connectome_topology_distance_biased_sampling():
+    """
+    Distance-shaped weights (short-favoring additions, long-favoring deletions --
+    the same shape mindmap.analysis.connectivity.metric.dmri_uncertainty_weights_from_source_space
+    builds from real dipole coordinates) must bias added edges shorter, and deleted
+    edges longer, than the population mean distance among all non-edges/edges
+    respectively (comparing against the fixed population mean rather than a second
+    random uniform draw avoids two independent samples' variance stacking).
+    """
+    rng = np.random.default_rng(0)
+    n = 60
+    coords = rng.uniform(0, 100, size=(n, 3))
+    dist = np.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=-1)
+    triu = np.triu_indices(n, k=1)
+
+    adj = erdos_renyi(n, 0.2, seed=1).astype(float)
+    is_edge = adj[triu] != 0
+    population_edge_dist = dist[triu][is_edge].mean()
+    population_nonedge_dist = dist[triu][~is_edge].mean()
+
+    addition_weights = np.exp(-0.05 * dist)
+    deletion_weights = dist ** 2
+    n_del = n_add = 60
+
+    biased = perturb_connectome_topology(
+        adj, n_deletions=n_del, n_additions=n_add,
+        deletion_weights=deletion_weights, addition_weights=addition_weights, seed=2,
+    )
+
+    added = (biased != 0) & (adj == 0)
+    deleted = (biased == 0) & (adj != 0)
+
+    assert dist[triu][added[triu]].mean() < population_nonedge_dist
+    assert dist[triu][deleted[triu]].mean() > population_edge_dist
 
 
 def test_perturb_connectome_weights_noop_at_sigma_zero():
