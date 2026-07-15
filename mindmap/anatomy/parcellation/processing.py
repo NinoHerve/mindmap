@@ -7,6 +7,9 @@ import mne
 
 from .base import Parcellation
 from ...core import extract_voxel_volume
+from ..utils import align_freesurfer2subject
+from ..source_space.io import get_dipole_positions
+from ...geometry import farthest_point_sampling
 
 def prob2dseg(
     parc   : Parcellation,
@@ -139,3 +142,60 @@ def create_mask(
     mask = np.isin(parc.volume, regions)
 
     return nib.Nifti1Image(mask.astype(float), parc.affine)
+
+
+def select_uniform_regions(
+    source_space: mne.SourceSpaces,
+    parcellation: Parcellation,
+    ras2tkras: np.ndarray,
+    n_regions: int,
+    cortex_only: bool = True,
+    seed: int = 0,
+) -> list[str]:
+    """
+    Select a spatially uniform subset of parcellation regions using greedy
+    farthest-point sampling (Euclidean) over per-region dipole centroids.
+
+    Parameters
+    ----------
+    source_space: mne.SourceSpaces
+        Source space defining candidate dipole positions.
+
+    parcellation: Parcellation
+        Parcellation used to label dipoles into brain regions.
+
+    ras2tkras: np.ndarray of shape (4,4)
+        Affine transform used to align source-space dipole positions with the
+        parcellation's subject space (as loaded via `dm.load(sub, "ras2tkras")`).
+
+    n_regions: int
+        Number of regions to select.
+
+    cortex_only: bool
+        Restrict candidates to cortical regions (labels starting with "ctx-").
+
+    seed: int
+        Random seed for the farthest-point sampling starting point.
+
+    Returns
+    -------
+    regions: list[str]
+        Names of the selected regions.
+    """
+    dipoles = get_dipole_positions(source_space) * 1000       # [m] -> [mm]
+    dipoles = align_freesurfer2subject(dipoles, ras2tkras)
+    labels = parcellation.label_points(dipoles, return_id=False)
+
+    if cortex_only:
+        keep = np.char.startswith(labels.astype(str), "ctx-")
+        labels, dipoles = labels[keep], dipoles[keep]
+
+    unique_labels = np.unique(labels)
+    centroids = np.array([
+        dipoles[labels == lbl].mean(axis=0)
+        for lbl in unique_labels
+    ])
+
+    selected_idx = farthest_point_sampling(centroids, n_regions, seed=seed)
+
+    return unique_labels[selected_idx].tolist()

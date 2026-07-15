@@ -347,3 +347,36 @@ def polydata_transform(
     polydata.compute_normals(inplace=True, consistent_normals=False, auto_orient_normals=False)
 
     return polydata
+
+
+def farthest_point_sampling(points: np.ndarray, n: int, seed: int = 0) -> np.ndarray:
+    """
+    Greedy farthest-point sampling: iteratively picks the point that maximizes
+    the minimum Euclidean distance to all previously selected points.
+
+    Parameters
+    ----------
+    points: np.ndarray of shape (n_points, n_dims)
+        Candidate points to sample from.
+
+    n: int
+        Number of points to select.
+
+    seed: int
+        Random seed, used to pick the starting point.
+
+    Returns
+    -------
+    selected: np.ndarray of shape (n,)
+        Indices into `points` of the selected points, in selection order.
+    """
+    rng = np.random.default_rng(seed)
+    selected = [rng.integers(len(points))]
+    dist = np.linalg.norm(points - points[selected[0]], axis=1)
+
+    for _ in range(n - 1):
+        next_idx = np.argmax(dist)
+        selected.append(next_idx)
+        dist = np.minimum(dist, np.linalg.norm(points - points[next_idx], axis=1))
+
+    return np.array(selected)
