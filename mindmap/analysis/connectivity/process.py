@@ -91,6 +91,7 @@ from collections import defaultdict
 
 import numpy as np
 import scipy as sp
+from scipy.spatial import cKDTree
 
 import nibabel as nib
 import mne
@@ -463,11 +464,12 @@ def _geodesic_gaussian_kernel(
 
 
 def connectome_from_geometry(
-        source_space    : mne.SourceSpaces,
-        maximum_dist    : float = 10,
-        maximum_neigh   : int = None,
-        inter_hemi_dist : float = 0,
-        weights         : bool = True
+        source_space      : mne.SourceSpaces,
+        maximum_dist      : float = 10,
+        maximum_neigh     : int = None,
+        inter_hemi_dist   : float = 0,
+        inter_hemi_mirror : bool = False,
+        weights           : bool = True
         ) -> np.ndarray:
     """
     Build adjacency matrix from brain geometry.
@@ -481,20 +483,34 @@ def connectome_from_geometry(
         Maximal distance in [mm] at which to connect neighbors.
 
     maximum_neigh: int
-        Maximum number of neighbors. This will select the N closest neighbors only. But a 
+        Maximum number of neighbors. This will select the N closest neighbors only. But a
         node can still end up with more connections if it is the closest neighbor of other
         nodes.
-        
+
     inter_hemi_dist: float
         Maximal distance in [mm] at which to connect inter hemispheric nodes.
 
+    inter_hemi_mirror: bool
+        In addition to `inter_hemi_dist`, connect each node to its homotopic
+        (mirror-symmetric) partner in the other hemisphere: reflect one hemisphere's
+        coordinates across the midline (x=0) and nearest-neighbor match to the other
+        hemisphere (same technique as `mindmap.core.metric.hemispheric_symmetry`,
+        used there for diagnostics, reused here for construction), weighted by the
+        true (non-mirrored) 3D distance between the matched pair. Real
+        interhemispheric white matter (the corpus callosum) is predominantly
+        homotopic, so this connects each node to an anatomically-motivated partner
+        regardless of raw distance from the midline, rather than only whatever else
+        happens to be geometrically close across it. Without either this or
+        `inter_hemi_dist` set, the two hemispheres are two fully disconnected
+        components (each hemisphere is built as an independent KNN graph above).
+
     weights: bool
         Whether to put weights as geodesic distances (in [mm]) or binarize.
-    
+
     Returns
     -------
     geometry: sp.sparce.csc_matrix
-        Brain geometry at source level. 
+        Brain geometry at source level.
     """
     hemispheres = []
 
@@ -532,8 +548,20 @@ def connectome_from_geometry(
     lh_src = pos[:n]
     rh_src = pos[n:]
 
-    inter_dist = np.linalg.norm(lh_src[:, np.newaxis, :]-rh_src[np.newaxis, :, :], axis=2)
+    inter_dist_raw = np.linalg.norm(lh_src[:, np.newaxis, :]-rh_src[np.newaxis, :, :], axis=2)
+    inter_dist = inter_dist_raw.copy()
     inter_dist[inter_dist > inter_hemi_dist] = np.inf
+
+    if inter_hemi_mirror:
+        mirrored_lh = lh_src.copy()
+        mirrored_lh[:, 0] *= -1
+
+        _, nn = cKDTree(rh_src).query(mirrored_lh)
+
+        mirror_dist = np.full_like(inter_dist, np.inf)
+        mirror_dist[np.arange(len(lh_src)), nn] = inter_dist_raw[np.arange(len(lh_src)), nn]
+
+        inter_dist = np.minimum(inter_dist, mirror_dist)
 
     # geometry
     geometry = np.block([

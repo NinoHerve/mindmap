@@ -8,15 +8,120 @@ Last Modified: 2025-10-24
 License: MIT
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from joblib import Parallel, delayed
+from tqdm import tqdm
 
 import mne
 
 from mindmap.analysis.functional.inverse.solvers import (
     wCSET, CSET, MCE,
 )
+from mindmap.analysis.simulation.engine import Simulator
+from mindmap.analysis.simulation.components import Source
+
+
+@dataclass
+class InverseTask:
+    """
+    Per-run inputs for `run_parallel_pipeline`. Plain paths and scalars only
+    (no live `DatasetManager`/`Simulator` objects) so a list of these is safe
+    to hand to `joblib.Parallel` worker processes.
+
+    foutputs: only needed by a save-oriented `postprocess_fn` -- a mapping of
+    method name to the output path it should be written to (precomputed by
+    the caller, e.g. via `dm.get_path(...)`, since `dm` itself can't cross
+    into a worker process).
+    """
+    run: int
+    simulator_dir: Path
+    fave: Path
+    fcov: Path
+    fgold: Path
+    fsource: Path
+    target_snr: float | None = None
+    foutputs: dict[str, Path] | None = None
+
+
+def run_parallel_pipeline(
+    tasks: list[InverseTask],
+    preprocess_fn,
+    reconstruct_fn,
+    postprocess_fn,
+    n_jobs: int = 1,
+    verbose: str = "warning",
+) -> list:
+    """
+    Runs preprocess -> reconstruct -> postprocess for every task, optionally
+    across parallel worker processes (`joblib.Parallel`, loky backend).
+
+    Loading is hardcoded and always the same regardless of what the three
+    stages do: each task's `simulator`/`ave`/`ncov`/`gold`/`src` are loaded
+    from the paths on `task` (never via a live `DatasetManager`, which isn't
+    picklable across worker processes -- `cannot pickle 'weakref.ReferenceType'
+    object`). Everything else flows through one shared context dict, seeded
+    with those raw objects plus the task itself:
+
+        ctx = {"task": task, "simulator": ..., "ave": ..., "ncov": ...,
+               "gold": ..., "src": ...}
+        ctx.update(preprocess_fn(ctx) or {})
+        ctx.update(reconstruct_fn(ctx) or {})
+        return postprocess_fn(ctx)
+
+    `preprocess_fn`, `reconstruct_fn`, and `postprocess_fn` are entirely
+    caller-defined -- they read whatever keys they need from `ctx` and add
+    whatever keys they produce (e.g. `preprocess_fn` might add "phase_data"/
+    "hrp_idx"/"pp_idx", or just crop "ave"; `reconstruct_fn` adds "solutions";
+    `postprocess_fn` either saves solutions to `task.foutputs` or scores them
+    against `ctx["gold"]` and returns a metrics dict). Nothing beyond the
+    initial seeded keys is required or enforced, so different stage
+    combinations (e.g. a static crop vs. hrp/pp, or save vs. score) can be
+    mixed freely without changing this function.
+
+    Parameters
+    ----------
+    tasks: list[InverseTask]
+        One entry per run.
+
+    preprocess_fn, reconstruct_fn, postprocess_fn: Callable[[dict], dict | Any]
+        See above.
+
+    n_jobs: int
+        Number of worker processes (1 = fully sequential).
+
+    verbose: str
+        MNE log level applied inside each worker (each is a separate process, so
+        setting this in the main process/notebook wouldn't reach them). Applies
+        to every MNE call made by `preprocess_fn`/`reconstruct_fn`/`postprocess_fn`
+        too, as long as they don't pass their own `verbose=` override. Default
+        "warning" -- pass "info" or "debug" for the usual noisier MNE output.
+
+    Returns
+    -------
+    results: list
+        One `postprocess_fn(ctx)` return value per task, in submission order.
+    """
+    def _run_one(task):
+        mne.set_log_level(verbose)
+        simulator, _, _ = Simulator.load(task.simulator_dir)
+        ctx = {
+            "task": task,
+            "simulator": simulator,
+            "ave": mne.read_evokeds(task.fave, verbose="warning")[0],
+            "ncov": mne.read_cov(task.fcov, verbose="warning"),
+            "gold": mne.read_source_estimate(task.fgold),
+            "src": Source.load(task.fsource),
+        }
+        ctx.update(preprocess_fn(ctx) or {})
+        ctx.update(reconstruct_fn(ctx) or {})
+        return postprocess_fn(ctx)
+
+    return Parallel(n_jobs=n_jobs)(
+        delayed(_run_one)(task) for task in tqdm(tasks, desc="pipeline")
+    )
 
 def make_process_sample(
     forward: mne.Forward,

@@ -31,6 +31,8 @@ from .io import (
 
 from .pipeline import (
     make_process_sample,
+    InverseTask,
+    run_parallel_pipeline,
 )
 
 __all__ = [
@@ -50,4 +52,6 @@ __all__ = [
     "make_process_sample",
     "filter_remaining_files",
     "stream_source_solutions",
+    "InverseTask",
+    "run_parallel_pipeline",
 ]
