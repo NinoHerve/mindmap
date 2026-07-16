@@ -25,6 +25,10 @@ from .metric import (
     average_dipole_spacing,
 )
 
+from .spectral import (
+    compute_beltrami_harmonics,
+)
+
 from .utils import correct_labels
 
 __all__ = [
@@ -43,4 +47,5 @@ __all__ = [
     "build_dipole_adjacency",
     "build_dipole_patch_area",
     "average_dipole_spacing",
+    "compute_beltrami_harmonics",
 ]

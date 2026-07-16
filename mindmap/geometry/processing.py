@@ -12,12 +12,86 @@ License: MIT
 """
 
 import numpy as np
+import scipy.linalg as sla
 from scipy.spatial import KDTree
 from scipy.ndimage import distance_transform_edt, center_of_mass, gaussian_filter, binary_fill_holes
 from scipy.interpolate import RegularGridInterpolator
 
 import pyvista as pv
+from lapy import TriaMesh, Solver
 
+
+
+def compute_laplace_beltrami_basis(
+        rr   : np.ndarray,
+        tris : np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Full eigendecomposition of the Laplace-Beltrami operator on a
+    triangulated surface mesh (open or closed), via linear FEM.
+
+    Uses `lapy` purely for the cotangent-weight stiffness matrix `A` and
+    lumped mass matrix `B` assembly (`lapy.Solver(lump=True)`), then solves
+    the full dense generalized eigenproblem `Aψ = λBψ` directly via
+    `scipy.linalg.eigh(A, B)` rather than `lapy`'s own `.eigs()` -- that
+    method is a sparse/shift-invert partial eigensolver, efficient for a
+    handful of modes but no cheaper than dense once asked for (close to) the
+    full spectrum, which is what this function always returns.
+
+    `lapy`/`scipy`'s generalized eigh gives eigenvectors that are
+    B-orthonormal (`ψᵢᵀBψⱼ = δᵢⱼ`, the natural FEM/L² convention) rather
+    than Euclidean-orthonormal (`UᵀU = I`), because `B`'s diagonal is
+    proportional to each vertex's local mesh area, not a multiple of the
+    identity (verified empirically against a toy closed mesh: raw `lapy`/
+    `scipy` output has `UᵀU != I` but `UᵀBU = I` exactly). Rescaling each
+    row `v` by `sqrt(B_vv)` converts to the Euclidean-orthonormal convention
+    this package's other spectral bases use (e.g. `compute_cst`'s plain
+    `eigh` on a graph Laplacian gets `UᵀU = I` automatically, since that
+    operator has no separate mass matrix) -- required for any caller (e.g.
+    `wCSET`) that interprets `eigenvalues` as prior variances via Parseval's
+    identity, which only holds in that convention.
+
+    Handles open meshes (e.g. a cortical hemisphere with the medial wall
+    excluded) the same as closed ones -- FEM assembly only needs a valid
+    2-manifold-with-boundary, and the resulting operator gets natural
+    (Neumann) boundary conditions automatically from the weak-form
+    derivation, no special-casing required. Does NOT force the smallest
+    eigenvalue to exactly 0 (unlike `compute_cst`): a mesh with multiple
+    disconnected components has one (theoretically exact, numerically
+    tiny-but-nonzero) zero eigenvalue per component, and this function has
+    no way to know the caller's intended component count -- clamping it is
+    the caller's responsibility.
+
+    Parameters
+    ----------
+    rr: np.ndarray of shape (n_vertices, 3)
+        Vertex positions of a single connected 2-manifold-with-boundary
+        (any consistent unit -- eigenvalues scale as 1/length^2 accordingly).
+
+    tris: np.ndarray of shape (n_triangles, 3)
+        Triangle vertex indices, referencing rows of `rr`.
+
+    Returns
+    -------
+    eigvec: np.ndarray of shape (n_vertices, n_vertices)
+        Euclidean-orthonormal eigenvectors (columns) of the Laplace-Beltrami
+        operator, ascending eigenvalue order.
+
+    eigval: np.ndarray of shape (n_vertices,)
+        Corresponding eigenvalues, ascending order.
+    """
+    mesh = TriaMesh(rr, tris)
+    solver = Solver(mesh, lump=True)
+
+    A = solver.stiffness.toarray()
+    B = solver.mass.toarray()
+
+    eigval, eigvec = sla.eigh(A, B)
+
+    sqrt_mass = np.sqrt(np.diag(B))
+    eigvec_euclid = eigvec * sqrt_mass[:, np.newaxis]
+
+    return eigvec_euclid, eigval
 
 
 def compute_vertex_areas(

@@ -27,6 +27,7 @@ dependencies = [
     "scikit-image>=0.0.1",
     "bctpy>=0.0.1",
     "statsmodels>=0.0.1",
+    "lapy>=0.0.1",
 ]
 
 [project.optional-dependencies]
