@@ -59,6 +59,23 @@ def make_stc(
     return stc
 
 
+def stc_path_for(fave: str | Path, method: str) -> Path:
+    """
+    Maps a saved `ave` path to the stc path a save-oriented `postprocess_fn`
+    (e.g. `InverseTask`'s) writes (and `MeasureTask.fsolutions` should point
+    to) for a given method.
+    """
+    foutput = str(fave).replace("ave", "stc")
+    foutput = foutput.replace("_stc", f"_desc-{method.lower()}_stc")
+    foutput = foutput.replace(".fif", "")
+    return Path(foutput)
+
+
+def resolve_solution_paths(fave: str | Path, methods: list[str]) -> dict[str, Path]:
+    """Builds a `{method: stc_path}` map, e.g. for `MeasureTask.fsolutions`."""
+    return {m: stc_path_for(fave, m) for m in methods}
+
+
 def stream_source_solutions(stc_dir: str | Path, target_method: list[str]):
     """
     A generator that searches for saved STC files and yields them one by one.
@@ -101,10 +118,7 @@ def filter_remaining_files(file_list: list[Path], methods: list[str]) -> list[Pa
 
         # check if EVERY requested method output file exists on disk
         for m in methods:
-            # Replicate your exact string replacement logic
-            foutput = str(fname).replace("ave", "stc")
-            foutput = foutput.replace("_stc", f"_desc-{m.lower()}_stc")
-            foutput = foutput.replace(".fif", "")
+            foutput = str(stc_path_for(fname, m))
 
             # MNE saves source estimates with -lh.stc and -rh.stc extensions
             lh_file = Path(foutput + "-lh.stc")

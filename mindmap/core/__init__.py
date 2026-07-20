@@ -27,6 +27,7 @@ from .io import (
     write_eig,
     write_csv_row,
     get_config,
+    read_npz_fast,
 )
 
 from .process import (
@@ -35,6 +36,18 @@ from .process import (
     resample_pr_curve,
     resample_roc_curve,
     precision_at_recall,
+)
+
+from .power import (
+    simulate_splitplot_power,
+    precision_of_mean,
+)
+
+from .stats import (
+    paired_test,
+    correct_pvalues,
+    compare_to_reference,
+    cluster_threshold,
 )
 
 
@@ -52,6 +65,7 @@ __all__ = [
     "write_eig",
     "write_csv_row",
     "get_config",
+    "read_npz_fast",
     "create_dataset_description",
     "calc_roc_curve",
     "calc_pr_curve",
@@ -62,4 +76,10 @@ __all__ = [
     "resample_pr_curve",
     "resample_roc_curve",
     "precision_at_recall",
+    "simulate_splitplot_power",
+    "precision_of_mean",
+    "paired_test",
+    "correct_pvalues",
+    "compare_to_reference",
+    "cluster_threshold",
 ]

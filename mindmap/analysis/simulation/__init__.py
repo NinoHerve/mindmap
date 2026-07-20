@@ -5,7 +5,7 @@ DOC String
 from .signals import Signal, SpikeSignal, OscillationSignal
 from .components import Source, HeadModel
 from .engine import Simulator, EpochConfig, PropagationConfig
-from .pipeline import generate_simulation_dataset
+from .pipeline import generate_simulation_dataset, SimulationTask
 
 __all__ = [
     "SpikeSignal",
@@ -16,4 +16,5 @@ __all__ = [
     "EpochConfig",
     "PropagationConfig",
     "generate_simulation_dataset",
+    "SimulationTask",
 ]

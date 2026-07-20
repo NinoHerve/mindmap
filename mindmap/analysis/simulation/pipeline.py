@@ -3,6 +3,7 @@ DOC string
 """
 
 import copy
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,32 @@ import mne
 from mindmap.io import DatasetManager
 from mindmap.analysis.simulation.components import Source
 from mindmap.analysis.simulation.engine import Simulator, PropagationConfig
+from mindmap.tasks import Task, read_simulator
+
+
+@dataclass
+class SimulationTask(Task):
+    """
+    Forward-simulation task: loads the `simulator` a run's `process_fn`
+    simulates against, seeding `np.random` from `run_seed` first (mirrors
+    what `generate_simulation_dataset`'s internal `_run_one` does at its own
+    top) since each worker process runs in isolation and mutating the global
+    RNG state here is safe only under that assumption.
+    """
+    simulator_dir: Path
+    src: Source
+    snr_target: float | None
+    count: int
+    rep: int
+    run_seed: int
+    fave: Path
+    fcov: Path
+    fgold: Path
+    fsource: Path
+
+    def load(self) -> dict:
+        np.random.seed(self.run_seed)
+        return {"simulator": read_simulator(self.simulator_dir)}
 
 
 def _zero_scale_source(reference: Source) -> Source:

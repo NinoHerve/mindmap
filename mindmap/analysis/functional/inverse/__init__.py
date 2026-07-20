@@ -12,6 +12,7 @@ from .solvers import (
 from .process import (
     normalize_source_estimate,
     binarize_stc,
+    build_phase_data_hrp_pp_curve,
 )
 
 from .metric import (
@@ -21,17 +22,22 @@ from .metric import (
     compute_stc_pr,
     compute_stc_correlation,
     compute_stc_cosine,
+    score_source_reconstruction,
 )
 
 from .io import (
     make_stc,
     filter_remaining_files,
     stream_source_solutions,
+    stc_path_for,
+    resolve_solution_paths,
 )
 
 from .pipeline import (
-    make_process_sample,
+    Task,
     InverseTask,
+    InverseSimTask,
+    MeasureTask,
     run_parallel_pipeline,
 )
 
@@ -42,6 +48,7 @@ __all__ = [
     "CSET",
     "normalize_source_estimate",
     "binarize_stc",
+    "build_phase_data_hrp_pp_curve",
     "compute_stc_confusion",
     "compute_stc_scores",
     "compute_stc_roc",
@@ -49,9 +56,14 @@ __all__ = [
     "make_stc",
     "compute_stc_correlation",
     "compute_stc_cosine",
-    "make_process_sample",
+    "score_source_reconstruction",
     "filter_remaining_files",
     "stream_source_solutions",
+    "stc_path_for",
+    "resolve_solution_paths",
+    "Task",
     "InverseTask",
+    "InverseSimTask",
+    "MeasureTask",
     "run_parallel_pipeline",
 ]

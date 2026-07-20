@@ -21,6 +21,7 @@ Example:
 from . import core
 from . import geometry
 from . import anatomy
+from . import tasks
 from . import analysis
 from . import io
 from . import metric

@@ -5,11 +5,14 @@ Modules for managing connectivity.
 from .process import (
     connectome_from_tracts,
     connectome_from_geometry,
+    connectome_from_euclidean_distance,
     connectome_from_atlas,
 )
 
 from .spectral import (
     compute_cst,
+    cache_cst_batch,
+    ConnectomeCacheTask,
 )
 
 from .utils import (
@@ -37,8 +40,11 @@ from .metric import (
 __all__ = [
     "connectome_from_tracts",
     "connectome_from_geometry",
+    "connectome_from_euclidean_distance",
     "connectome_from_atlas",
     "compute_cst",
+    "cache_cst_batch",
+    "ConnectomeCacheTask",
     "order_connectome_by_region",
     "get_dipole_region_labels",
     "get_transformed_dipoles",

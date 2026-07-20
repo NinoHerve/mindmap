@@ -16,7 +16,9 @@ from mindmap.analysis.functional.common.metric import (
     compute_mne_confusion, compute_mne_scores,
     compute_mne_roc, compute_mne_pr,
     compute_mne_correlation, compute_mne_cosine,
+    find_peak_localization_error,
 )
+from mindmap.core.metric import calc_pr_curve
 
 def compute_stc_correlation(
     stc_true: mne.SourceEstimate,
@@ -212,3 +214,89 @@ def compute_stc_pr(
         obj_true = stc_true,
         obj_pred = stc_pred,
     )
+
+
+def score_source_reconstruction(
+    gold: mne.SourceEstimate,
+    solutions: dict,
+    hrp_idx: int,
+    pp_idx: int,
+    curve_idx: np.ndarray,
+    hrp_col: int,
+    pp_col: int,
+    curve_cols: np.ndarray,
+    true_source_mask: np.ndarray,
+    dipole_positions: np.ndarray,
+) -> dict:
+    """
+    Scores one or more source reconstructions against `gold` on the three
+    outcome measures the pilot-sizing studies compare: peak localization
+    error at the half-rising-phase timepoint, average precision (AP) at
+    half-rising-phase and peak-phase, and a spatial-correlation-to-gold
+    curve (raw curve + AUC-over-time summary).
+
+    Indices/columns match `build_phase_data_hrp_pp_curve`'s output --
+    `hrp_idx`/`pp_idx`/`curve_idx` index into `gold`'s own time axis,
+    `hrp_col`/`pp_col`/`curve_cols` index into each solution's (already
+    `phase_data`-restricted) time axis.
+
+    Parameters
+    ----------
+    gold: mne.SourceEstimate
+        Ground-truth source activity for this run.
+
+    solutions: dict[str, mne.SourceEstimate]
+        One reconstructed source estimate per method/condition label.
+
+    hrp_idx, pp_idx: int
+        Indices into `gold`'s time axis for the half-rising-phase / peak-
+        phase timepoints.
+
+    curve_idx: np.ndarray
+        Indices into `gold`'s time axis for the spatial-correlation curve.
+
+    hrp_col, pp_col: int
+        Positions of `hrp_idx`/`pp_idx` within each solution's time axis.
+
+    curve_cols: np.ndarray
+        Positions of `curve_idx` within each solution's time axis.
+
+    true_source_mask: np.ndarray
+        Boolean mask over dipoles marking the true simulated source region
+        (e.g. `Source.select_targets(...)`).
+
+    dipole_positions: np.ndarray of shape (n_dipoles, 3)
+        Dipole positions in the same space/units as `true_source_mask`, for
+        `find_peak_localization_error`.
+
+    Returns
+    -------
+    scores: dict[str, dict]
+        One entry per key of `solutions`, each `{"localization_error_hrp",
+        "ap_hrp", "ap_pp", "correlation_auc", "correlation_curve"}`.
+    """
+    gold_hrp = gold.data[:, hrp_idx]
+    gold_pp = gold.data[:, pp_idx]
+    gold_curve = gold.data[:, curve_idx]
+
+    scores = {}
+    for method, sol in solutions.items():
+        sol_hrp = sol.data[:, hrp_col]
+        sol_pp = sol.data[:, pp_col]
+        sol_curve = sol.data[:, curve_cols]
+
+        hit = find_peak_localization_error(sol_hrp, true_source_mask, dipole_positions)
+
+        corr_curve = np.array([
+            np.corrcoef(gold_curve[:, t], sol_curve[:, t])[0, 1] for t in range(gold_curve.shape[1])
+        ])
+
+        scores[method] = {
+            "localization_error_hrp": hit["distance_mm"],
+            "ap_hrp": calc_pr_curve(gold_hrp > 0, sol_hrp)["ap"],
+            "ap_pp": calc_pr_curve(gold_pp > 0, sol_pp)["ap"],
+            "correlation_auc": float(np.nanmean(corr_curve)),
+            "correlation_curve": corr_curve,
+        }
+
+    return scores

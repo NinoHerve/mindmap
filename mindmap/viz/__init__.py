@@ -64,6 +64,15 @@ from .utils import (
     get_brain_view,
 )
 
+from .power import (
+    plot_power_precision_curves,
+)
+
+from .stats import (
+    metric_box_significance,
+    metric_relational_clusters,
+)
+
 __all__ = [
     "plot_brain_activity",
     "show_slices",
@@ -97,4 +106,7 @@ __all__ = [
     "plot_signal",
     "get_brain_view",
     "plot_adj_matrix",
+    "plot_power_precision_curves",
+    "metric_box_significance",
+    "metric_relational_clusters",
 ]

@@ -483,99 +483,110 @@ def plot_pr(
     return fig, ax
 
 
-def _set_facet_title(g, title):
-    """Shared suptitle handling for the FacetGrid-based metric_* plots below."""
-    if title:
-        g.fig.suptitle(title)
-        g.fig.subplots_adjust(top=0.85)
-
-
-def metric_box(
-    df, group_name="Method", palette="viridis", title=None,
-    col_wrap=3, sharex=False, sharey=False, height=3, aspect=1,
-    **kwargs,
-):
+def metric_box(df, group_name="Method", order=None, palette="viridis", points=True, title=None, ax=None, **kwargs):
     """
     Default style: Boxplot with overlaid raw data points.
 
+    Plots exactly the rows in `df` (one metric's worth -- filtering to a
+    single metric is the caller's responsibility, e.g.
+    `MetricSuite.plot(metric=...)`), onto a single `Axes`.
+
     Parameters
     ----------
+    group_name: str
+        Column driving both the x-axis category and the color of each box
+        -- a single column plays both roles (no separate hue variable).
+
+    order: list, optional
+        X-axis category order. Defaults to seaborn's own ordering.
+
     palette: str | list | dict
         Color palette for the `group_name` levels -- anything seaborn's
         `palette` argument accepts.
 
-    title: str, optional
-        Figure-level suptitle.
+    points: bool
+        Whether to overlay a `sns.stripplot` of raw data points (default
+        True). Turn off for dense data (hundreds of points per box) where
+        the overlay is visual noise rather than signal.
 
-    col_wrap, sharex, sharey, height, aspect
-        Forwarded to the underlying `sns.FacetGrid` (one facet per metric).
+    title: str, optional
+        Axes title.
+
+    ax: matplotlib.axes.Axes, optional
+        Axes to plot into. A new figure/axes is created if not given.
 
     Returns
     -------
-    matplotlib.figure.Figure
+    (matplotlib.figure.Figure, matplotlib.axes.Axes)
     """
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.get_figure()
+
     defaults = {"linewidth": 1.5}
     params = {**defaults, **kwargs}
 
-    g = sns.FacetGrid(df, col="Metric", sharex=sharex, sharey=sharey, col_wrap=col_wrap, height=height, aspect=aspect)
-    g.map_dataframe(sns.boxplot, x=group_name, y="Value", hue=group_name, palette=palette, **params)
-    g.map_dataframe(sns.stripplot, x=group_name, y="Value", color=".2", alpha=0.4)
-    g.add_legend()
-    _set_facet_title(g, title)
+    sns.boxplot(data=df, x=group_name, y="Value", hue=group_name, order=order, palette=palette, ax=ax, legend=False, **params)
+    if points:
+        sns.stripplot(data=df, x=group_name, y="Value", order=order, color=".2", alpha=0.4, ax=ax)
+    if title:
+        ax.set_title(title)
 
-    return g.fig
+    return fig, ax
 
-def metric_violin(
-    df, group_name="Method", palette="muted", title=None,
-    col_wrap=3, sharex=False, sharey=False, height=3, aspect=1,
-    **kwargs,
-):
+
+def metric_violin(df, group_name="Method", order=None, palette="muted", title=None, ax=None, **kwargs):
     """
     Default style: Split or inner-quartile violin plots.
 
-    See `metric_box` for the shared `palette`/`title`/layout parameters.
-
-    Returns
-    -------
-    matplotlib.figure.Figure
+    See `metric_box` for the shared parameters/return shape.
     """
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.get_figure()
+
     defaults = {"inner": "quartile", "cut": 0}
     params = {**defaults, **kwargs}
 
-    g = sns.FacetGrid(df, col="Metric", sharex=sharex, sharey=sharey, col_wrap=col_wrap, height=height, aspect=aspect)
-    g.map_dataframe(sns.violinplot, x=group_name, y="Value", hue=group_name, palette=palette, **params)
-    g.add_legend()
-    _set_facet_title(g, title)
+    sns.violinplot(data=df, x=group_name, y="Value", hue=group_name, order=order, palette=palette, ax=ax, legend=False, **params)
+    if title:
+        ax.set_title(title)
 
-    return g.fig
+    return fig, ax
 
-def metric_bar(
-    df, group_name="Method", palette="magma", title=None,
-    col_wrap=3, sharex=False, sharey=False, height=3, aspect=1,
-    **kwargs,
-):
+
+def metric_bar(df, group_name="Method", order=None, palette="magma", title=None, ax=None, **kwargs):
     """
     Default style: Bar chart with error bars (confidence intervals).
 
-    See `metric_box` for the shared `palette`/`title`/layout parameters.
-
-    Returns
-    -------
-    matplotlib.figure.Figure
+    See `metric_box` for the shared parameters/return shape.
     """
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.get_figure()
+
     defaults = {"errorbar": "sd", "capsize": .1}
     params = {**defaults, **kwargs}
 
-    g = sns.FacetGrid(df, col="Metric", sharex=sharex, sharey=sharey, col_wrap=col_wrap, height=height, aspect=aspect)
-    g.map_dataframe(sns.barplot, x=group_name, y="Value", hue=group_name, palette=palette, **params)
-    g.add_legend()
-    _set_facet_title(g, title)
+    sns.barplot(data=df, x=group_name, y="Value", hue=group_name, order=order, palette=palette, ax=ax, legend=False, **params)
+    if title:
+        ax.set_title(title)
 
-    return g.fig
+    return fig, ax
 
-def metric_heatmap(df, group_name="Method", cmap="RdYlGn", title=None, figsize=(10, 6), **kwargs):
+
+def metric_heatmap(df, group_name="Method", cmap="RdYlGn", title=None, figsize=(10, 6), ax=None, **kwargs):
     """
     Default style: Clean matrix with centered annotations.
+
+    Unlike `metric_box`/`metric_violin`/`metric_bar`/`metric_relational`,
+    this plots multiple metrics at once by design -- "Metric" as columns is
+    the actual feature (a metric x group summary matrix), not incidental
+    faceting, so it's exempt from the "one metric per call" convention the
+    other plot kinds follow.
 
     Parameters
     ----------
@@ -585,105 +596,87 @@ def metric_heatmap(df, group_name="Method", cmap="RdYlGn", title=None, figsize=(
         color per group).
 
     title: str, optional
-        Axes title. Unlike the FacetGrid-based plots above, left unset (no
-        "Overview" placeholder) when not provided.
+        Axes title.
 
     figsize: tuple
+        Only used when `ax` is not given.
+
+    ax: matplotlib.axes.Axes, optional
+        Axes to plot into. A new figure/axes is created if not given.
 
     Returns
     -------
-    matplotlib.figure.Figure
+    (matplotlib.figure.Figure, matplotlib.axes.Axes)
     """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.get_figure()
+
     defaults = {"annot": True, "fmt": ".2f", "cbar_kws": {"label": "Average Value"}}
     params = {**defaults, **kwargs}
 
     pivot = df.pivot_table(index=group_name, columns="Metric", values="Value", aggfunc="mean")
-    fig, ax = plt.subplots(figsize=figsize)
     sns.heatmap(pivot, cmap=cmap, ax=ax, **params)
     if title:
         ax.set_title(title)
 
-    return fig
+    return fig, ax
 
 
-def metric_relational(
-    df, coords, group_name=None, kind="line", palette=None, title=None,
-    col_wrap=3, sharex=False, sharey=False, height=3, aspect=1,
-    **kwargs,
-):
+def metric_relational(df, x, group_name=None, kind="line", palette=None, title=None, ax=None, **kwargs):
     """
-    Relational plot that automatically detect the correct X-axis per metric
+    Line/scatter plot of "Value" against an explicit x-axis coordinate.
+
+    Plots exactly the rows in `df` (one metric's worth -- filtering to a
+    single metric is the caller's responsibility, e.g.
+    `MetricSuite.plot(metric=..., x=...)`), onto a single `Axes`.
 
     Parameters
     ----------
-    df : pd.DataFrame
+    df: pd.DataFrame
         The tidy dataframe.
 
-    coords: list
-        List of all potential coordinate columns (e.g., ['time', 'freq'])
+    x: str
+        Coordinate column to use as the x-axis (e.g. "time", "snr").
 
-    group_name : str
-        The column for color encoding (e.g. 'Label') -- same name/role as
+    group_name: str
+        Column for color encoding (e.g. "Label") -- same name/role as
         `metric_box`'s `group_name`, for a consistent API across plot kinds.
 
+    kind: str
+        "line" (default, `sns.lineplot`) or "scatter" (`sns.scatterplot`).
+
     palette: str | list | dict
-        Color palette for the `group_name` levels -- anything seaborn's
-        `palette` argument accepts. Must be set on the FacetGrid itself
-        (not on the per-facet lineplot/scatterplot call), since that's what
-        actually drives the color cycle here.
+        Color palette for the `group_name` levels.
 
     title: str, optional
-        Figure-level suptitle.
+        Axes title.
 
-    col_wrap, sharex, sharey, height, aspect
-        Forwarded to the underlying `sns.FacetGrid` (one facet per metric).
+    ax: matplotlib.axes.Axes, optional
+        Axes to plot into. A new figure/axes is created if not given.
 
     Returns
     -------
-    matplotlib.figure.Figure
+    (matplotlib.figure.Figure, matplotlib.axes.Axes)
     """
-    def _sub_plotter(data, **inner_kwargs):
-        valid_coords = [c for c in coords if data[c].notna().any()]
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.get_figure()
 
-        if not valid_coords:
-            return
+    is_numeric = pd.api.types.is_numeric_dtype(df[x])
+    if not is_numeric:
+        df = df.sort_values(x)
 
-        x_col = valid_coords[0] if valid_coords else None
+    plot_func = sns.lineplot if kind == "line" else sns.scatterplot
+    plot_func(data=df, x=x, y="Value", hue=group_name, palette=palette, ax=ax, **kwargs)
 
-        # check if coordinate is numerical or categorical (strings)?
-        is_numeric = pd.api.types.is_numeric_dtype(data[x_col])
+    if not is_numeric:
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
 
-        # select plot type
-        if not is_numeric:
-            data = data.sort_values(x_col)
-            plot_func = sns.lineplot if kind == "line" else sns.scatterplot
-        else:
-            plot_func = sns.lineplot if kind == "line" else sns.scatterplot
+    ax.set_xlabel(x)
+    if title:
+        ax.set_title(title)
 
-        # plot using the detected x_col
-        ax = plot_func(data=data, x=x_col, y="Value", **inner_kwargs)
-
-        if not is_numeric:
-            plt.xticks(rotation=45, ha="right")
-
-        plt.gca().set_xlabel(x_col)
-
-    # Initialize the Grid
-    g = sns.FacetGrid(
-        df,
-        col = "Metric",
-        hue = group_name,
-        palette = palette,
-        sharex = sharex,
-        sharey = sharey,
-        col_wrap = col_wrap,
-        height = height,
-        aspect = aspect,
-    )
-
-    # map the internal plotter to the grid
-    g.map_dataframe(_sub_plotter, **kwargs)
-    g.add_legend()
-    _set_facet_title(g, title)
-
-    return g.fig
+    return fig, ax

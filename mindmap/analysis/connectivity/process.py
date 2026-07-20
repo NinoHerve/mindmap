@@ -92,6 +92,7 @@ from collections import defaultdict
 import numpy as np
 import scipy as sp
 from scipy.spatial import cKDTree
+from scipy.spatial.distance import cdist
 
 import nibabel as nib
 import mne
@@ -577,6 +578,76 @@ def connectome_from_geometry(
         return (geometry > 0).astype(int)
 
     return geometry
+
+
+def connectome_from_euclidean_distance(
+        source_space  : mne.SourceSpaces,
+        maximum_dist  : float = 10,
+        maximum_neigh : int = None,
+        weights       : bool = True,
+        ) -> np.ndarray:
+    """
+    Build an adjacency matrix from raw 3D Euclidean distance between dipoles
+    -- a surrogate for `connectome_from_geometry`'s mesh-geodesic distance,
+    to test how much using Euclidean (rather than geodesic, or a real
+    dMRI/tractography-derived) distance as the graph-construction basis
+    matters. Same convention already used for
+    `dmri_uncertainty_weights_from_source_space`'s corruption weights
+    (`scipy.spatial.distance.cdist` on dipole positions in mm) -- this
+    reuses that exact distance, just to build a graph instead of a
+    corruption-sampling weight.
+
+    Unlike `connectome_from_geometry`, no hemisphere separation or
+    inter-hemispheric special-casing is needed: mesh-geodesic distance can't
+    cross the inter-hemispheric gap on a surface mesh (hence that function's
+    `inter_hemi_dist`/`inter_hemi_mirror`), but Euclidean distance has no
+    such restriction -- a plain KNN over all dipoles together naturally
+    picks up whatever cross-hemisphere edges fall within `maximum_dist`
+    without any extra machinery.
+
+    Parameters
+    ----------
+    source_space: mne.SourceSpaces
+        Sources.
+
+    maximum_dist: float
+        Maximal distance in [mm] at which to connect neighbors.
+
+    maximum_neigh: int
+        Maximum number of neighbors. This will select the N closest
+        neighbors only. But a node can still end up with more connections
+        if it is the closest neighbor of other nodes.
+
+    weights: bool
+        Whether to put weights as Euclidean distances (in [mm]) or binarize.
+
+    Returns
+    -------
+    geometry: np.ndarray of shape (n, n)
+        Euclidean-distance-based adjacency matrix at source level.
+    """
+    dipoles = get_dipole_positions(source_space) * 1000   # [m] -> [mm]
+    dist = cdist(dipoles, dipoles)
+
+    dist[dist > maximum_dist] = np.inf
+
+    if maximum_neigh is not None:
+        knn_indices = np.argpartition(dist, maximum_neigh, axis=1)[:, :maximum_neigh]
+
+        mask = np.zeros_like(dist, dtype=bool)
+        rows = np.arange(dist.shape[0])[:, None]
+        mask[rows, knn_indices] = True
+
+        sym_mask = np.logical_or(mask, mask.T)
+        dist = np.where(sym_mask, dist, np.inf)
+
+    dist[dist == np.inf] = 0
+    np.fill_diagonal(dist, 0)
+
+    if not weights:
+        return (dist > 0).astype(int)
+
+    return dist
 
 
 def connectome_from_atlas(

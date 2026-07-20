@@ -21,10 +21,18 @@ import pandas as pd
 
 import mne
 
+from mindmap.core.io import read_npz_fast
+
 from mindmap.viz.core import (
     metric_bar, metric_box, metric_heatmap, metric_violin, metric_relational
 )
 from mindmap.viz.dispatch import plot_brain_activity
+from mindmap.viz.stats import metric_box_significance, metric_relational_clusters
+
+from mindmap.analysis.stats import (
+    compare_methods as _compare_methods_df,
+    cluster_permutation_mne as _cluster_permutation_mne,
+)
 
 
 def _atomic_replace(path: Path, write_func):
@@ -465,15 +473,20 @@ class MetricSuite:
             metadata=meta.get("metadata"), context=context,
         )
 
-        # 3. Repopulate entries from the array store
+        # 3. Repopulate entries from the array store. Uses read_npz_fast
+        # instead of np.load/NpzFile: NpzFile.__getitem__ does an O(n) list
+        # scan on every lookup, making a loop of n lookups O(n^2) -- 36.6s
+        # for a real 88,000-entry study, of which 32.7s was that scan alone
+        # (see read_npz_fast's docstring). read_npz_fast reads every member
+        # once, O(n) total, dropping the same load to ~2s.
         data_path = folder/"data.npz"
-        with np.load(data_path) as data:
-            for i, entry_meta in enumerate(meta["entries"]):
-                value = data[f"entry{i}__value"]
-                coords = dict(entry_meta["scalar_coords"])
-                for c_name in entry_meta["array_coord_names"]:
-                    coords[c_name] = data[f"entry{i}__coord__{c_name}"]
-                suite.register(entry_meta["label"], entry_meta["metric"], value, **coords)
+        arrays = read_npz_fast(data_path)
+        for i, entry_meta in enumerate(meta["entries"]):
+            value = arrays[f"entry{i}__value"]
+            coords = dict(entry_meta["scalar_coords"])
+            for c_name in entry_meta["array_coord_names"]:
+                coords[c_name] = arrays[f"entry{i}__coord__{c_name}"]
+            suite.register(entry_meta["label"], entry_meta["metric"], value, **coords)
 
         return suite
 
@@ -580,14 +593,17 @@ class MetricSuite:
         return cls.load_many(folders, name=name or root.name)
 
 
-    def plot(self, metrics=None, labels=None, subjects=None, coord=None, kind=None, **kwargs):
+    def plot(self, metric, labels=None, subjects=None, x=None, kind=None, ax=None, **kwargs):
         """
-        Flexible plotting interface.
+        Flexible plotting interface. Plots a single metric onto a single
+        `Axes`. For multiple metrics side by side, call this once per
+        metric onto your own `plt.subplots(1, n)` grid, e.g.
+        `fig, axes = plt.subplots(1, 2); suite.plot(metric="a", ax=axes[0]); suite.plot(metric="b", ax=axes[1])`.
 
         Parameters:
         ----------
-        metrics: list | str
-            Filter for specific metrics.
+        metric: str
+            Which registered metric to plot.
 
         labels: list | str
             Filter for specific labels.
@@ -596,55 +612,65 @@ class MetricSuite:
             Filter for specific subjects (the "Subject" column registered
             via `MetricSuite(subject=...)` / `register(..., subject=...)`).
 
-        coord: str, optional
+        x: str, optional
             The coordinate column name to use as the X-axis. If provided, triggers
             a relational plot.
 
         kind: str ['auto', 'box', 'violin', 'bar', or 'heatmap']
-            Type of plot. Defaults to 'bo' for statistical and 'line'
+            Type of plot. Defaults to 'box' for statistical and 'line'
             for relational layouts.
+
+        ax: matplotlib.axes.Axes, optional
+            Axes to plot into. A new figure/axes is created if not given.
 
         **kwargs:
             Passed to the underlying Seaborn/Matplotlib functions. Pass
-            `group_name="Subject"` to facet/color by subject instead of by
+            `group_name="Subject"` to color by subject instead of by
             the suite's default grouping column.
         """
+        if not isinstance(metric, str):
+            raise TypeError(
+                f"MetricSuite.plot() accepts a single metric (str), got {type(metric).__name__}. "
+                "For multiple metrics, call .plot(metric=..., ax=axes[i]) once per metric onto "
+                "your own plt.subplots(1, n) grid."
+            )
+
         # get data
-        df = self.get_filtered_df(metrics, labels, subjects)
+        df = self.get_filtered_df(metric, labels, subjects)
 
         if df.empty:
             print("Query returned no data.")
             return
-        
-        # 1. If coord is provided, validate it and route to relational plotting.
-        if coord is not None:
-            if coord not in df.columns:
+
+        # 1. If x is provided, validate it and route to relational plotting.
+        if x is not None:
+            if x not in df.columns:
                 raise ValueError(
-                    f"Coordinate column '{coord}' does not exist in the registered data."
+                    f"Coordinate column '{x}' does not exist in the registered data."
                 )
-            if df[coord].isna().all():
+            if df[x].isna().all():
                 raise ValueError(
-                    f"Coordinate column '{coord}' contains only NaN values for the selected metrics/labels."
+                    f"Coordinate column '{x}' contains only NaN values for the selected metric/labels."
                 )
-            
+
             # Default relational kind to 'line' if not explicitly stated.
             plot_kind = kind if kind in ["line", "scatter"] else "line"
-            return self._plot_relational(df, x_coord=coord, kind=plot_kind, **kwargs)
-        
-        # 2. If no coord is provided, check if fallback to spatial is requested/needed
+            return self._plot_relational(df, x=x, kind=plot_kind, ax=ax, **kwargs)
+
+        # 2. If no x is provided, check if fallback to spatial is requested/needed
         spatial_kinds = ["vista"]
         meta_cols = [c for c in df.columns if c not in [self.group_name, "Metric", "Value"]]
         has_spatial = any(c in meta_cols for c in ["channel", "vertex", "region"])
 
         if kind in spatial_kinds or (kind is None and has_spatial):
             return self._plot_spatial(df, **kwargs)
-        
+
         # 3. Default fallback: Statistical plots
         plot_kind = kind if kind in ["box", "violin", "bar", "heatmap"] else "box"
-        return self._plot_statistical(df, kind=plot_kind, **kwargs) 
+        return self._plot_statistical(df, kind=plot_kind, ax=ax, **kwargs)
 
 
-    def _plot_statistical(self, df, kind="box", **kwargs):
+    def _plot_statistical(self, df, kind="box", ax=None, **kwargs):
         """
         Plot statistical plots.
         """
@@ -659,19 +685,14 @@ class MetricSuite:
             raise ValueError(f"Kind '{kind}' not supported. Choose from {list(plot_kind.keys())}")
 
         kwargs.setdefault("group_name", self.group_name)
-        return plot_kind[kind](df, **kwargs)
+        return plot_kind[kind](df, ax=ax, **kwargs)
 
-    def _plot_relational(self, df, x_coord, kind="line", **kwargs):
+    def _plot_relational(self, df, x, kind="line", ax=None, **kwargs):
         """
         Plot relational plot.
         """
         kwargs.setdefault("group_name", self.group_name)
-        return metric_relational(
-            df,
-            coords = [x_coord],
-            kind = kind,
-            **kwargs,
-        )
+        return metric_relational(df, x=x, kind=kind, ax=ax, **kwargs)
 
 
     def _plot_spatial(self, df, **kwargs):
@@ -716,3 +737,149 @@ class MetricSuite:
         evoked.data = np.tile(data_aligned[:, np.newaxis], (1, n_times))
 
         return evoked
+
+    def compare_methods(
+        self, metric, reference, competitors=None, test="wilcoxon",
+        correction="fdr_bh", alpha=0.05, subject_col="region",
+        labels=None, subjects=None, plot=False, ax=None, **plot_kwargs,
+    ):
+        """
+        Paired comparison of `reference` against every other (or listed
+        `competitors`) method registered under `metric`, matched by
+        `subject_col` (default "region" -- the repeated-measures unit used
+        throughout this codebase).
+
+        Follows the same get_filtered_df -> transform -> delegate pattern
+        as `.plot()`: filters via `get_filtered_df(metrics=metric,
+        labels=labels, subjects=subjects)`, then delegates to
+        `mindmap.analysis.stats.compare_methods`.
+
+        `reference` is required (unlike `.plot()`'s optional filters) --
+        picking a reference automatically would silently determine what
+        "significant" even means, which should be an explicit choice.
+
+        Parameters
+        ----------
+        metric: str
+            Which registered "Metric" to compare.
+
+        reference: str
+            Required -- the `self.group_name` level every competitor is
+            compared against.
+
+        competitors: list[str], optional
+            Defaults to every other registered label for this metric.
+
+        test, correction, alpha
+            Forwarded to `mindmap.analysis.stats.compare_methods`.
+
+        subject_col: str
+            Repeated-measures grouping column, default "region".
+
+        labels, subjects
+            Forwarded to `get_filtered_df` (in addition to `metrics=metric`).
+
+        plot: bool
+            If True, also builds an annotated box plot via
+            `mindmap.viz.stats.metric_box_significance` and returns
+            `(results, fig, ax)` instead of just `results`.
+
+        ax: matplotlib.axes.Axes, optional
+            Forwarded to `metric_box_significance` when `plot=True`. Axes to
+            plot into; a new figure/axes is created if not given.
+
+        **plot_kwargs
+            Forwarded to `metric_box_significance` when `plot=True`.
+
+        Returns
+        -------
+        pd.DataFrame, or (pd.DataFrame, matplotlib.figure.Figure,
+        matplotlib.axes.Axes) if `plot=True`.
+        """
+        df = self.get_filtered_df(metrics=metric, labels=labels, subjects=subjects)
+        if df.empty:
+            raise ValueError(f"No data registered for metric '{metric}'.")
+
+        results = _compare_methods_df(
+            df, group_col=self.group_name, reference=reference, subject_col=subject_col,
+            competitors=competitors, test=test, correction=correction, alpha=alpha,
+        )
+
+        if not plot:
+            return results
+
+        fig, ax = metric_box_significance(
+            df, results, group_name=self.group_name, reference=reference, alpha=alpha, ax=ax, **plot_kwargs,
+        )
+        return results, fig, ax
+
+    def cluster_permutation(
+        self, metric, coord, reference, competitor, subject_col="region",
+        higher_is_better=True, coord_order=None, cluster_alpha=0.05,
+        n_permutations=3000, seed=0, labels=None, subjects=None,
+        plot=False, ax=None, **plot_kwargs,
+    ):
+        """
+        Region-as-subject cluster-permutation test of `reference` vs
+        `competitor` along `coord` (e.g. "snr", "percentage"), delegating
+        to `mindmap.analysis.stats.cluster_permutation_mne` (which wraps
+        `mne.stats.permutation_cluster_1samp_test`).
+
+        Parameters
+        ----------
+        metric: str
+            Which registered "Metric" to compare.
+
+        coord: str
+            Coordinate column to sweep along (e.g. "snr").
+
+        reference, competitor: str
+            The two `self.group_name` levels being compared.
+
+        subject_col, higher_is_better, coord_order, cluster_alpha,
+        n_permutations, seed
+            Forwarded to `mindmap.analysis.stats.cluster_permutation_mne`.
+
+        labels, subjects
+            Forwarded to `get_filtered_df` in addition to `metrics=metric`
+            (`labels` defaults to `[reference, competitor]` when not given,
+            so unrelated methods registered under the same metric don't
+            leak into the comparison).
+
+        plot: bool
+            If True, also builds a shaded curve plot via
+            `mindmap.viz.stats.metric_relational_clusters` and returns
+            `(result, fig, ax)` instead of just `result`.
+
+        ax: matplotlib.axes.Axes, optional
+            Forwarded to `metric_relational_clusters` when `plot=True`. Axes
+            to plot into; a new figure/axes is created if not given.
+
+        **plot_kwargs
+            Forwarded to `metric_relational_clusters` when `plot=True`.
+
+        Returns
+        -------
+        dict (see `cluster_permutation_mne`'s docstring for keys:
+        "clusters", "t_obs", "coord_values", "diff"), or (dict,
+        matplotlib.figure.Figure, matplotlib.axes.Axes) if `plot=True`.
+        """
+        effective_labels = labels if labels is not None else [reference, competitor]
+        df = self.get_filtered_df(metrics=metric, labels=effective_labels, subjects=subjects)
+        if df.empty:
+            raise ValueError(f"No data registered for metric '{metric}'.")
+
+        result = _cluster_permutation_mne(
+            df, group_col=self.group_name, coord_col=coord, reference=reference, competitor=competitor,
+            subject_col=subject_col, higher_is_better=higher_is_better, coord_order=coord_order,
+            cluster_alpha=cluster_alpha, n_permutations=n_permutations, seed=seed,
+        )
+
+        if not plot:
+            return result
+
+        fig, ax = metric_relational_clusters(
+            df, result["clusters"], x=coord, group_name=self.group_name,
+            alpha=cluster_alpha, ax=ax, **plot_kwargs,
+        )
+        return result, fig, ax
