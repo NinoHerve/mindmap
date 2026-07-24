@@ -22,6 +22,8 @@ from .metric import (
     compute_stc_pr,
     compute_stc_correlation,
     compute_stc_cosine,
+    compute_stc_global_scale,
+    compute_stc_scaled_rmse,
     score_source_reconstruction,
 )
 
@@ -56,6 +58,8 @@ __all__ = [
     "make_stc",
     "compute_stc_correlation",
     "compute_stc_cosine",
+    "compute_stc_global_scale",
+    "compute_stc_scaled_rmse",
     "score_source_reconstruction",
     "filter_remaining_files",
     "stream_source_solutions",

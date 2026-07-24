@@ -553,6 +553,128 @@ def calc_explained_variance(
     return r2.item() if r2.size == 1 else r2
 
 
+def calc_global_scale(
+    arr_true: np.ndarray,
+    arr_pred: np.ndarray,
+) -> float:
+    """
+    Single least-squares scalar gain that best rescales arr_pred onto
+    arr_true, fit through the origin over the *entire* array:
+
+        alpha = sum(arr_true * arr_pred) / sum(arr_pred**2)
+
+    This is the closed-form minimizer of RMS(arr_true - alpha*arr_pred) (set
+    d/dalpha of the sum of squares to zero) -- exactly the alpha
+    `calc_scaled_rmse` applies before computing its residual. Deliberately
+    has no `axis` parameter: it always pools every element of both arrays,
+    regardless of how a caller later aggregates the residual. Fitting a
+    separate alpha per channel or timepoint would silently absorb the exact
+    cross-channel relative-energy differences `calc_scaled_rmse` exists to
+    detect -- the same blind spot correlation already has.
+
+    Also useful standalone: a systematic over/under-scaling (e.g.
+    alpha=0.5, this reconstruction's amplitude is consistently half of
+    true) is itself a calibration readout, independent of the
+    shape-fidelity question `calc_scaled_rmse` answers.
+
+    Parameters
+    ----------
+    arr_true, arr_pred: np.ndarray
+        Arrays of identical shape.
+
+    Returns
+    -------
+    alpha: float
+        0.0 if arr_pred has ~zero energy everywhere (no recoverable gain).
+    """
+    if arr_true.shape != arr_pred.shape:
+        raise ValueError(
+            f"Shape mismatch: arr_true {arr_true.shape} and arr_pred {arr_pred.shape} must be identical."
+        )
+
+    arr_true_64 = arr_true.astype(np.float64)
+    arr_pred_64 = arr_pred.astype(np.float64)
+
+    eps = np.finfo(np.float64).eps
+    denom = np.sum(arr_pred_64**2)
+    numer = np.sum(arr_true_64 * arr_pred_64)
+
+    alpha = numer / denom if denom > eps else 0.0
+
+    return float(alpha)
+
+
+def calc_scaled_rmse(
+    arr_true: np.ndarray,
+    arr_pred: np.ndarray,
+    axis: int = None,
+) -> np.ndarray | float:
+    """
+    RMSE between arr_true and a single globally-rescaled copy of arr_pred
+    (alpha*arr_pred, alpha from `calc_global_scale`, always fit over the
+    full array regardless of `axis`).
+
+    Complements both `calc_correlation`/`calc_cosine` (blind to any
+    positive rescaling -- even a *differential*, per-channel one) and plain
+    RMSE (which over-penalizes the arbitrary/uncalibrated absolute gain
+    many inverse methods have by construction, e.g. z-scored output): this
+    metric penalizes only *differential* scale mismatch -- a channel's (or
+    timepoint's) energy changing relative to the rest of the array in a
+    way one shared gain can't absorb.
+
+    No `polarity_invariant` flag: alpha's own sign already cancels an
+    overall polarity flip for free, but a single global alpha cannot
+    compensate for *individual* channels needing opposite sign flips (e.g.
+    genuine dipole-orientation ambiguity in source space) -- such channels
+    are correctly scored as mismatched here, not silently rescued. Cross-
+    check with `calc_correlation(..., polarity_invariant=True)` per channel
+    to distinguish that case from a genuine amplitude-calibration error.
+
+    Leverage caveat: alpha is an ordinary-least-squares fit, so it's
+    dominated by whichever elements have the largest squared amplitude --
+    with few channels, or one channel carrying most of the total energy
+    (e.g. a single channel scaled up 4x among only 3), that channel can
+    hijack the fit almost entirely (alpha lands near *that* channel's own
+    optimal scale), making it look artificially well-calibrated while
+    every genuinely-correct channel is penalized instead. This flips the
+    intended failure signature and is worth checking for (e.g. via each
+    channel's own energy share) whenever channel counts are small or
+    energy is very unevenly distributed.
+
+    Parameters
+    ----------
+    arr_true, arr_pred: np.ndarray of shape (n_samples, n_timepoints)
+
+    axis: int or None
+        Axis along which to aggregate the residual into RMSE (mirrors
+        `calc_correlation`'s axis semantics; does NOT affect the alpha fit,
+        which always pools the full array -- see `calc_global_scale`):
+        - None: spatio-temporal (flatten both dims) -> scalar
+        - 0: across samples at each timepoint -> (n_timepoints,)
+        - 1: across timepoints for each sample -> (n_samples,)
+
+    Returns
+    -------
+    rmse: np.ndarray | float
+        Non-negative. 0 = perfect match up to one global gain.
+    """
+    if arr_true.shape != arr_pred.shape:
+        raise ValueError(
+            f"Shape mismatch: arr_true {arr_true.shape} and arr_pred {arr_pred.shape} must be identical."
+        )
+
+    arr_true_64 = arr_true.astype(np.float64)
+    arr_pred_64 = arr_pred.astype(np.float64)
+
+    alpha = calc_global_scale(arr_true_64, arr_pred_64)
+
+    diff = arr_true_64 - alpha * arr_pred_64
+    rmse = np.sqrt(np.mean(diff**2, axis=axis))
+
+    rmse = np.asarray(rmse)
+    return rmse.item() if rmse.size == 1 else rmse
+
+
 def calc_ssim(
     arr_true: np.ndarray,
     arr_pred: np.ndarray,

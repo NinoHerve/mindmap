@@ -22,6 +22,7 @@ from mindmap.core.metric import (
     calc_cosine, calc_hypergeometric_enrichment,
     calc_fold_enrichment, label_clusters, point_to_area_distance,
     calc_pattern_geometry_correlation, calc_explained_variance, calc_ssim,
+    calc_global_scale, calc_scaled_rmse,
 )
 from mindmap.anatomy.source_space import (
     get_dipole_positions, sample_nifti_at_points, nifti_mask_to_points,
@@ -179,6 +180,61 @@ def compute_mne_explained_variance(
     center_axis = axis_map["temporal"] if target_axis is None else target_axis
 
     return calc_explained_variance(y_true, y_pred, target_axis, center_axis, polarity_invariant)
+
+
+def compute_mne_global_scale(
+    obj_true: mne.Evoked | mne.SourceEstimate,
+    obj_pred: mne.Evoked | mne.SourceEstimate,
+) -> float:
+    """
+    Compute the single global least-squares gain. See
+    `mindmap.core.metric.calc_global_scale`.
+
+    Parameters
+    ----------
+    obj_true: mne.Evoked | mne.SourceEstimate
+        Ground truth activity.
+
+    obj_pred: mne.Evoked | mne.SourceEstimate
+        Estimated activity.
+
+    Returns
+    -------
+    float
+    """
+    return calc_global_scale(obj_true.data, obj_pred.data)
+
+
+def compute_mne_scaled_rmse(
+    obj_true: mne.Evoked | mne.SourceEstimate,
+    obj_pred: mne.Evoked | mne.SourceEstimate,
+    mode: str = "spatio-temporal",
+) -> float | np.ndarray:
+    """
+    Compute RMSE after a single globally-fitted rescale. See
+    `mindmap.core.metric.calc_scaled_rmse`.
+
+    Parameters
+    ----------
+    obj_true: mne.Evoked | mne.SourceEstimate
+        Ground truth activity.
+
+    obj_pred: mne.Evoked | mne.SourceEstimate
+        Estimated activity.
+
+    mode: str ['spatial', 'temporal', 'spatio-temporal']
+
+    Returns
+    -------
+    rmse: float | np.ndarray
+    """
+    y_true = obj_true.data
+    y_pred = obj_pred.data
+
+    axis_map = {"spatio-temporal": None, "spatial": 0, "temporal": 1}
+    target_axis = axis_map[mode]
+
+    return calc_scaled_rmse(y_true, y_pred, target_axis)
 
 
 def compute_mne_ssim(

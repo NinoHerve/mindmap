@@ -22,6 +22,8 @@ from mindmap.core.metric import (
     calc_pattern_geometry_correlation,
     calc_explained_variance,
     calc_ssim,
+    calc_global_scale,
+    calc_scaled_rmse,
 )
 
 
@@ -613,3 +615,84 @@ def test_polarity_invariant_explained_variance():
         r2_unrelated,
         calc_explained_variance(arr, -unrelated, axis=None),
     ))
+
+
+def test_calc_scaled_rmse_invariant_to_uniform_rescale():
+    """
+    A uniformly rescaled prediction (2x every channel/timepoint) is
+    perfectly recovered by the fitted global alpha, so scaled RMSE is ~0 --
+    unlike plain RMSE, which stays large under this same rescale.
+    """
+    rng = np.random.default_rng(6)
+    arr = rng.normal(size=(8, 50))
+    pred = 2.0 * arr
+
+    assert calc_scaled_rmse(arr, pred, axis=None) == pytest.approx(0.0, abs=1e-8)
+    assert calc_global_scale(arr, pred) == pytest.approx(0.5, rel=1e-6)
+
+    plain_rmse = np.sqrt(np.mean((arr - pred) ** 2))
+    assert plain_rmse > 1.0
+
+
+def test_calc_scaled_rmse_detects_differential_channel_rescale():
+    """
+    Correlation is blind to one channel getting a disproportionate amount
+    of energy (it normalizes each channel's own scale away independently),
+    but scaled RMSE flags it: a single global alpha can perfectly undo a
+    *uniform* rescale, but not a *differential* one, so the miscalibrated
+    channel still stands out. This also guards against ever fitting alpha
+    per-channel instead of globally -- that regression would make every
+    channel's RMSE collapse to ~0 here, same as the uniform-rescale case.
+    """
+    rng = np.random.default_rng(7)
+    arr_true = rng.normal(size=(10, 300))
+    arr_pred = arr_true.copy()
+    arr_pred[0] *= 3.0
+
+    corr = calc_correlation(arr_true, arr_pred, axis=1)
+    np.testing.assert_allclose(corr, 1.0, atol=1e-8)
+
+    rmse = calc_scaled_rmse(arr_true, arr_pred, axis=1)
+    assert rmse[0] > 3 * np.mean(rmse[1:])
+
+
+def test_calc_global_scale_recovers_known_gain():
+    """alpha recovers an exactly known injected gain, for any arr_true."""
+    rng = np.random.default_rng(8)
+    arr_true = rng.normal(size=(6, 100))
+    alpha_true = 0.37
+    arr_pred = arr_true / alpha_true
+
+    assert calc_global_scale(arr_true, arr_pred) == pytest.approx(alpha_true, rel=1e-6)
+    assert calc_scaled_rmse(arr_true, arr_pred, axis=None) == pytest.approx(0.0, abs=1e-8)
+
+
+def test_calc_scaled_rmse_shape_mismatch_raises():
+    rng = np.random.default_rng(9)
+    arr1 = rng.normal(size=(4, 50))
+    arr2 = rng.normal(size=(4, 60))
+
+    with pytest.raises(ValueError):
+        calc_scaled_rmse(arr1, arr2)
+    with pytest.raises(ValueError):
+        calc_global_scale(arr1, arr2)
+
+
+def test_calc_scaled_rmse_zero_prediction_is_finite():
+    """
+    An all-zero predictor has no recoverable gain (0/0 in the alpha fit),
+    which must fall back to alpha=0 rather than NaN/inf -- the residual
+    then reduces to the raw RMS of arr_true, which is itself finite.
+    """
+    rng = np.random.default_rng(10)
+    arr_true = rng.normal(size=(5, 80))
+    arr_pred = np.zeros_like(arr_true)
+
+    assert calc_global_scale(arr_true, arr_pred) == 0.0
+
+    rmse_flat = calc_scaled_rmse(arr_true, arr_pred, axis=None)
+    assert np.isfinite(rmse_flat)
+    assert rmse_flat == pytest.approx(np.sqrt(np.mean(arr_true**2)))
+
+    rmse_per_channel = calc_scaled_rmse(arr_true, arr_pred, axis=1)
+    assert np.all(np.isfinite(rmse_per_channel))

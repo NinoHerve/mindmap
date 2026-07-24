@@ -71,6 +71,7 @@ from .power import (
 from .stats import (
     metric_box_significance,
     metric_relational_clusters,
+    metric_relational_cluster_summary,
 )
 
 __all__ = [
@@ -109,4 +110,5 @@ __all__ = [
     "plot_power_precision_curves",
     "metric_box_significance",
     "metric_relational_clusters",
+    "metric_relational_cluster_summary",
 ]

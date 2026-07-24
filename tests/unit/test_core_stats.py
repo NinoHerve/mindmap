@@ -12,7 +12,18 @@ from mindmap.core.stats import (
     correct_pvalues,
     compare_to_reference,
     cluster_threshold,
+    effective_sample_size,
 )
+
+
+def _make_ar1(n, rho, seed, offset=0.0):
+    """AR(1) series: x[i] = rho*x[i-1] + noise[i], plus a constant offset."""
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0, 1, size=n)
+    x = np.zeros(n)
+    for i in range(1, n):
+        x[i] = rho * x[i - 1] + noise[i]
+    return x + offset
 
 
 def test_paired_test_wilcoxon_detects_known_shift():
@@ -130,6 +141,76 @@ def test_compare_to_reference_shapes_and_names():
 def test_compare_to_reference_rejects_shape_mismatch():
     with pytest.raises(ValueError):
         compare_to_reference(np.zeros(5), np.zeros((4, 2)))
+
+
+def test_effective_sample_size_white_noise_close_to_n():
+    """No serial correlation -> n_eff should sit right at n (nothing to correct)."""
+    rng = np.random.default_rng(4)
+    x = rng.normal(size=300)
+    n_eff = effective_sample_size(x)
+    assert n_eff == pytest.approx(300, abs=1)
+
+
+def test_effective_sample_size_shrinks_with_autocorrelation():
+    """
+    Strong AR(1) serial correlation must give a substantially smaller n_eff
+    than the nominal n -- and n_eff should shrink further as rho increases,
+    the core, falsifiable behavior this whole correction depends on.
+    """
+    n = 300
+    x_low_rho = _make_ar1(n, rho=0.2, seed=5)
+    x_high_rho = _make_ar1(n, rho=0.85, seed=5)
+
+    n_eff_low = effective_sample_size(x_low_rho)
+    n_eff_high = effective_sample_size(x_high_rho)
+
+    assert n_eff_low < n
+    assert n_eff_high < n_eff_low  # more autocorrelation -> smaller effective n
+
+
+def test_effective_sample_size_clipped_to_n():
+    """Never reports more "independent" points than were actually observed."""
+    rng = np.random.default_rng(6)
+    x = rng.normal(size=50)
+    assert effective_sample_size(x) <= 50
+
+
+def test_paired_test_ttest_ess_matches_plain_ttest_when_iid():
+    """
+    With no serial correlation in the paired-difference series, ttest_ess's
+    n_eff should recover ~n, and its p-value should closely match plain
+    ttest's on the same data -- the correction should be a no-op here.
+    """
+    rng = np.random.default_rng(7)
+    n = 200
+    y = rng.normal(0, 1, size=n)
+    x = y - 0.3 + rng.normal(0, 1, size=n)
+
+    result_ttest = paired_test(x, y, test="ttest")
+    result_ess = paired_test(x, y, test="ttest_ess")
+
+    assert result_ess["n_eff"] == pytest.approx(n, abs=5)
+    assert result_ess["p_value"] == pytest.approx(result_ttest["p_value"], abs=0.02)
+    assert result_ess["effect_size_type"] == "cohens_dz"
+
+
+def test_paired_test_ttest_ess_corrects_spurious_significance():
+    """
+    Regression guard for the actual point of ttest_ess: a small true shift
+    riding on strong AR(1) autocorrelation can look "significant" under a
+    plain ttest purely because the nominal n overstates the independent
+    evidence -- ttest_ess must come out measurably less significant (larger
+    p-value, smaller n_eff) on the identical data, not just "a different
+    number".
+    """
+    diff = _make_ar1(n=200, rho=0.8, seed=8, offset=0.15)
+    x, y = diff, np.zeros_like(diff)
+
+    result_ttest = paired_test(x, y, test="ttest")
+    result_ess = paired_test(x, y, test="ttest_ess")
+
+    assert result_ess["n_eff"] < 200 * 0.5
+    assert result_ess["p_value"] > result_ttest["p_value"]
 
 
 def test_cluster_threshold_matches_t_ppf_formula():

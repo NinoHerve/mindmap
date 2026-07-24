@@ -31,6 +31,7 @@ def compare_methods(
     test: str = "wilcoxon",
     correction: str = "fdr_bh",
     alpha: float = 0.05,
+    subject_order: list = None,
 ) -> pd.DataFrame:
     """
     Paired comparison of `reference` against every other (or listed
@@ -65,14 +66,35 @@ def compare_methods(
     competitors: list[str], optional
         Defaults to every other `group_col` level present for a given metric.
 
-    test, correction, alpha
+    test: str
+        Forwarded to `mindmap.core.stats.paired_test` -- "wilcoxon" (default)
+        | "ttest" | "ttest_ess" (a paired t-test using an autocorrelation-
+        corrected effective sample size in place of the nominal one; see
+        `subject_order` below and `paired_test`'s own docstring -- meant for
+        `subject_col` values with real serial correlation, e.g. channels or
+        timepoints from a single recording, where the nominal pair count
+        overstates how much independent evidence is actually there).
+
+    correction, alpha
         Forwarded to `mindmap.core.stats.compare_to_reference`.
+
+    subject_order: list, optional
+        Explicit `subject_col` ordering to reindex each metric's pivoted
+        table to before running the test. Only matters for `test="ttest_ess"`
+        (its autocorrelation estimate is meaningless on a shuffled series) --
+        ignored by "wilcoxon"/"ttest", which don't care about order. Defaults
+        to the pivot's own ascending sort, which is already the right order
+        for a numeric `subject_col` like "times" (sorts chronologically), but
+        is very likely *wrong* for a string one like "channel" (sorts
+        alphabetically, e.g. "AD1, AD10, AD2, ..." -- not contact adjacency)
+        -- pass the real order explicitly in that case.
 
     Returns
     -------
     pd.DataFrame with columns (["Metric"] if present in `df`), `group_col`,
     "n_pairs", "statistic", "p_value", "p_corrected", "effect_size",
-    "effect_size_type", "significant" -- one row per (metric, competitor).
+    "effect_size_type", "significant", "n_eff" (only populated for
+    `test="ttest_ess"`, NaN otherwise) -- one row per (metric, competitor).
     """
     if df.empty:
         raise ValueError("df is empty.")
@@ -97,6 +119,8 @@ def compare_methods(
             )
 
         wide = sub.pivot(index=subject_col, columns=group_col, values="Value")
+        if subject_order is not None:
+            wide = wide.reindex(subject_order)
 
         comp_names = competitors if competitors is not None else [c for c in wide.columns if c != reference]
         missing = set(comp_names) - set(wide.columns)
@@ -124,15 +148,22 @@ def compare_methods(
                 group_col: r["name"], "n_pairs": r["n"], "statistic": r["statistic"],
                 "p_value": r["p_value"], "p_corrected": r["p_corrected"],
                 "effect_size": r["effect_size"], "effect_size_type": r["effect_size_type"],
-                "significant": r["significant"],
+                "significant": r["significant"], "n_eff": r.get("n_eff", np.nan),
             })
             rows.append(row)
 
     columns = (["Metric"] if has_metric else []) + [
         group_col, "n_pairs", "statistic", "p_value", "p_corrected",
-        "effect_size", "effect_size_type", "significant",
+        "effect_size", "effect_size_type", "significant", "n_eff",
     ]
     return pd.DataFrame(rows, columns=columns)
+
+
+def _cohens_dz(x) -> float:
+    """Paired-samples Cohen's dz: mean(x) / std(x, ddof=1), 0.0 if std is 0."""
+    x = np.asarray(x, dtype=float)
+    sd = x.std(ddof=1)
+    return float(x.mean() / sd) if sd > 0 else 0.0
 
 
 def cluster_permutation_mne(
@@ -148,6 +179,7 @@ def cluster_permutation_mne(
     n_permutations: int = 3000,
     tail: int = 0,
     seed: int = 0,
+    effect_size_summary: str = "cluster_mean",
 ) -> dict:
     """
     Region-as-subject cluster-permutation test of `reference` vs
@@ -202,13 +234,31 @@ def cluster_permutation_mne(
     n_permutations, tail, seed
         Forwarded to `mne.stats.permutation_cluster_1samp_test`.
 
+    effect_size_summary: str
+        How each cluster's "effect_size" (Cohen's dz -- same
+        `mean(diff) / std(diff, ddof=1)` definition `paired_test`'s
+        `"ttest"`/`"ttest_ess"` branches use) is computed from the
+        already-available `diff` matrix:
+        - "cluster_mean" (default): each subject's difference is first
+          averaged *across* the cluster's whole coordinate span, then dz is
+          computed on those per-subject averages -- "how reliable is the
+          effect across the whole affected range."
+        - "peak": dz is computed on the single coordinate within the
+          cluster with the largest `|t_obs|` instead of the span average --
+          "how strong is the effect at its best point." Can diverge sharply
+          from "cluster_mean" for a wide, unevenly-strong cluster (a narrow
+          strong peak inside a mostly-weak span will look much bigger under
+          "peak" than under "cluster_mean").
+
     Returns
     -------
     dict:
       "clusters": pd.DataFrame, columns `[f"{coord_col}_start",
-          f"{coord_col}_end", "mass", "sign", "p_value", "significant"]`
-          (one row per cluster MNE found, in original `coord_col` units,
-          `significant` = `p_value < cluster_alpha`), possibly empty.
+          f"{coord_col}_end", "mass", "sign", "p_value", "significant",
+          "effect_size", "effect_size_type"]` (one row per cluster MNE
+          found, in original `coord_col` units, `significant` = `p_value <
+          cluster_alpha`, `effect_size_type` always `"cohens_dz"`),
+          possibly empty.
       "t_obs": np.ndarray of shape (n_coord,) -- per-coordinate observed
           t-statistic.
       "coord_values": list -- the `coord_order` actually used (x-axis for
@@ -224,6 +274,10 @@ def cluster_permutation_mne(
         design) -- the superseded notebooks implicitly assumed a fully
         balanced design too.
     """
+    if effect_size_summary not in ("cluster_mean", "peak"):
+        raise ValueError(
+            f"Unknown effect_size_summary '{effect_size_summary}'. Choose 'cluster_mean' or 'peak'."
+        )
     for col in (group_col, coord_col, subject_col, "Value"):
         if col not in df.columns:
             raise ValueError(f"df is missing required column '{col}'.")
@@ -291,6 +345,13 @@ def cluster_permutation_mne(
         mask[cluster] = True
         idx = np.where(mask)[0]
         mass = float(t_obs[idx].sum())
+
+        if effect_size_summary == "cluster_mean":
+            cluster_vals = diff.iloc[:, idx].mean(axis=1)
+        else:  # "peak"
+            peak_pos = idx[np.argmax(np.abs(t_obs[idx]))]
+            cluster_vals = diff.iloc[:, peak_pos]
+
         rows.append({
             f"{coord_col}_start": coord_order[idx[0]],
             f"{coord_col}_end": coord_order[idx[-1]],
@@ -298,11 +359,16 @@ def cluster_permutation_mne(
             "sign": 1 if mass > 0 else -1,
             "p_value": float(pv),
             "significant": bool(pv < cluster_alpha),
+            "effect_size": _cohens_dz(cluster_vals),
+            "effect_size_type": "cohens_dz",
         })
 
     clusters_df = pd.DataFrame(
         rows,
-        columns=[f"{coord_col}_start", f"{coord_col}_end", "mass", "sign", "p_value", "significant"],
+        columns=[
+            f"{coord_col}_start", f"{coord_col}_end", "mass", "sign", "p_value", "significant",
+            "effect_size", "effect_size_type",
+        ],
     )
 
     return {

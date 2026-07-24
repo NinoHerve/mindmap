@@ -31,6 +31,7 @@ from mindmap.analysis.functional.common.metric import (
     compute_mne_correlation, compute_mne_cosine,
     compute_mne_pattern_geometry_correlation,
     compute_mne_explained_variance, compute_mne_ssim,
+    compute_mne_global_scale, compute_mne_scaled_rmse,
 )
 
 from .io import get_ch_positions
@@ -548,6 +549,71 @@ def compute_evoked_explained_variance(
         raise ValueError("Evokeds must have same channels and timepoints.")
 
     return compute_mne_explained_variance(evoked_true, evoked_pred, mode=mode, polarity_invariant=polarity_invariant)
+
+
+def compute_evoked_global_scale(
+    evoked_true: mne.Evoked,
+    evoked_pred: mne.Evoked,
+) -> float:
+    """
+    Compute the single global least-squares gain between two evoked
+    objects. See `mindmap.core.metric.calc_global_scale`.
+
+    Parameters
+    ----------
+    evoked_true: mne.Evoked
+        Reference activity (e.g. True iEEG).
+
+    evoked_pred: mne.Evoked
+        Estimated activity (e.g. virtual iEEG).
+
+    Returns
+    -------
+    float
+    """
+    if not same_evoked(evoked_true, evoked_pred):
+        raise ValueError("Evokeds must have same channels and timepoints.")
+
+    return compute_mne_global_scale(evoked_true, evoked_pred)
+
+
+def compute_evoked_scaled_rmse(
+    evoked_true: mne.Evoked,
+    evoked_pred: mne.Evoked,
+    mode: str = "temporal",
+) -> np.ndarray | float:
+    """
+    Compute RMSE between two evoked objects after a single globally-fitted
+    rescale. See `mindmap.core.metric.calc_scaled_rmse`.
+
+    Complements `compute_evoked_correlation`: correlation is blind to a
+    channel getting too much/too little relative energy (it normalizes
+    each channel's scale away independently); this metric fits one shared
+    gain across every channel so a channel's energy allocation relative to
+    the rest still shows up as elevated RMSE, even when its temporal shape
+    correlates well.
+
+    Parameters
+    ----------
+    evoked_true: mne.Evoked
+        Reference activity (e.g. True iEEG).
+
+    evoked_pred: mne.Evoked
+        Estimated activity (e.g. virtual iEEG).
+
+    mode: str ['spatial', 'temporal', 'spatio-temporal']
+        - 'spatial': RMSE across channels at each timepoint -> (n_timepoints,)
+        - 'temporal': RMSE across time for each channel -> (n_channels,)
+        - 'spatio-temporal': Flattened RMSE -> scalar
+
+    Returns
+    -------
+    rmse: float | np.ndarray
+    """
+    if not same_evoked(evoked_true, evoked_pred):
+        raise ValueError("Evokeds must have same channels and timepoints.")
+
+    return compute_mne_scaled_rmse(evoked_true, evoked_pred, mode=mode)
 
 
 def compute_evoked_ssim(

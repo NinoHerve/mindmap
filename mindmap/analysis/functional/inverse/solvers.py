@@ -379,8 +379,14 @@ class MCE(MNE):
         # Regularization: alpha * ||x||_1
         penalty = lambda2 * pxo.L1Norm(dim_shape=G.dim_shape)
 
-        # solution storage
-        sol = np.zeros((G.dim_shape[0], y_white.shape[1]))
+        # solution storage -- output (dipole-space) dimension, not G's reduced
+        # optimization-space dimension: `w_source.shape[0]` is the dipole count in
+        # both the 1D (depth-only, elementwise) and 2D (eigenbasis, matmul) map-back
+        # conventions below, and only equals G.dim_shape[0] (the number of columns
+        # of `w_source`) when the prior's basis happens to be square (e.g.
+        # `compute_cst`'s connectome eigenvectors, but not `compute_beltrami_harmonics`'s
+        # mesh basis, which is short by however many dipoles lack an all-cortex face).
+        sol = np.zeros((w_source.shape[0], y_white.shape[1]))
 
         # stopping criterion
         stop_crit = pxst.RelError(eps=rel_grad_tol, var="x") | pxst.MaxIter(max_iter)

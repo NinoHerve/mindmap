@@ -22,12 +22,15 @@ import pandas as pd
 import mne
 
 from mindmap.core.io import read_npz_fast
+from mindmap.core.stats import correct_pvalues
 
 from mindmap.viz.core import (
     metric_bar, metric_box, metric_heatmap, metric_violin, metric_relational
 )
 from mindmap.viz.dispatch import plot_brain_activity
-from mindmap.viz.stats import metric_box_significance, metric_relational_clusters
+from mindmap.viz.stats import (
+    metric_box_significance, metric_relational_clusters, metric_relational_cluster_summary,
+)
 
 from mindmap.analysis.stats import (
     compare_methods as _compare_methods_df,
@@ -740,7 +743,7 @@ class MetricSuite:
 
     def compare_methods(
         self, metric, reference, competitors=None, test="wilcoxon",
-        correction="fdr_bh", alpha=0.05, subject_col="region",
+        correction="fdr_bh", alpha=0.05, subject_col="region", subject_order=None,
         labels=None, subjects=None, plot=False, ax=None, **plot_kwargs,
     ):
         """
@@ -770,11 +773,30 @@ class MetricSuite:
         competitors: list[str], optional
             Defaults to every other registered label for this metric.
 
-        test, correction, alpha
+        test: str
+            Forwarded to `mindmap.analysis.stats.compare_methods` /
+            `mindmap.core.stats.paired_test` -- "wilcoxon" (default) |
+            "ttest" | "ttest_ess". "ttest_ess" is a paired t-test with an
+            autocorrelation-corrected effective sample size in place of the
+            nominal one -- for `subject_col` values with real serial
+            correlation (e.g. "channel" or "times" from a single recording,
+            where a plain test overstates how much independent evidence the
+            raw count of channels/timepoints represents). See
+            `subject_order` below, and `paired_test`'s own docstring.
+
+        correction, alpha
             Forwarded to `mindmap.analysis.stats.compare_methods`.
 
         subject_col: str
             Repeated-measures grouping column, default "region".
+
+        subject_order: list, optional
+            Only matters for `test="ttest_ess"` (ignored otherwise): the
+            explicit `subject_col` ordering its autocorrelation estimate is
+            computed along. Defaults to ascending sort, which is correct for
+            a numeric `subject_col` like "times" but very likely *wrong* for
+            a string one like "channel" (alphabetical, not real contact
+            adjacency) -- pass the true order explicitly in that case.
 
         labels, subjects
             Forwarded to `get_filtered_df` (in addition to `metrics=metric`).
@@ -782,7 +804,10 @@ class MetricSuite:
         plot: bool
             If True, also builds an annotated box plot via
             `mindmap.viz.stats.metric_box_significance` and returns
-            `(results, fig, ax)` instead of just `results`.
+            `(results, fig, ax)` instead of just `results`. The box is drawn
+            from the same `(group_col, subject_col)`-averaged pairs the test
+            itself used (not the raw, uncollapsed data) -- one dot per
+            `subject_col` unit, matching `results`' own "n_pairs".
 
         ax: matplotlib.axes.Axes, optional
             Forwarded to `metric_box_significance` when `plot=True`. Axes to
@@ -794,7 +819,8 @@ class MetricSuite:
         Returns
         -------
         pd.DataFrame, or (pd.DataFrame, matplotlib.figure.Figure,
-        matplotlib.axes.Axes) if `plot=True`.
+        matplotlib.axes.Axes) if `plot=True`. Has an "n_eff" column,
+        populated only for `test="ttest_ess"` (NaN otherwise).
         """
         df = self.get_filtered_df(metrics=metric, labels=labels, subjects=subjects)
         if df.empty:
@@ -803,20 +829,33 @@ class MetricSuite:
         results = _compare_methods_df(
             df, group_col=self.group_name, reference=reference, subject_col=subject_col,
             competitors=competitors, test=test, correction=correction, alpha=alpha,
+            subject_order=subject_order,
         )
 
         if not plot:
             return results
 
+        # Plot the same (group, subject_col) pairs the test actually ran on -- not
+        # the raw, uncollapsed df. `_compare_methods_df` averages repeated rows per
+        # (group_col, subject_col[, "Metric"]) cell before testing (e.g. away every
+        # snr/repetition combination down to one value per (method, region)), so
+        # plotting raw `df` would show far more spread than the paired test ever
+        # saw, and a dot count that doesn't match its own "n_pairs" -- same
+        # collapse, done the same way, so the box's dots are exactly the pairs
+        # `results` describes.
+        group_keys = [self.group_name, subject_col] + (["Metric"] if "Metric" in df.columns else [])
+        collapsed_df = df.groupby(group_keys, as_index=False)["Value"].mean()
+
         fig, ax = metric_box_significance(
-            df, results, group_name=self.group_name, reference=reference, alpha=alpha, ax=ax, **plot_kwargs,
+            collapsed_df, results, group_name=self.group_name, reference=reference, alpha=alpha, ax=ax, **plot_kwargs,
         )
         return results, fig, ax
 
     def cluster_permutation(
         self, metric, coord, reference, competitor, subject_col="region",
         higher_is_better=True, coord_order=None, cluster_alpha=0.05,
-        n_permutations=3000, seed=0, labels=None, subjects=None,
+        n_permutations=3000, seed=0, effect_size_summary="cluster_mean",
+        labels=None, subjects=None,
         plot=False, ax=None, **plot_kwargs,
     ):
         """
@@ -837,8 +876,11 @@ class MetricSuite:
             The two `self.group_name` levels being compared.
 
         subject_col, higher_is_better, coord_order, cluster_alpha,
-        n_permutations, seed
-            Forwarded to `mindmap.analysis.stats.cluster_permutation_mne`.
+        n_permutations, seed, effect_size_summary
+            Forwarded to `mindmap.analysis.stats.cluster_permutation_mne` --
+            see its docstring, in particular for what `effect_size_summary`
+            ("cluster_mean" default vs. "peak") means for each cluster's
+            reported `effect_size`.
 
         labels, subjects
             Forwarded to `get_filtered_df` in addition to `metrics=metric`
@@ -861,8 +903,9 @@ class MetricSuite:
         Returns
         -------
         dict (see `cluster_permutation_mne`'s docstring for keys:
-        "clusters", "t_obs", "coord_values", "diff"), or (dict,
-        matplotlib.figure.Figure, matplotlib.axes.Axes) if `plot=True`.
+        "clusters" -- including "effect_size"/"effect_size_type" --, "t_obs",
+        "coord_values", "diff"), or (dict, matplotlib.figure.Figure,
+        matplotlib.axes.Axes) if `plot=True`.
         """
         effective_labels = labels if labels is not None else [reference, competitor]
         df = self.get_filtered_df(metrics=metric, labels=effective_labels, subjects=subjects)
@@ -873,6 +916,7 @@ class MetricSuite:
             df, group_col=self.group_name, coord_col=coord, reference=reference, competitor=competitor,
             subject_col=subject_col, higher_is_better=higher_is_better, coord_order=coord_order,
             cluster_alpha=cluster_alpha, n_permutations=n_permutations, seed=seed,
+            effect_size_summary=effect_size_summary,
         )
 
         if not plot:
@@ -883,3 +927,140 @@ class MetricSuite:
             alpha=cluster_alpha, ax=ax, **plot_kwargs,
         )
         return result, fig, ax
+
+    def cluster_permutation_summary(
+        self, metric, coord, reference, competitors=None, subject_col="region",
+        higher_is_better=True, coord_order=None, cluster_alpha=0.05, correction="fdr_bh",
+        n_permutations=3000, seed=0, effect_size_summary="cluster_mean",
+        labels=None, subjects=None, ax=None, **plot_kwargs,
+    ):
+        """
+        Compact, publication-style alternative to calling `cluster_permutation`
+        once per competitor and drawing one panel per pair: every competitor is
+        drawn on one shared `Axes` against `reference`, with each competitor's
+        own segments switching to a dashed line + open marker wherever they
+        *aren't* significantly worse than `reference` there (solid line +
+        filled marker where they are) -- so which competitors are inferior to
+        `reference`, and over what range of `coord`, reads directly off one
+        figure instead of a subplot grid or a separate stats table.
+
+        Calls `cluster_permutation(..., plot=False)` once per competitor
+        (exactly as if you'd called it yourself in a loop), then pools every
+        competitor's cluster p-values into one family and multiple-comparison
+        corrects across it (`correction`, same mechanism and default as
+        `compare_methods`) before handing the collected `"clusters"` results to
+        `mindmap.viz.stats.metric_relational_cluster_summary`. This is the one
+        piece of new statistics here: `cluster_permutation_mne`'s cluster
+        p-values are already family-wise corrected *within* one competitor's
+        swept axis (that's what the cluster-mass permutation null distribution
+        is for), but calling it once per competitor tests multiple independent
+        families at the nominal `cluster_alpha` with nothing correcting across
+        them -- the same "one reference vs. several competitors" shape
+        `compare_methods` already corrects for.
+
+        Parameters
+        ----------
+        metric: str
+            Which registered "Metric" to compare.
+
+        coord: str
+            Coordinate column to sweep along (e.g. "snr").
+
+        reference: str
+            The `self.group_name` level every competitor is compared against
+            and drawn as the solid, always-filled-marker baseline curve.
+
+        competitors: list[str], optional
+            Defaults to every other registered label for this metric (same
+            convention as `compare_methods`).
+
+        subject_col, higher_is_better, coord_order, cluster_alpha,
+        n_permutations, seed, effect_size_summary
+            Forwarded to `cluster_permutation` for every competitor -- see its
+            docstring. `coord_order` is resolved here (defaulting to the
+            sorted ascending values present in the filtered data if not
+            given) so every competitor's `cluster_permutation` call, and the
+            final plot, all agree on the same explicit ordering.
+
+        correction: str
+            Multiple-comparison correction applied across every competitor's
+            cluster p-values, pooled into one family -- forwarded to
+            `mindmap.core.stats.correct_pvalues` ("fdr_bh" default,
+            "fdr_by" | "bonferroni" | "none"). Adds "p_corrected" (and
+            recomputes "significant" off it, at `cluster_alpha`) to each
+            competitor's `clusters` DataFrame; the plot itself is driven by
+            "p_corrected", not the raw per-cluster "p_value".
+
+        labels, subjects
+            Forwarded to `get_filtered_df` (in addition to `metrics=metric`).
+            `labels` defaults to `[reference] + competitors` when not given,
+            so unrelated methods registered under the same metric don't leak
+            into the comparison.
+
+        ax: matplotlib.axes.Axes, optional
+            Axes to plot into. A new figure/axes is created if not given.
+
+        **plot_kwargs
+            Forwarded to `metric_relational_cluster_summary` (e.g. `colors`,
+            `palette`, `marker`, `markersize`, `linewidth`, `show_spread`,
+            `spread_interval`).
+
+        Returns
+        -------
+        (dict[str, pd.DataFrame], matplotlib.figure.Figure, matplotlib.axes.Axes)
+            One `"clusters"` DataFrame per competitor -- same columns as
+            `cluster_permutation`'s own (including "effect_size"/
+            "effect_size_type"), plus "p_corrected" -- plus the combined
+            figure/axes.
+        """
+        if competitors is None:
+            all_labels = self.get_filtered_df(metrics=metric)[self.group_name].unique().tolist()
+            competitors = [l for l in all_labels if l != reference]
+
+        effective_labels = labels if labels is not None else [reference] + list(competitors)
+        df = self.get_filtered_df(metrics=metric, labels=effective_labels, subjects=subjects)
+        if df.empty:
+            raise ValueError(f"No data registered for metric '{metric}'.")
+
+        if coord_order is None:
+            coord_order = sorted(df[coord].unique().tolist())
+
+        clusters_by_competitor = {}
+        for competitor in competitors:
+            result = self.cluster_permutation(
+                metric=metric, coord=coord, reference=reference, competitor=competitor,
+                subject_col=subject_col, higher_is_better=higher_is_better, coord_order=coord_order,
+                cluster_alpha=cluster_alpha, n_permutations=n_permutations, seed=seed,
+                effect_size_summary=effect_size_summary,
+                labels=effective_labels, subjects=subjects, plot=False,
+            )
+            clusters_by_competitor[competitor] = result["clusters"]
+
+        # Pool every competitor's cluster p-values into one family and correct across
+        # it -- same fix, same default, as compare_methods's own correction="fdr_bh"
+        # across its competitors. Competitors with no clusters at all (nothing to
+        # correct) are excluded from the pool and left exactly as
+        # cluster_permutation returned them, rather than concatenated in empty --
+        # pandas now warns on concatenating empty/all-NA frames, and there's no
+        # p-value to correct there regardless.
+        non_empty = {name: clusters for name, clusters in clusters_by_competitor.items() if not clusters.empty}
+        if non_empty:
+            pooled = pd.concat(
+                [clusters.assign(_competitor=name) for name, clusters in non_empty.items()],
+                ignore_index=True,
+            )
+            p_corrected, significant = correct_pvalues(pooled["p_value"], method=correction, alpha=cluster_alpha)
+            pooled["p_corrected"] = p_corrected
+            pooled["significant"] = significant
+            for competitor in non_empty:
+                clusters_by_competitor[competitor] = (
+                    pooled[pooled["_competitor"] == competitor]
+                    .drop(columns="_competitor")
+                    .reset_index(drop=True)
+                )
+
+        fig, ax = metric_relational_cluster_summary(
+            df, clusters_by_competitor, x=coord, reference=reference, coord_order=coord_order,
+            group_name=self.group_name, p_col="p_corrected", alpha=cluster_alpha, ax=ax, **plot_kwargs,
+        )
+        return clusters_by_competitor, fig, ax

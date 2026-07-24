@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mindmap.analysis.stats import compare_methods, cluster_permutation_mne
+from mindmap.analysis.stats import compare_methods, cluster_permutation_mne, _cohens_dz
 
 
 def _make_compare_df(n_regions=20, seed=0):
@@ -92,6 +92,80 @@ def test_compare_methods_requires_known_reference():
         compare_methods(df, group_col="Method", reference="not_a_method", subject_col="region")
 
 
+def _make_ar1_diff_df(n=200, rho=0.8, offset=0.15, seed=0, scrambled_labels=False):
+    """
+    Long-format table for one reference/competitor pair whose paired
+    difference is a strongly autocorrelated AR(1) series (plus a small true
+    offset) along `subject_col="unit"` -- the shape ttest_ess is meant for.
+
+    scrambled_labels=True names the units so that default (alphabetical)
+    pivot ordering does NOT recover the true generation order -- mirrors the
+    real "channel" case (e.g. "AD1, AD10, AD2, ...") where the caller must
+    pass `subject_order` explicitly.
+    """
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0, 1, size=n)
+    diff = np.zeros(n)
+    for i in range(1, n):
+        diff[i] = rho * diff[i - 1] + noise[i]
+    diff += offset
+
+    reference_vals = rng.normal(0, 1, size=n)
+    competitor_vals = reference_vals - diff
+
+    if scrambled_labels:
+        perm = rng.permutation(n)
+        true_order = [f"u{perm[i]:03d}" for i in range(n)]
+    else:
+        true_order = [f"u{i:03d}" for i in range(n)]
+
+    rows = []
+    for unit, ref_val, comp_val in zip(true_order, reference_vals, competitor_vals):
+        rows.append({"Method": "reference", "unit": unit, "Value": ref_val})
+        rows.append({"Method": "competitor", "unit": unit, "Value": comp_val})
+    return pd.DataFrame(rows), true_order
+
+
+def test_compare_methods_n_eff_only_populated_for_ttest_ess():
+    df, order = _make_ar1_diff_df()
+
+    wilcoxon_results = compare_methods(
+        df, group_col="Method", reference="reference", subject_col="unit", test="wilcoxon",
+    )
+    ess_results = compare_methods(
+        df, group_col="Method", reference="reference", subject_col="unit",
+        test="ttest_ess", subject_order=order,
+    )
+
+    assert wilcoxon_results["n_eff"].isna().all()
+    assert "n_eff" in ess_results.columns
+    n_eff = ess_results.loc[0, "n_eff"]
+    assert n_eff < ess_results.loc[0, "n_pairs"]
+
+
+def test_compare_methods_subject_order_required_for_meaningful_ttest_ess():
+    """
+    Regression guard for the actual reason subject_order exists: with
+    scrambled unit labels, the default (alphabetical) pivot order destroys
+    the true AR(1) adjacency, so n_eff comes back close to the nominal n
+    (no autocorrelation detected -- wrong); passing the true order recovers
+    a much smaller, correct n_eff.
+    """
+    df, true_order = _make_ar1_diff_df(scrambled_labels=True)
+
+    default_order_results = compare_methods(
+        df, group_col="Method", reference="reference", subject_col="unit", test="ttest_ess",
+    )
+    explicit_order_results = compare_methods(
+        df, group_col="Method", reference="reference", subject_col="unit",
+        test="ttest_ess", subject_order=true_order,
+    )
+
+    n = default_order_results.loc[0, "n_pairs"]
+    assert default_order_results.loc[0, "n_eff"] == pytest.approx(n, abs=2)
+    assert explicit_order_results.loc[0, "n_eff"] < n * 0.6
+
+
 def _make_cluster_df(n_regions=16, n_coord=8, shift_slice=slice(2, 5), seed=0):
     """
     (n_regions, n_coord) reference/competitor pair with a clear consistent
@@ -153,4 +227,95 @@ def test_cluster_permutation_mne_raises_on_unbalanced_design():
         cluster_permutation_mne(
             df, group_col="Method", coord_col="level", reference="reference", competitor="competitor",
             subject_col="region", coord_order=coord_values,
+        )
+
+
+def test_cohens_dz_matches_hand_computation():
+    x = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    expected = x.mean() / x.std(ddof=1)
+    assert _cohens_dz(x) == pytest.approx(expected)
+
+
+def test_cohens_dz_zero_std_returns_zero():
+    assert _cohens_dz(np.array([2.0, 2.0, 2.0])) == 0.0
+
+
+def _make_cluster_df_with_peak(n_regions=20, n_coord=8, peak_idx=4, peak_shift=5.0, base_shift=0.5, seed=0):
+    """
+    A reference/competitor pair where *every* coordinate carries a mild-but-
+    consistent shift (so the whole curve forms one contiguous cluster,
+    removing the randomness of exactly which sub-range MNE would otherwise
+    pick), except one coordinate with a much larger shift -- the shape
+    needed to reliably tell "cluster_mean" (diluted by the many mild
+    coordinates) apart from "peak" (isolates just the strongest one).
+    """
+    rng = np.random.default_rng(seed)
+    coord_values = list(range(n_coord))
+    regions = [f"r{i}" for i in range(n_regions)]
+
+    rows = []
+    for region in regions:
+        ref_curve = rng.normal(0, 1, size=n_coord)
+        comp_curve = ref_curve.copy()
+        for c in range(n_coord):
+            shift = peak_shift if c == peak_idx else base_shift
+            comp_curve[c] -= shift + rng.normal(0, 0.2)
+        for c, ref_v, comp_v in zip(coord_values, ref_curve, comp_curve):
+            rows.append({"Method": "reference", "region": region, "level": c, "Value": ref_v})
+            rows.append({"Method": "competitor", "region": region, "level": c, "Value": comp_v})
+
+    return pd.DataFrame(rows), coord_values
+
+
+def test_cluster_permutation_mne_effect_size_cluster_mean_matches_manual_formula():
+    """Cross-check "cluster_mean" against a hand-computed dz on the returned diff matrix."""
+    df, coord_values = _make_cluster_df_with_peak()
+
+    result = cluster_permutation_mne(
+        df, group_col="Method", coord_col="level", reference="reference", competitor="competitor",
+        subject_col="region", coord_order=coord_values, n_permutations=300, seed=0,
+        effect_size_summary="cluster_mean",
+    )
+    clusters = result["clusters"]
+    assert len(clusters) == 1
+    row = clusters.iloc[0]
+    assert (row["level_start"], row["level_end"]) == (0, 7)  # whole curve, by construction
+
+    start_idx = coord_values.index(row["level_start"])
+    end_idx = coord_values.index(row["level_end"])
+    expected = _cohens_dz(result["diff"].iloc[:, start_idx:end_idx + 1].mean(axis=1))
+
+    assert row["effect_size"] == pytest.approx(expected)
+    assert row["effect_size_type"] == "cohens_dz"
+
+
+def test_cluster_permutation_mne_effect_size_peak_exceeds_cluster_mean():
+    """
+    Regression guard for the actual point of effect_size_summary: a cluster
+    diluted by many mild-but-consistent coordinates and one much stronger one
+    must report a bigger "peak" effect size than "cluster_mean" -- not the
+    same number under a different label.
+    """
+    df, coord_values = _make_cluster_df_with_peak()
+
+    result_mean = cluster_permutation_mne(
+        df, group_col="Method", coord_col="level", reference="reference", competitor="competitor",
+        subject_col="region", coord_order=coord_values, n_permutations=300, seed=0,
+        effect_size_summary="cluster_mean",
+    )
+    result_peak = cluster_permutation_mne(
+        df, group_col="Method", coord_col="level", reference="reference", competitor="competitor",
+        subject_col="region", coord_order=coord_values, n_permutations=300, seed=0,
+        effect_size_summary="peak",
+    )
+
+    assert result_peak["clusters"].loc[0, "effect_size"] > result_mean["clusters"].loc[0, "effect_size"]
+
+
+def test_cluster_permutation_mne_rejects_unknown_effect_size_summary():
+    df, coord_values = _make_cluster_df(seed=3)
+    with pytest.raises(ValueError):
+        cluster_permutation_mne(
+            df, group_col="Method", coord_col="level", reference="reference", competitor="competitor",
+            subject_col="region", coord_order=coord_values, effect_size_summary="not_a_mode",
         )

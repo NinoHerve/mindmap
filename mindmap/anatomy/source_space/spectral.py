@@ -19,6 +19,8 @@ Last Modified: 2026-07-16
 License: MIT
 """
 
+import warnings
+
 import numpy as np
 
 import mne
@@ -44,9 +46,10 @@ def _cortex_triangulation(src_hemi: dict) -> tuple[np.ndarray, np.ndarray, np.nd
     One consequence of this strict "all 3 vertices must be cortex" rule,
     also verified empirically: a small number of `vertno` dipoles right at
     the boundary can end up with zero incident kept faces (1 of 3,748 for
-    sub-simf10's left hemisphere, 0 for the right) -- these are reported in
-    the returned `missing` array rather than silently dropped, so the
-    caller can decide how to patch them.
+    sub-simf10's left hemisphere, 0 for the right) -- these are not silently
+    dropped: a `RuntimeWarning` naming the affected `vertno` indices is
+    raised directly from here (not returned -- see `compute_beltrami_harmonics`
+    for how they end up handled, as all-zero rows in the eigenvector basis).
 
     Parameters
     ----------
@@ -65,7 +68,8 @@ def _cortex_triangulation(src_hemi: dict) -> tuple[np.ndarray, np.ndarray, np.nd
     referenced: np.ndarray of shape (n_referenced,)
         Indices into `src_hemi["rr"]`/`src_hemi["vertno"]` of the vertices
         kept in `verts`/`faces`, ascending order (always a subset of
-        `vertno` -- see `missing` for what's left out).
+        `vertno` -- any `vertno` entries missing from this are the ones
+        the `RuntimeWarning` above reports, not returned separately).
     """
     rr = src_hemi["rr"]
     use_tris = src_hemi["use_tris"]
@@ -78,6 +82,16 @@ def _cortex_triangulation(src_hemi: dict) -> tuple[np.ndarray, np.ndarray, np.nd
     faces_cortex = use_tris[keep]
 
     referenced = np.unique(faces_cortex)
+
+    missing = np.setdiff1d(vertno, referenced)
+    if len(missing):
+        warnings.warn(
+            f"_cortex_triangulation: {len(missing)} of {len(vertno)} dipoles have no "
+            f"incident all-cortex face and will get zero representation in the "
+            f"Beltrami harmonic basis (vertno indices: {missing.tolist()})",
+            RuntimeWarning,
+        )
+
     remap = -np.ones(len(rr), dtype=int)
     remap[referenced] = np.arange(len(referenced))
 

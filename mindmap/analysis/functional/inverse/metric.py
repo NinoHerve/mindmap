@@ -16,6 +16,7 @@ from mindmap.analysis.functional.common.metric import (
     compute_mne_confusion, compute_mne_scores,
     compute_mne_roc, compute_mne_pr,
     compute_mne_correlation, compute_mne_cosine,
+    compute_mne_global_scale, compute_mne_scaled_rmse,
     find_peak_localization_error,
 )
 from mindmap.core.metric import calc_pr_curve
@@ -96,6 +97,64 @@ def compute_stc_cosine(
         mode = mode,
         absolute = absolute,
     )
+
+
+def compute_stc_global_scale(
+    stc_true: mne.SourceEstimate,
+    stc_pred: mne.SourceEstimate,
+) -> float:
+    """
+    Compute the single global least-squares gain between two source
+    estimates. See `mindmap.core.metric.calc_global_scale`.
+
+    Parameters
+    ----------
+    stc_true: mne.SourceEstimate
+        Ground truth activity.
+
+    stc_pred: mne.SourceEstimate
+        Estimated activity.
+
+    Returns
+    -------
+    float
+    """
+    return compute_mne_global_scale(stc_true, stc_pred)
+
+
+def compute_stc_scaled_rmse(
+    stc_true: mne.SourceEstimate,
+    stc_pred: mne.SourceEstimate,
+    mode: str = "temporal",
+) -> np.ndarray | float:
+    """
+    Compute RMSE between two source estimates after a single
+    globally-fitted rescale. See `mindmap.core.metric.calc_scaled_rmse`.
+
+    Complements `compute_stc_correlation`: correlation is blind to a
+    vertex/timepoint getting too much/too little relative energy (it
+    normalizes each one's scale away independently); this metric fits one
+    shared gain across the whole source estimate so a genuine energy
+    misallocation still shows up as elevated RMSE.
+
+    Parameters
+    ----------
+    stc_true: mne.SourceEstimate
+        Ground truth activity.
+
+    stc_pred: mne.SourceEstimate
+        Estimated activity.
+
+    mode: str ['spatial', 'temporal', 'spatio-temporal']
+        - 'spatial': RMSE across vertices at each timepoint -> (n_timepoints,)
+        - 'temporal': RMSE across time for each vertex -> (n_vertices,)
+        - 'spatio-temporal': Flattened RMSE -> scalar
+
+    Returns
+    -------
+    rmse: float | np.ndarray
+    """
+    return compute_mne_scaled_rmse(stc_true, stc_pred, mode=mode)
 
 
 def compute_stc_confusion(
