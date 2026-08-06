@@ -11,59 +11,18 @@ License: MIT
 """
 
 import json
-import os
-import uuid
+import shutil
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-import mne
+from mindmap.core.io import read_npz_fast, atomic_replace, json_safe
 
-from mindmap.core.io import read_npz_fast
-from mindmap.core.stats import correct_pvalues
-
-from mindmap.viz.core import (
-    metric_bar, metric_box, metric_heatmap, metric_violin, metric_relational
-)
-from mindmap.viz.dispatch import plot_brain_activity
-from mindmap.viz.stats import (
-    metric_box_significance, metric_relational_clusters, metric_relational_cluster_summary,
-)
-
-from mindmap.analysis.stats import (
-    compare_methods as _compare_methods_df,
-    cluster_permutation_mne as _cluster_permutation_mne,
-)
-
-
-def _atomic_replace(path: Path, write_func):
-    """
-    Writes `path` by first calling `write_func(tmp_path)` to fully write the
-    content to a temporary sibling file, then atomically replacing `path`
-    with it via `os.replace` (atomic on both POSIX and Windows).
-
-    Guarantees `path` is always either its previous complete content or the
-    new complete content -- never a truncated/partial file -- even if the
-    process is killed mid-write. Plain `open(path, "w")` / `np.savez(path)`
-    truncate the destination immediately, so a crash mid-write would
-    otherwise destroy the previous good save, not just fail to add the new
-    one.
-
-    `tmp_path` keeps `path`'s full original filename as its tail (only a
-    unique token is prefixed), since some writers (numpy, MNE) validate or
-    auto-append a specific suffix -- e.g. MNE's source-space writer checks
-    for a "-src.fif" ending, which a token spliced in before the extension
-    would break, but a prefix never touches.
-    """
-    tmp_path = path.with_name(f".tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}-{path.name}")
-    try:
-        write_func(tmp_path)
-        os.replace(tmp_path, path)
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
+from mindmap.metric.results import PairwiseResult, ClusterResult, NormalityResult, AnovaResult
+from mindmap.metric.plot import PlotAccessor
+from mindmap.metric.stat import StatAccessor
 
 
 def _is_arraylike(val):
@@ -71,16 +30,7 @@ def _is_arraylike(val):
     return isinstance(val, (list, tuple, np.ndarray, pd.Series))
 
 
-def _json_safe(val):
-    """Converts numpy/pandas scalars into plain JSON-serializable Python types."""
-    if isinstance(val, np.generic):
-        return val.item()
-    if isinstance(val, (np.bool_, bool)):
-        return bool(val)
-    return val
-
-
-def _entry_to_frame(entry, group_name):
+def _entry_to_frame(entry):
     """
     Materializes a single registered entry into a long-format DataFrame slice.
 
@@ -89,9 +39,9 @@ def _entry_to_frame(entry, group_name):
     per simulation run) sharing the same point-wise coordinates.
     """
     value = np.atleast_1d(np.asarray(entry["value"]))
-    label, metric, coords = entry["label"], entry["metric"], entry["coords"]
+    metric, coords = entry["metric"], entry["coords"]
 
-    base = {group_name: label, "Metric": metric}
+    base = {"Metric": metric}
 
     if value.ndim == 1:
         data = {**base, "Value": value}
@@ -101,13 +51,15 @@ def _entry_to_frame(entry, group_name):
 
     if value.ndim != 2:
         raise ValueError(
-            f"Registered values must be 1D or 2D (got shape {value.shape} for "
-            f"label='{label}', metric='{metric}')."
+            f"Registered values must be 1D or 2D (got shape {value.shape} for metric='{metric}')."
         )
 
-    # (n_reps, n_points): tile point-wise coordinates across reps, broadcast scalar
-    # coordinates as-is, and tag each row with its repetition index so that repeated
-    # curves (e.g. one per simulation run) stay distinguishable for CI estimation.
+    # (n_reps, n_points): tile point-wise coordinates across reps, repeat
+    # rep-wise coordinates across points, broadcast scalar coordinates
+    # as-is, and always tag each row with its repetition index (in addition
+    # to any rep-wise coordinate given) so repeated curves (e.g. one per
+    # simulation run) stay distinguishable for CI estimation even when no
+    # rep-wise coordinate was registered.
     n_reps, n_points = value.shape
     data = {**base, "Value": value.ravel(), "rep": np.repeat(np.arange(n_reps), n_points)}
 
@@ -115,6 +67,8 @@ def _entry_to_frame(entry, group_name):
         coord_arr = np.asarray(coord) if _is_arraylike(coord) else None
         if coord_arr is not None and coord_arr.shape[0] == n_points:
             data[name] = np.tile(coord_arr, n_reps)
+        elif coord_arr is not None and coord_arr.shape[0] == n_reps:
+            data[name] = np.repeat(coord_arr, n_points)
         else:
             data[name] = coord
 
@@ -122,115 +76,145 @@ def _entry_to_frame(entry, group_name):
 
 
 class MetricSuite:
-    """Manages metrics from a same study."""
-    def __init__(self, name="Evaluation", group_name="Label", subject=None, metadata=None, context=None):
+    """
+    Collects every metric from one study -- register results as you compute
+    them, then filter, plot, and run statistics on the whole collection
+    without juggling separate arrays or DataFrames yourself.
+    """
+    def __init__(self, name="Evaluation", metadata=None):
         """
-        Docstring for __init__
+        Creates an empty suite, ready for `register()` calls.
+
+        !!! note "Technical details"
+            `metadata` never becomes a per-row column and never survives
+            `concat`/pooling -- if a tag needs to differentiate rows (now,
+            or after a future pooling step across several suites), register
+            it via `register(..., **coords)` instead; `metadata` is only
+            for context that will never need that (must be
+            JSON-serializable).
 
         Parameters
         ----------
-        name: str
-            Study name
-
-        subject: str, optional
-            Identifier for the subject/patient this suite's entries belong
-            to (e.g. "sub-01"). Automatically tagged as a "Subject" column
-            on every entry registered via `register()`, so per-subject
-            suites can later be pooled with `MetricSuite.concat` for
-            group-level analysis. Can be overridden per-entry via
-            `register(..., subject=...)`.
+        name: str, optional
+            A name for this study, used only for your own reference (e.g.
+            shown when saving).
 
         metadata: dict, optional
-            Free-form provenance to carry alongside the results (e.g.
-            solver parameters, dataset path, a git commit, a one-line
-            description) -- saved and reloaded as-is, so a folder written
-            by `save()` documents its own context rather than being just
-            numbers. Must be JSON-serializable.
-
-        context: dict
-            Context for 3D plotting.
-            - 'src':mne.SourceSpaces
-            - 'ave':mne.Evoked
+            Free-form notes to keep alongside the results (e.g. solver
+            settings, a dataset path, a one-line description) -- saved and
+            reloaded as-is.
         """
         self.name = name
         self._entries = []
-        self.group_name = group_name
-        self.subject = subject
 
         if metadata is not None and not isinstance(metadata, dict):
             raise TypeError("metadata must be a dictionary.")
         self.metadata = metadata or {}
 
-        self.context = context or {}
-        self._validate_context()
+        # suite.plot.box(...)/.violin(...)/.bar(...)/.line(...)/.scatter(...) for raw views (metric
+        # name in, no test); suite.plot.group_comparison(result)/.cluster_permutation(result) for
+        # annotated views (an already-computed PairwiseResult/ClusterResult in, never a metric name)
+        # -- see mindmap.metric.plot.PlotAccessor.
+        self.plot = PlotAccessor(self)
 
-    def _validate_context(self):
-        """Validates that the context dictionary only contains allowed types."""
-        if not isinstance(self.context, dict):
-            raise TypeError("Context must be a dictionary.")
-        
-        allowed_keys = {"src", "ave"}
-        invalid_keys = set(self.context.keys()) - allowed_keys
-        if invalid_keys:
-            raise KeyError(
-                f"Invalid keys(s) found in context: {invalid_keys}."
-                f"Only 'src' and 'ave' are allowed."
-            )
-        
-        # Check 'ave' type consistency
-        if "ave" in self.context and self.context["ave"] is not None:
-            if not isinstance(self.context["ave"], mne.Evoked):
-                raise TypeError(
-                    f"Expected context['ave'] to be an instance of mne.Evoked, "
-                    f"got {type(self.context['ave']).__name__} instead."
-                )
-            
-        # Check 'src' type consistency
-        if "src" in self.context and self.context["src"] is not None:
-            if not isinstance(self.context["src"], mne.SourceSpaces):
-                raise TypeError(
-                    f"Expected context['src'] to be an instance of mne.SourceSpaces, "
-                    f"got {type(self.context['src']).__name__} instead."
-                )
+        # suite.stat.wilcoxon(...)/.ttest(...)/.mannwhitneyu(...)/.paired_ttest(...)/.ttest_ess(...)/
+        # .cluster_permutation(...)/.normality_test(...)/.anova(...) -- pure computation, cached,
+        # typed results -- see mindmap.metric.stat.StatAccessor.
+        self.stat = StatAccessor(self)
 
-    def register(self, label, metric, values, subject=None, **coords):
+    def register(self, metric, values, **coords):
         """
-        Adds a metric's results to the study.
+        Adds one result to the study: a value (or a curve, or a batch of
+        repeated curves) for one metric, tagged with whatever labels you
+        want to filter, group, or plot by later -- there's no dedicated
+        "group" argument here; pick any tag name you like (e.g. `Method=`,
+        `Subject=`) and point `group_by=` at it when you run a comparison
+        or plot.
 
-        'values' can be a scalar, a 1D array of shape (n_points,) for a single
-        curve/observation, or a 2D array of shape (n_reps, n_points) for a
-        stack of repeated observations (e.g. one curve per simulation run)
-        sharing the same point-wise coordinates. Coordinates whose length
-        matches the last axis of 'values' are treated as point-wise (e.g.
-        'times', 'recall'); anything else (scalar, or length-mismatched) is
-        kept as a constant tag broadcast to every row.
+        !!! note "Technical details"
+            'values' can be a scalar, a 1D array of shape (n_points,) for a
+            single curve/observation, or a 2D array of shape (n_reps,
+            n_points) for a stack of repeated observations (e.g. one curve
+            per simulation run) sharing the same point-wise coordinates.
 
-        Data is kept as arrays and only expanded into a long-format table
-        lazily, when `.dataframe`/`.plot()`/etc. are accessed - this keeps
-        registering large stacks (e.g. thousands of per-run curves) cheap.
+            Every keyword coordinate in '**coords' must be one of:
+
+            - a genuine scalar (anything that isn't a
+              list/tuple/np.ndarray/pd.Series -- e.g. a str, int, float,
+              bool): broadcast as a constant tag to every row (e.g.
+              `Method="wCSET"` or `Subject="sub-01"` -- there is no
+              suite-level shortcut for a tag you want constant across many
+              calls, register it explicitly every time, e.g. via a loop
+              variable or `functools.partial(suite.register, Subject=...)`).
+            - an array-like whose length exactly matches the last axis of
+              'values' ("n_points"): point-wise (e.g. 'times', 'recall'),
+              tiled across every repetition if 'values' is 2D.
+            - only when 'values' is 2D, an array-like whose length matches
+              the *first* axis instead ("n_reps"): tags each repetition
+              itself (e.g. a per-run 'seed'), repeated across every point
+              within that repetition. This rides alongside the automatic,
+              always-present "rep" index column (0..n_reps-1) -- it
+              doesn't replace it.
+
+            An array-like matching neither length raises `ValueError` --
+            there is no silent "broadcast a mismatched array" fallback.
+
+            This still infers a coordinate's role from length alone,
+            though: an array that happens to have exactly n_points (or,
+            for a 2D stack, n_reps) elements *by coincidence*, without
+            actually being meant to line up position-for-position with
+            'values', will still be (silently, incorrectly) treated as
+            point-wise/rep-wise -- n_points is checked first, so a
+            coincidental n_points == n_reps match resolves as point-wise.
+            There is currently no way to force a same-length array to be
+            treated as a whole-entry scalar tag instead -- if that
+            matters, wrap it so its outer length differs from both, or
+            avoid the coincidence some other way.
+
+            Data is kept as arrays and only expanded into a long-format
+            table lazily, when `to_df()`/`suite.stat.wilcoxon`/etc.
+            are accessed - this keeps registering large stacks (e.g.
+            thousands of per-run curves) cheap.
+
+            Adding an entry always clears every cached stats result (see
+            `suite.stat.wilcoxon`/`.cluster_permutation`/
+            `.list_cached_stats`) -- cheaper and safer than figuring out
+            which cached results a given new entry could affect, and it
+            guarantees a suite never silently returns stats computed
+            before some of its current data existed.
 
         Parameters
         ----------
-        subject: str, optional
-            Overrides this suite's `self.subject` for this entry only.
-            Stored as a "Subject" tag, the same constant-tag mechanism as
-            any other coordinate. Omit to use the suite's default (set via
-            `MetricSuite(subject=...)`), which is None (no "Subject"
-            column at all) unless configured.
-        """
-        effective_subject = subject if subject is not None else self.subject
-        if effective_subject is not None:
-            coords = {**coords, "Subject": effective_subject}
+        metric: str
+            Name of the outcome being recorded (e.g. "correlation"). A
+            suite can hold several metrics at once; most methods look at
+            one at a time via `metrics=...`.
 
+        values: scalar | array-like of shape (n_points,) | array-like of shape (n_reps, n_points)
+            The measurement(s) themselves.
+
+        **coords
+            Any labels you want attached (e.g. `Method=...`, `region=...`,
+            `times=...`, `condition=...`, `Subject=...`) -- each keyword
+            becomes its own column. At least one is usually needed for
+            `suite.stat.wilcoxon`/`.cluster_permutation`'s
+            `group_by` to have something to point at.
+        """
         value = np.asarray(values) if _is_arraylike(values) else np.asarray([values])
 
         n_points = value.shape[-1]
+        n_reps = value.shape[0] if value.ndim == 2 else None
         for name, val in coords.items():
-            if _is_arraylike(val) and len(val) != n_points:
-                raise ValueError(
-                    "Coordinate lengths must match the last axis of 'values'."
-                    f"Instead, coordinate '{name}' has length {len(val)} for {n_points} points."
-                )
+            if not _is_arraylike(val):
+                continue
+            length = len(val)
+            if length == n_points or (n_reps is not None and length == n_reps):
+                continue
+            expected = f"{n_points} (n_points)" + (f" or {n_reps} (n_reps)" if n_reps is not None else "")
+            raise ValueError(
+                f"Coordinate lengths must match {expected}. "
+                f"Instead, coordinate '{name}' has length {length}."
+            )
 
         stored_coords = {
             name: (np.asarray(val) if _is_arraylike(val) else val)
@@ -238,93 +222,174 @@ class MetricSuite:
         }
 
         self._entries.append({
-            "label": label,
             "metric": metric,
             "value": value,
             "coords": stored_coords,
         })
 
+        self.stat.clear_stats_cache()
+
         return self
 
-    def add_from_function(self, method_name, metric_name, func, *args, **kwargs):
-        """Register a new metric given the function to compute it."""
-        result = func(*args, **kwargs)
-        return self.register(method_name, metric_name, result)
-
-    def reduce(self, func=np.mean):
+    def to_df(self, metrics=None, filters=None):
         """
-        Collapses every stacked (n_reps, n_points) entry (e.g. one curve per
-        simulation run) along the reps axis via `func`, leaving single curves
-        untouched. Returns a new, lightweight MetricSuite.
+        Returns the study's data (or a filtered subset of it) as a plain,
+        long-format DataFrame -- the building block behind
+        `suite.stat.wilcoxon`/`.cluster_permutation`/etc., but also
+        the main way to get your numbers out for anything this class
+        doesn't cover directly.
 
-        Materializing the full table for a study with thousands of raw per-run
-        curves and letting seaborn aggregate it (via `.plot()`) is correct but
-        slow (tens of seconds). Reducing first is a vectorized O(n) numpy op,
-        so `suite.reduce().plot(...)` is the fast path for a mean/summary
-        curve; keep using the un-reduced suite's `.plot()` when you actually
-        want per-run resolution (e.g. a bootstrapped CI band).
+        !!! note "Technical details"
+            Built on demand from every registered entry (`pd.concat`, one
+            row per point/repetition) -- entries registered with different
+            coords simply end up with NaN in whichever columns they didn't
+            provide, same as any long-format table pooling heterogeneous
+            sources.
+
+            Each of `metrics`/`filters`' values accepts a single value or
+            a list, matched via `.isin()`. `filters` matches any
+            registered column (raises `ValueError` if that column was
+            never registered) -- always a `dict`, never bare keyword
+            arguments, matching the calling convention every other method
+            that forwards to this one (`suite.stat.wilcoxon`,
+            `.cluster_permutation`, ...) uses for `filters` too.
 
         Parameters
         ----------
-        func: callable(array, axis=0) -> array
-            Reduction applied along the reps axis, e.g. np.mean, np.median.
-        """
-        reduced = MetricSuite(
-            name=self.name, group_name=self.group_name, subject=self.subject,
-            metadata=self.metadata, context=self.context,
-        )
-        for e in self._entries:
-            value = func(e["value"], axis=0) if e["value"].ndim == 2 else e["value"]
-            reduced.register(e["label"], e["metric"], value, **e["coords"])
-        return reduced
+        metrics: list | str, optional
+            Only keep these "Metric" values.
 
-    @property
-    def dataframe(self):
-        """Dataframe property. Materializes the long-format table on demand."""
+        filters: dict, optional
+            Only keep rows matching these `{column: value(s)}` pairs, e.g.
+            `{"Method": "wCSET"}` or `{"Subject": ["sub-01", "sub-02"]}`.
+        """
         if not self._entries:
             return pd.DataFrame()
-        frames = [_entry_to_frame(e, self.group_name) for e in self._entries]
-        return pd.concat(frames, ignore_index=True)
-
-    def get_filtered_df(self, metrics=None, labels=None, subjects=None):
-        """Filter data"""
-        df = self.dataframe
-        if df.empty:
-            return df
+        df = pd.concat([_entry_to_frame(e) for e in self._entries], ignore_index=True)
 
         if metrics:
-            metrics = [metrics] if isinstance(metrics, str) else metrics
+            metrics = [metrics] if not _is_arraylike(metrics) else metrics
             df = df[df["Metric"].isin(metrics)]
-        if labels:
-            labels = [labels] if isinstance(labels, str) else labels
-            df = df[df[self.group_name].isin(labels)]
-        if subjects:
-            if "Subject" not in df.columns:
-                raise ValueError("No subjects have been registered in this MetricSuite.")
-            subjects = [subjects] if isinstance(subjects, str) else subjects
-            df = df[df["Subject"].isin(subjects)]
+        for name, val in (filters or {}).items():
+            if val is None:
+                continue
+            if name not in df.columns:
+                raise ValueError(f"No column '{name}' has been registered in this MetricSuite.")
+            val = [val] if not _is_arraylike(val) else val
+            df = df[df[name].isin(val)]
 
         return df
 
-    def summary(self):
-        """Quick statistical overview."""
-        return self.dataframe.groupby(["Metric", self.group_name])["Value"].agg(["mean", "std", "count"])
+    def summary(self, metric, group_by=None, filters=None):
+        """
+        Mean/std/count for one metric -- either over the whole population,
+        or per group if `group_by` is given. A quick sanity check before
+        diving into plots or tests.
+
+        Parameters
+        ----------
+        metric: str
+            Which registered metric to summarize.
+
+        group_by: str, optional
+            Which registered column to group by. Omit to summarize the
+            metric's whole population in one row.
+
+        filters: dict, optional
+            Only include rows matching these `{column: value(s)}` pairs.
+        """
+        df = self.to_df(metrics=metric, filters=filters)
+        if df.empty:
+            raise ValueError(f"No data registered for metric '{metric}'.")
+        if group_by is None:
+            return df["Value"].agg(["mean", "std", "count"]).to_frame(name=metric).T
+        return df.groupby(group_by)["Value"].agg(["mean", "std", "count"]).reset_index()
+
+    def describe(self, metric=None):
+        """
+        Describes the suite's structure -- which metrics are registered
+        and, for each, which coords they carry: "categorical" (a count of
+        distinct values) or "numerical" (a `[min, max]` range). A quick
+        "what's actually in here" overview before reaching for `summary()`
+        (the numbers) or `to_df()` (the raw table).
+
+        !!! note "Technical details"
+            A coord only appears under a metric if at least one of that
+            metric's rows actually has a non-null value for it -- metrics
+            registered with different coord sets don't cross-contaminate
+            each other's rows here (unlike `to_df()`'s single wide table,
+            where an unrelated metric's coord shows up as all-NaN).
+            Categorical/numerical is decided the same way
+            `mindmap.viz.core.metric_line`/`metric_scatter` decide their
+            x-axis (`pd.api.types.is_numeric_dtype`). Categorical values
+            are listed up to 8; beyond that, truncated with a count of how
+            many more.
+
+        Parameters
+        ----------
+        metric: str, optional
+            Only describe this metric. Omit to describe every registered
+            metric.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: `"Metric"`, `"Coord"`, `"Kind"` (`"categorical"` |
+            `"numerical"`), `"N unique"`, `"Detail"` (a range for
+            numerical coords, a value preview for categorical ones).
+        """
+        df = self.to_df(metrics=metric)
+        columns = ["Metric", "Coord", "Kind", "N unique", "Detail"]
+        if df.empty:
+            return pd.DataFrame(columns=columns)
+
+        rows = []
+        for m, sub in df.groupby("Metric"):
+            coord_cols = [c for c in sub.columns if c not in ("Metric", "Value")]
+            for c in coord_cols:
+                series = sub[c].dropna()
+                if series.empty:
+                    continue
+                n_unique = series.nunique()
+                if pd.api.types.is_numeric_dtype(series):
+                    kind = "numerical"
+                    detail = f"[{series.min():g}, {series.max():g}]"
+                else:
+                    kind = "categorical"
+                    values = sorted(series.unique().astype(str))
+                    detail = ", ".join(values) if len(values) <= 8 else f"{', '.join(values[:8])}, ... (+{len(values) - 8} more)"
+                rows.append({"Metric": m, "Coord": c, "Kind": kind, "N unique": n_unique, "Detail": detail})
+
+        return pd.DataFrame(rows, columns=columns)
 
     def save(self, folder: str | Path, overwrite: bool = False):
         """
-        Saves the MetricSuite to disk as a compact array store (data.npz) plus
-        a small metadata file (meta.json). Keeping arrays as arrays (rather
-        than exploding everything into a long-format CSV) is what makes this
-        cheap even for studies with thousands of registered per-run curves.
+        Saves the whole study to a folder -- raw data and any cached
+        statistics -- so it can be reloaded later with `load()`.
+
+        !!! note "Technical details"
+            Data is stored as a compact array store (data.npz) plus a
+            small metadata file (meta.json), rather than exploding
+            everything into a long-format CSV -- this keeps saving cheap
+            even for studies with thousands of registered per-run curves.
+            Every currently cached stats result (see
+            `suite.stat.wilcoxon`/`.cluster_permutation`/
+            `.list_cached_stats`) is also persisted, into a `stats/`
+            subfolder, so an expensive cluster-permutation test never
+            needs to rerun just because a notebook was reopened -- `stats/`
+            is entirely rewritten from `self.stat._stats_cache` on every
+            save (removed outright if the cache is empty), never left
+            holding stale entries from an earlier save.
 
         Parameters
         ----------
         folder: str | Path
+            Where to save.
 
-        overwrite: bool
-            If False (default), refuses to write into a folder that already
-            holds a previous save (i.e. has a meta.json), so a typo'd or
-            reused path can't silently destroy an earlier study's results.
+        overwrite: bool, optional
+            If False (default), refuses to write into a folder that
+            already holds a previous save, so a typo'd or reused path
+            can't silently destroy an earlier study's results.
         """
         folder = Path(folder)
 
@@ -348,48 +413,45 @@ class MetricSuite:
                     arrays[f"entry{i}__coord__{c_name}"] = c_val
                     array_coord_names.append(c_name)
                 else:
-                    scalar_coords[c_name] = _json_safe(c_val)
+                    scalar_coords[c_name] = json_safe(c_val)
 
             entries_meta.append({
-                "label": e["label"],
                 "metric": e["metric"],
                 "scalar_coords": scalar_coords,
                 "array_coord_names": array_coord_names,
             })
 
-        _atomic_replace(folder/"data.npz", lambda p: np.savez(p, **arrays))
+        atomic_replace(folder/"data.npz", lambda p: np.savez(p, **arrays))
 
-        # 2. Save MNE Context Objects if they exist -- and remove any stale
-        # one left over from a previous save into this same folder that no
-        # longer applies (e.g. this suite's context dropped 'ave'/'src').
-        ave_path = folder/"context-ave.fif"
-        if self.context.get("ave") is not None:
-            _atomic_replace(ave_path, lambda p: self.context["ave"].save(p, overwrite=True, verbose="warning"))
-        elif ave_path.exists():
-            ave_path.unlink()
+        # 2. Save/refresh cached stats -- always mirrors self.stat._stats_cache
+        # exactly (see docstring above).
+        stats_dir = folder/"stats"
+        if stats_dir.exists():
+            shutil.rmtree(stats_dir)
+        if self.stat._stats_cache:
+            stats_dir.mkdir(parents=True, exist_ok=True)
+            index = {}
+            for i, result in enumerate(self.stat._stats_cache.values()):
+                sub_name = f"{i:04d}"
+                result.save(stats_dir/sub_name)
+                index[sub_name] = result.KIND
 
-        src_path = folder/"context-src.fif"
-        if self.context.get("src") is not None:
-            _atomic_replace(
-                src_path,
-                lambda p: mne.write_source_spaces(p, self.context["src"], overwrite=True, verbose="warning"),
-            )
-        elif src_path.exists():
-            src_path.unlink()
+            def _write_stats_index(p):
+                with open(p, "w", encoding="utf-8") as f:
+                    json.dump(index, f, indent=2)
+            atomic_replace(stats_dir/"index.json", _write_stats_index)
 
-        # 3. Write meta.json last, atomically, and only once the data/context
-        # it describes is already safely on disk -- so a crash can never
+        # 3. Write meta.json last, atomically, and only once the data/stats
+        # it describes are already safely on disk -- so a crash can never
         # leave a meta.json that references entries data.npz doesn't have
-        # yet (the reverse -- data.npz holding entries meta.json hasn't
-        # caught up to describing yet -- is harmless: load() only reads what
-        # meta.json points to).
+        # yet (the reverse -- data.npz/stats holding entries meta.json
+        # hasn't caught up to describing yet -- is harmless: load() only
+        # reads what meta.json points to).
         def _write_meta(p):
             with open(p, "w", encoding="utf-8") as f:
                 json.dump(
                     {
                         "name": self.name,
-                        "group_name": self.group_name,
-                        "subject": self.subject,
                         "metadata": self.metadata,
                         "saved_at": datetime.now().isoformat(),
                         "entries": entries_meta,
@@ -397,31 +459,32 @@ class MetricSuite:
                     f, indent=2,
                 )
 
-        _atomic_replace(folder/"meta.json", _write_meta)
+        atomic_replace(folder/"meta.json", _write_meta)
 
-        print(f"MetricSuite and context successfully saved to folder: {folder}")
+        print(f"MetricSuite successfully saved to folder: {folder}")
 
     @staticmethod
     def peek(folder: str | Path) -> dict:
         """
-        Lightweight inspection of a folder written by `save()`, without
-        loading the array data or MNE context files.
+        Peeks at a saved folder's basic info -- name, metrics -- without
+        actually loading the data. Handy for deciding whether a folder is
+        worth a full `load()`, e.g. when scanning many candidates before
+        combining them.
 
-        Reads only meta.json -- cheap even when the study has thousands of
-        registered entries or a large `mne.SourceSpaces` context. Useful for
-        deciding whether a saved folder is worth a full `load()`, e.g. when
-        scanning many per-subject folders before combining them.
+        !!! note "Technical details"
+            Reads only meta.json, never the array data -- cheap even for a
+            study with thousands of entries.
 
         Parameters
         ----------
         folder: str | Path
+            A folder previously written by `save()`.
 
         Returns
         -------
         dict
-            'name', 'group_name', 'subject', 'metadata', 'saved_at',
-            'n_entries', 'metrics' (sorted set of registered metric names),
-            'labels' (sorted set of registered group_name values).
+            `"name"`, `"metadata"`, `"saved_at"`, `"n_entries"`,
+            `"metrics"` (sorted set of registered metric names).
         """
         folder = Path(folder)
         meta_path = folder/"meta.json"
@@ -434,19 +497,42 @@ class MetricSuite:
         entries = meta.get("entries", [])
         return {
             "name": meta["name"],
-            "group_name": meta["group_name"],
-            "subject": meta.get("subject"),
             "metadata": meta.get("metadata", {}),
             "saved_at": meta.get("saved_at"),
             "n_entries": len(entries),
             "metrics": sorted({e["metric"] for e in entries}),
-            "labels": sorted({e["label"] for e in entries}),
         }
 
     @staticmethod
     def load(folder: str | Path):
         """
-        Loads a MetricSuite from a folder written by `save()` (data.npz + meta.json).
+        Loads a study back from a folder written by `save()` -- data and
+        cached statistics both included.
+
+        !!! note "Technical details"
+            Reconstructs entries from `data.npz`/`meta.json` and, if
+            present, repopulates the stats cache from `stats/`, so
+            previously computed (and potentially expensive, e.g.
+            cluster-permutation) results don't need to be recomputed
+            after reloading.
+
+            Folders saved before this class's grouping axis became a
+            per-call `group_by` choice stored a suite-level `"group_name"`
+            plus a dedicated per-entry `"label"` field, distinct from
+            `scalar_coords`. Those are transparently folded into an
+            ordinary coord (`coords[group_name] = label`) so old saved
+            studies keep loading correctly -- nothing to do differently
+            when loading a folder saved by the current code, which never
+            writes those fields.
+
+        Parameters
+        ----------
+        folder: str | Path
+            A folder previously written by `save()`.
+
+        Returns
+        -------
+        MetricSuite
         """
         folder = Path(folder)
         if not folder.exists():
@@ -459,24 +545,15 @@ class MetricSuite:
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
 
-        # 1. Re-load MNE context components if files exist
-        context = {}
+        # 1. Reconstruct the base MetricSuite object
+        suite = MetricSuite(name=meta["name"], metadata=meta.get("metadata"))
 
-        ave_path = folder/"context-ave.fif"
-        if ave_path.exists():
-            context["ave"] = mne.read_evokeds(ave_path, verbose=False)[0]
+        # Legacy saves (pre `group_by` generalization) stored a suite-level
+        # "group_name" plus a dedicated per-entry "label" field -- fold that
+        # back into an ordinary coord under the same column name.
+        legacy_group_name = meta.get("group_name")
 
-        src_path = folder/"context-src.fif"
-        if src_path.exists():
-            context["src"] = mne.read_source_spaces(src_path, verbose=False)
-
-        # 2. Reconstruct the base MetricSuite object
-        suite = MetricSuite(
-            name=meta["name"], group_name=meta["group_name"], subject=meta.get("subject"),
-            metadata=meta.get("metadata"), context=context,
-        )
-
-        # 3. Repopulate entries from the array store. Uses read_npz_fast
+        # 2. Repopulate entries from the array store. Uses read_npz_fast
         # instead of np.load/NpzFile: NpzFile.__getitem__ does an O(n) list
         # scan on every lookup, making a loop of n lookups O(n^2) -- 36.6s
         # for a real 88,000-entry study, of which 32.7s was that scan alone
@@ -489,35 +566,84 @@ class MetricSuite:
             coords = dict(entry_meta["scalar_coords"])
             for c_name in entry_meta["array_coord_names"]:
                 coords[c_name] = arrays[f"entry{i}__coord__{c_name}"]
-            suite.register(entry_meta["label"], entry_meta["metric"], value, **coords)
+            if legacy_group_name is not None and "label" in entry_meta:
+                coords[legacy_group_name] = entry_meta["label"]
+            suite.register(entry_meta["metric"], value, **coords)
+
+        # 3. Repopulate cached stats, if this save included any. register()
+        # above already cleared _stats_cache -- this runs after, so the
+        # reloaded cache is the last word.
+        stats_dir = folder/"stats"
+        index_path = stats_dir/"index.json"
+        if index_path.exists():
+            with open(index_path, "r", encoding="utf-8") as f:
+                index = json.load(f)
+            for sub_name, kind in index.items():
+                if kind == PairwiseResult.KIND:
+                    result = PairwiseResult.load(stats_dir/sub_name)
+                    pair = (result.table.loc[0, "group_a"], result.table.loc[0, "group_b"])
+                    key = suite.stat._pairwise_key(
+                        result.metric, result.group_by, result.test, result.unit_col, result.pairing_col,
+                        result.subject_order, result.filters, pair,
+                    )
+                elif kind == ClusterResult.KIND:
+                    result = ClusterResult.load(stats_dir/sub_name)
+                    pair = next(iter(result.clusters_by_pair.keys()))
+                    key = suite.stat._cluster_key(
+                        result.metric, result.coord, result.pairing_col, result.unit_col, result.group_by,
+                        result.higher_is_better, result.coord_order, result.cluster_alpha,
+                        result.n_permutations, result.seed, result.effect_size_summary,
+                        result.filters, pair,
+                    )
+                elif kind == NormalityResult.KIND:
+                    result = NormalityResult.load(stats_dir/sub_name)
+                    group = result.table.loc[0, "group"]
+                    key = suite.stat._normality_key(result.metric, result.group_by, result.test, result.filters, group)
+                elif kind == AnovaResult.KIND:
+                    result = AnovaResult.load(stats_dir/sub_name)
+                    key = suite.stat._anova_key(
+                        result.metric, result.group_by, result.pairing_col, result.unit_col,
+                        result.test, result.filters, result.groups,
+                    )
+                else:
+                    continue
+                suite.stat._stats_cache[key] = result
 
         return suite
 
     @classmethod
     def concat(cls, suites, name="Combined"):
         """
-        Combines multiple MetricSuites -- typically one per subject, each
-        loaded via `load()` -- into a single suite for group-level analysis.
+        Combines several suites into one -- e.g. one per subject, each
+        loaded via `load()` -- for group-level analysis.
 
-        Each input suite's entries are pooled as-is: any "Subject" tag
-        already on them (from `MetricSuite(subject=...)` or a per-call
-        `register(..., subject=...)`) is preserved, since this only merges
-        already-registered entries -- it doesn't add subject tags itself.
+        !!! note "Technical details"
+            Each input suite's entries are pooled exactly as-is: whatever
+            tags were already registered on them (via `register(...,
+            **coords)`) survive into the combined suite untouched --
+            `concat` doesn't inspect or require any particular tag name,
+            it just extends the entry lists. If you want to be able to
+            tell which input suite a pooled row came from, register a
+            distinguishing tag (e.g. `Subject=...`) on every entry of each
+            input suite *before* calling this -- there's no suite-level
+            mechanism for that, plain explicit `register()` calls are the
+            whole mechanism.
 
-        `context` (used for `.plot(kind="vista")` spatial/brain plots) is
-        not carried over: a merged multi-subject suite generally can't
-        share one `src`/`ave` context across subjects, so spatial plotting
-        on the result isn't supported unless you set `.context` afterwards
-        to something valid for whichever subject(s) you're plotting.
+            Cached stats are *not* pooled (each input suite's cache was
+            computed against its own, narrower data) -- the combined
+            suite starts with an empty stats cache, same as any freshly
+            constructed `MetricSuite`.
+
+            Works just as well on suites you built by hand as on ones
+            reloaded via `load()` -- `concat` doesn't care where a suite's
+            entries came from, it just extends the entry lists.
 
         Parameters
         ----------
         suites: list of MetricSuite
-            Suites to combine. Must all share the same `group_name` --
-            construct each per-subject suite with the same one (the
-            default, "Label", already matches unless overridden).
+            Suites to combine.
 
-        name: str
+        name: str, optional
             Name for the combined suite.
 
         Returns
@@ -527,540 +653,9 @@ class MetricSuite:
         if not suites:
             raise ValueError("`suites` must contain at least one MetricSuite.")
 
-        group_name = suites[0].group_name
-        for s in suites:
-            if s.group_name != group_name:
-                raise ValueError(
-                    "Cannot combine suites with different group_name "
-                    f"('{group_name}' vs '{s.group_name}')."
-                )
-
-        combined = cls(name=name, group_name=group_name)
+        combined = cls(name=name)
         for s in suites:
             combined._entries.extend(s._entries)
 
         return combined
 
-    @classmethod
-    def load_many(cls, folders, name="Combined"):
-        """
-        Loads multiple folders written by `save()` and combines them into a
-        single suite -- the common "one folder per subject, analyze as a
-        group" workflow in one call instead of a hand-written load+concat loop.
-
-        Parameters
-        ----------
-        folders: list of str | Path
-
-        name: str
-            Name for the combined suite.
-
-        Returns
-        -------
-        MetricSuite
-        """
-        suites = [cls.load(folder) for folder in folders]
-        return cls.concat(suites, name=name)
-
-    @classmethod
-    def load_study(cls, root: str | Path, name: str = None):
-        """
-        Loads every subject subfolder under `root` and combines them into a
-        single suite.
-
-        Expects the directory layout produced by saving one MetricSuite per
-        subject into `root/<subject>/` -- i.e. every immediate subdirectory
-        of `root` that contains a meta.json (its own `save()` output).
-        Subfolders without one (stray non-MetricSuite directories) are
-        skipped silently.
-
-        Parameters
-        ----------
-        root: str | Path
-
-        name: str, optional
-            Name for the combined suite. Defaults to the root folder's name.
-
-        Returns
-        -------
-        MetricSuite
-        """
-        root = Path(root)
-        if not root.exists():
-            raise FileNotFoundError(f"Could not find folder '{root}'.")
-
-        folders = sorted(p for p in root.iterdir() if p.is_dir() and (p/"meta.json").exists())
-        if not folders:
-            raise FileNotFoundError(f"No saved MetricSuite folders (with a meta.json) found under '{root}'.")
-
-        return cls.load_many(folders, name=name or root.name)
-
-
-    def plot(self, metric, labels=None, subjects=None, x=None, kind=None, ax=None, **kwargs):
-        """
-        Flexible plotting interface. Plots a single metric onto a single
-        `Axes`. For multiple metrics side by side, call this once per
-        metric onto your own `plt.subplots(1, n)` grid, e.g.
-        `fig, axes = plt.subplots(1, 2); suite.plot(metric="a", ax=axes[0]); suite.plot(metric="b", ax=axes[1])`.
-
-        Parameters:
-        ----------
-        metric: str
-            Which registered metric to plot.
-
-        labels: list | str
-            Filter for specific labels.
-
-        subjects: list | str, optional
-            Filter for specific subjects (the "Subject" column registered
-            via `MetricSuite(subject=...)` / `register(..., subject=...)`).
-
-        x: str, optional
-            The coordinate column name to use as the X-axis. If provided, triggers
-            a relational plot.
-
-        kind: str ['auto', 'box', 'violin', 'bar', or 'heatmap']
-            Type of plot. Defaults to 'box' for statistical and 'line'
-            for relational layouts.
-
-        ax: matplotlib.axes.Axes, optional
-            Axes to plot into. A new figure/axes is created if not given.
-
-        **kwargs:
-            Passed to the underlying Seaborn/Matplotlib functions. Pass
-            `group_name="Subject"` to color by subject instead of by
-            the suite's default grouping column.
-        """
-        if not isinstance(metric, str):
-            raise TypeError(
-                f"MetricSuite.plot() accepts a single metric (str), got {type(metric).__name__}. "
-                "For multiple metrics, call .plot(metric=..., ax=axes[i]) once per metric onto "
-                "your own plt.subplots(1, n) grid."
-            )
-
-        # get data
-        df = self.get_filtered_df(metric, labels, subjects)
-
-        if df.empty:
-            print("Query returned no data.")
-            return
-
-        # 1. If x is provided, validate it and route to relational plotting.
-        if x is not None:
-            if x not in df.columns:
-                raise ValueError(
-                    f"Coordinate column '{x}' does not exist in the registered data."
-                )
-            if df[x].isna().all():
-                raise ValueError(
-                    f"Coordinate column '{x}' contains only NaN values for the selected metric/labels."
-                )
-
-            # Default relational kind to 'line' if not explicitly stated.
-            plot_kind = kind if kind in ["line", "scatter"] else "line"
-            return self._plot_relational(df, x=x, kind=plot_kind, ax=ax, **kwargs)
-
-        # 2. If no x is provided, check if fallback to spatial is requested/needed
-        spatial_kinds = ["vista"]
-        meta_cols = [c for c in df.columns if c not in [self.group_name, "Metric", "Value"]]
-        has_spatial = any(c in meta_cols for c in ["channel", "vertex", "region"])
-
-        if kind in spatial_kinds or (kind is None and has_spatial):
-            return self._plot_spatial(df, **kwargs)
-
-        # 3. Default fallback: Statistical plots
-        plot_kind = kind if kind in ["box", "violin", "bar", "heatmap"] else "box"
-        return self._plot_statistical(df, kind=plot_kind, ax=ax, **kwargs)
-
-
-    def _plot_statistical(self, df, kind="box", ax=None, **kwargs):
-        """
-        Plot statistical plots.
-        """
-        plot_kind = {
-            "box": metric_box,
-            "violin": metric_violin,
-            "bar": metric_bar,
-            "heatmap": metric_heatmap,
-        }
-
-        if kind not in plot_kind:
-            raise ValueError(f"Kind '{kind}' not supported. Choose from {list(plot_kind.keys())}")
-
-        kwargs.setdefault("group_name", self.group_name)
-        return plot_kind[kind](df, ax=ax, **kwargs)
-
-    def _plot_relational(self, df, x, kind="line", ax=None, **kwargs):
-        """
-        Plot relational plot.
-        """
-        kwargs.setdefault("group_name", self.group_name)
-        return metric_relational(df, x=x, kind=kind, ax=ax, **kwargs)
-
-
-    def _plot_spatial(self, df, **kwargs):
-        if "channel" in df.columns and df["channel"].notna().any():
-            target_col = "channel"
-        elif "vertex" in df.columns and df["vertex"].notna().any():
-            target_col = "vertex"
-        else:
-            raise ValueError("No spatial coordinates ('channel' or 'vertex') found in data.")
-    
-        df_spatial = df.dropna(subset=[target_col])
-
-        pivoted = df_spatial.pivot(index=target_col, columns=self.group_name, values="Value")
-
-        params = {
-            "source_space":self.context.get("src"),
-            "title": pivoted.columns.tolist(),
-        }
-
-        if target_col == "channel":
-            params["sensors"] = [self._sync_sensor_data(pivoted[label])
-                                 for label in pivoted.columns]
-            params["functionals"] = None
-        else:
-            params["functionals"] = [val.values for _, val in pivoted.items()]
-            params["sensors"] = self.context.get("ave")
-
-        params.update(kwargs)
-        return plot_brain_activity(**params)
-
-
-    def _sync_sensor_data(self, series):
-        """Aligns a column of data to the MNE Evoked object order."""
-        if "ave" not in self.context:
-            raise ValueError("Spatial channel plots require an 'ave' (mne.Evoked) in context.")
-
-        evoked = self.context["ave"].copy()
-
-        data_aligned = series.reindex(evoked.ch_names).values
-
-        n_times = evoked.data.shape[1]
-        evoked.data = np.tile(data_aligned[:, np.newaxis], (1, n_times))
-
-        return evoked
-
-    def compare_methods(
-        self, metric, reference, competitors=None, test="wilcoxon",
-        correction="fdr_bh", alpha=0.05, subject_col="region", subject_order=None,
-        labels=None, subjects=None, plot=False, ax=None, **plot_kwargs,
-    ):
-        """
-        Paired comparison of `reference` against every other (or listed
-        `competitors`) method registered under `metric`, matched by
-        `subject_col` (default "region" -- the repeated-measures unit used
-        throughout this codebase).
-
-        Follows the same get_filtered_df -> transform -> delegate pattern
-        as `.plot()`: filters via `get_filtered_df(metrics=metric,
-        labels=labels, subjects=subjects)`, then delegates to
-        `mindmap.analysis.stats.compare_methods`.
-
-        `reference` is required (unlike `.plot()`'s optional filters) --
-        picking a reference automatically would silently determine what
-        "significant" even means, which should be an explicit choice.
-
-        Parameters
-        ----------
-        metric: str
-            Which registered "Metric" to compare.
-
-        reference: str
-            Required -- the `self.group_name` level every competitor is
-            compared against.
-
-        competitors: list[str], optional
-            Defaults to every other registered label for this metric.
-
-        test: str
-            Forwarded to `mindmap.analysis.stats.compare_methods` /
-            `mindmap.core.stats.paired_test` -- "wilcoxon" (default) |
-            "ttest" | "ttest_ess". "ttest_ess" is a paired t-test with an
-            autocorrelation-corrected effective sample size in place of the
-            nominal one -- for `subject_col` values with real serial
-            correlation (e.g. "channel" or "times" from a single recording,
-            where a plain test overstates how much independent evidence the
-            raw count of channels/timepoints represents). See
-            `subject_order` below, and `paired_test`'s own docstring.
-
-        correction, alpha
-            Forwarded to `mindmap.analysis.stats.compare_methods`.
-
-        subject_col: str
-            Repeated-measures grouping column, default "region".
-
-        subject_order: list, optional
-            Only matters for `test="ttest_ess"` (ignored otherwise): the
-            explicit `subject_col` ordering its autocorrelation estimate is
-            computed along. Defaults to ascending sort, which is correct for
-            a numeric `subject_col` like "times" but very likely *wrong* for
-            a string one like "channel" (alphabetical, not real contact
-            adjacency) -- pass the true order explicitly in that case.
-
-        labels, subjects
-            Forwarded to `get_filtered_df` (in addition to `metrics=metric`).
-
-        plot: bool
-            If True, also builds an annotated box plot via
-            `mindmap.viz.stats.metric_box_significance` and returns
-            `(results, fig, ax)` instead of just `results`. The box is drawn
-            from the same `(group_col, subject_col)`-averaged pairs the test
-            itself used (not the raw, uncollapsed data) -- one dot per
-            `subject_col` unit, matching `results`' own "n_pairs".
-
-        ax: matplotlib.axes.Axes, optional
-            Forwarded to `metric_box_significance` when `plot=True`. Axes to
-            plot into; a new figure/axes is created if not given.
-
-        **plot_kwargs
-            Forwarded to `metric_box_significance` when `plot=True`.
-
-        Returns
-        -------
-        pd.DataFrame, or (pd.DataFrame, matplotlib.figure.Figure,
-        matplotlib.axes.Axes) if `plot=True`. Has an "n_eff" column,
-        populated only for `test="ttest_ess"` (NaN otherwise).
-        """
-        df = self.get_filtered_df(metrics=metric, labels=labels, subjects=subjects)
-        if df.empty:
-            raise ValueError(f"No data registered for metric '{metric}'.")
-
-        results = _compare_methods_df(
-            df, group_col=self.group_name, reference=reference, subject_col=subject_col,
-            competitors=competitors, test=test, correction=correction, alpha=alpha,
-            subject_order=subject_order,
-        )
-
-        if not plot:
-            return results
-
-        # Plot the same (group, subject_col) pairs the test actually ran on -- not
-        # the raw, uncollapsed df. `_compare_methods_df` averages repeated rows per
-        # (group_col, subject_col[, "Metric"]) cell before testing (e.g. away every
-        # snr/repetition combination down to one value per (method, region)), so
-        # plotting raw `df` would show far more spread than the paired test ever
-        # saw, and a dot count that doesn't match its own "n_pairs" -- same
-        # collapse, done the same way, so the box's dots are exactly the pairs
-        # `results` describes.
-        group_keys = [self.group_name, subject_col] + (["Metric"] if "Metric" in df.columns else [])
-        collapsed_df = df.groupby(group_keys, as_index=False)["Value"].mean()
-
-        fig, ax = metric_box_significance(
-            collapsed_df, results, group_name=self.group_name, reference=reference, alpha=alpha, ax=ax, **plot_kwargs,
-        )
-        return results, fig, ax
-
-    def cluster_permutation(
-        self, metric, coord, reference, competitor, subject_col="region",
-        higher_is_better=True, coord_order=None, cluster_alpha=0.05,
-        n_permutations=3000, seed=0, effect_size_summary="cluster_mean",
-        labels=None, subjects=None,
-        plot=False, ax=None, **plot_kwargs,
-    ):
-        """
-        Region-as-subject cluster-permutation test of `reference` vs
-        `competitor` along `coord` (e.g. "snr", "percentage"), delegating
-        to `mindmap.analysis.stats.cluster_permutation_mne` (which wraps
-        `mne.stats.permutation_cluster_1samp_test`).
-
-        Parameters
-        ----------
-        metric: str
-            Which registered "Metric" to compare.
-
-        coord: str
-            Coordinate column to sweep along (e.g. "snr").
-
-        reference, competitor: str
-            The two `self.group_name` levels being compared.
-
-        subject_col, higher_is_better, coord_order, cluster_alpha,
-        n_permutations, seed, effect_size_summary
-            Forwarded to `mindmap.analysis.stats.cluster_permutation_mne` --
-            see its docstring, in particular for what `effect_size_summary`
-            ("cluster_mean" default vs. "peak") means for each cluster's
-            reported `effect_size`.
-
-        labels, subjects
-            Forwarded to `get_filtered_df` in addition to `metrics=metric`
-            (`labels` defaults to `[reference, competitor]` when not given,
-            so unrelated methods registered under the same metric don't
-            leak into the comparison).
-
-        plot: bool
-            If True, also builds a shaded curve plot via
-            `mindmap.viz.stats.metric_relational_clusters` and returns
-            `(result, fig, ax)` instead of just `result`.
-
-        ax: matplotlib.axes.Axes, optional
-            Forwarded to `metric_relational_clusters` when `plot=True`. Axes
-            to plot into; a new figure/axes is created if not given.
-
-        **plot_kwargs
-            Forwarded to `metric_relational_clusters` when `plot=True`.
-
-        Returns
-        -------
-        dict (see `cluster_permutation_mne`'s docstring for keys:
-        "clusters" -- including "effect_size"/"effect_size_type" --, "t_obs",
-        "coord_values", "diff"), or (dict, matplotlib.figure.Figure,
-        matplotlib.axes.Axes) if `plot=True`.
-        """
-        effective_labels = labels if labels is not None else [reference, competitor]
-        df = self.get_filtered_df(metrics=metric, labels=effective_labels, subjects=subjects)
-        if df.empty:
-            raise ValueError(f"No data registered for metric '{metric}'.")
-
-        result = _cluster_permutation_mne(
-            df, group_col=self.group_name, coord_col=coord, reference=reference, competitor=competitor,
-            subject_col=subject_col, higher_is_better=higher_is_better, coord_order=coord_order,
-            cluster_alpha=cluster_alpha, n_permutations=n_permutations, seed=seed,
-            effect_size_summary=effect_size_summary,
-        )
-
-        if not plot:
-            return result
-
-        fig, ax = metric_relational_clusters(
-            df, result["clusters"], x=coord, group_name=self.group_name,
-            alpha=cluster_alpha, ax=ax, **plot_kwargs,
-        )
-        return result, fig, ax
-
-    def cluster_permutation_summary(
-        self, metric, coord, reference, competitors=None, subject_col="region",
-        higher_is_better=True, coord_order=None, cluster_alpha=0.05, correction="fdr_bh",
-        n_permutations=3000, seed=0, effect_size_summary="cluster_mean",
-        labels=None, subjects=None, ax=None, **plot_kwargs,
-    ):
-        """
-        Compact, publication-style alternative to calling `cluster_permutation`
-        once per competitor and drawing one panel per pair: every competitor is
-        drawn on one shared `Axes` against `reference`, with each competitor's
-        own segments switching to a dashed line + open marker wherever they
-        *aren't* significantly worse than `reference` there (solid line +
-        filled marker where they are) -- so which competitors are inferior to
-        `reference`, and over what range of `coord`, reads directly off one
-        figure instead of a subplot grid or a separate stats table.
-
-        Calls `cluster_permutation(..., plot=False)` once per competitor
-        (exactly as if you'd called it yourself in a loop), then pools every
-        competitor's cluster p-values into one family and multiple-comparison
-        corrects across it (`correction`, same mechanism and default as
-        `compare_methods`) before handing the collected `"clusters"` results to
-        `mindmap.viz.stats.metric_relational_cluster_summary`. This is the one
-        piece of new statistics here: `cluster_permutation_mne`'s cluster
-        p-values are already family-wise corrected *within* one competitor's
-        swept axis (that's what the cluster-mass permutation null distribution
-        is for), but calling it once per competitor tests multiple independent
-        families at the nominal `cluster_alpha` with nothing correcting across
-        them -- the same "one reference vs. several competitors" shape
-        `compare_methods` already corrects for.
-
-        Parameters
-        ----------
-        metric: str
-            Which registered "Metric" to compare.
-
-        coord: str
-            Coordinate column to sweep along (e.g. "snr").
-
-        reference: str
-            The `self.group_name` level every competitor is compared against
-            and drawn as the solid, always-filled-marker baseline curve.
-
-        competitors: list[str], optional
-            Defaults to every other registered label for this metric (same
-            convention as `compare_methods`).
-
-        subject_col, higher_is_better, coord_order, cluster_alpha,
-        n_permutations, seed, effect_size_summary
-            Forwarded to `cluster_permutation` for every competitor -- see its
-            docstring. `coord_order` is resolved here (defaulting to the
-            sorted ascending values present in the filtered data if not
-            given) so every competitor's `cluster_permutation` call, and the
-            final plot, all agree on the same explicit ordering.
-
-        correction: str
-            Multiple-comparison correction applied across every competitor's
-            cluster p-values, pooled into one family -- forwarded to
-            `mindmap.core.stats.correct_pvalues` ("fdr_bh" default,
-            "fdr_by" | "bonferroni" | "none"). Adds "p_corrected" (and
-            recomputes "significant" off it, at `cluster_alpha`) to each
-            competitor's `clusters` DataFrame; the plot itself is driven by
-            "p_corrected", not the raw per-cluster "p_value".
-
-        labels, subjects
-            Forwarded to `get_filtered_df` (in addition to `metrics=metric`).
-            `labels` defaults to `[reference] + competitors` when not given,
-            so unrelated methods registered under the same metric don't leak
-            into the comparison.
-
-        ax: matplotlib.axes.Axes, optional
-            Axes to plot into. A new figure/axes is created if not given.
-
-        **plot_kwargs
-            Forwarded to `metric_relational_cluster_summary` (e.g. `colors`,
-            `palette`, `marker`, `markersize`, `linewidth`, `show_spread`,
-            `spread_interval`).
-
-        Returns
-        -------
-        (dict[str, pd.DataFrame], matplotlib.figure.Figure, matplotlib.axes.Axes)
-            One `"clusters"` DataFrame per competitor -- same columns as
-            `cluster_permutation`'s own (including "effect_size"/
-            "effect_size_type"), plus "p_corrected" -- plus the combined
-            figure/axes.
-        """
-        if competitors is None:
-            all_labels = self.get_filtered_df(metrics=metric)[self.group_name].unique().tolist()
-            competitors = [l for l in all_labels if l != reference]
-
-        effective_labels = labels if labels is not None else [reference] + list(competitors)
-        df = self.get_filtered_df(metrics=metric, labels=effective_labels, subjects=subjects)
-        if df.empty:
-            raise ValueError(f"No data registered for metric '{metric}'.")
-
-        if coord_order is None:
-            coord_order = sorted(df[coord].unique().tolist())
-
-        clusters_by_competitor = {}
-        for competitor in competitors:
-            result = self.cluster_permutation(
-                metric=metric, coord=coord, reference=reference, competitor=competitor,
-                subject_col=subject_col, higher_is_better=higher_is_better, coord_order=coord_order,
-                cluster_alpha=cluster_alpha, n_permutations=n_permutations, seed=seed,
-                effect_size_summary=effect_size_summary,
-                labels=effective_labels, subjects=subjects, plot=False,
-            )
-            clusters_by_competitor[competitor] = result["clusters"]
-
-        # Pool every competitor's cluster p-values into one family and correct across
-        # it -- same fix, same default, as compare_methods's own correction="fdr_bh"
-        # across its competitors. Competitors with no clusters at all (nothing to
-        # correct) are excluded from the pool and left exactly as
-        # cluster_permutation returned them, rather than concatenated in empty --
-        # pandas now warns on concatenating empty/all-NA frames, and there's no
-        # p-value to correct there regardless.
-        non_empty = {name: clusters for name, clusters in clusters_by_competitor.items() if not clusters.empty}
-        if non_empty:
-            pooled = pd.concat(
-                [clusters.assign(_competitor=name) for name, clusters in non_empty.items()],
-                ignore_index=True,
-            )
-            p_corrected, significant = correct_pvalues(pooled["p_value"], method=correction, alpha=cluster_alpha)
-            pooled["p_corrected"] = p_corrected
-            pooled["significant"] = significant
-            for competitor in non_empty:
-                clusters_by_competitor[competitor] = (
-                    pooled[pooled["_competitor"] == competitor]
-                    .drop(columns="_competitor")
-                    .reset_index(drop=True)
-                )
-
-        fig, ax = metric_relational_cluster_summary(
-            df, clusters_by_competitor, x=coord, reference=reference, coord_order=coord_order,
-            group_name=self.group_name, p_col="p_corrected", alpha=cluster_alpha, ax=ax, **plot_kwargs,
-        )
-        return clusters_by_competitor, fig, ax

@@ -135,11 +135,13 @@ def paired_test(x, y, test="wilcoxon"):
 
     if test == "ttest":
         n = diff.shape[0]
-        result = stats.ttest_rel(x, y)
         sd = diff.std(ddof=1)
+        se = sd / np.sqrt(n) if sd > 0 else 0.0
+        t_stat = diff.mean() / se if se > 0 else 0.0
+        p_value = float(2 * stats.t.sf(abs(t_stat), df=n - 1))
         effect_size = diff.mean() / sd if sd > 0 else 0.0
         return {
-            "statistic": float(result.statistic), "p_value": float(result.pvalue),
+            "statistic": float(t_stat), "p_value": p_value,
             "effect_size": float(effect_size), "effect_size_type": "cohens_dz", "n": n,
         }
 
@@ -159,6 +161,184 @@ def paired_test(x, y, test="wilcoxon"):
         }
 
     raise ValueError(f"Unknown test '{test}'. Choose 'wilcoxon', 'ttest', or 'ttest_ess'.")
+
+
+def test_normality(x, test="shapiro"):
+    """
+    Tests whether a sample looks drawn from a normal distribution -- the
+    null hypothesis is normality, so a small p-value is evidence *against*
+    it.
+
+    Parameters
+    ----------
+    x: array-like of shape (n,)
+        NaNs are dropped before testing.
+
+    test: str
+        "shapiro" (default -- `scipy.stats.shapiro`; the most powerful
+        general-purpose normality test for the small-to-moderate samples
+        typical of one registered group) | "normaltest"
+        (`scipy.stats.normaltest`, D'Agostino-Pearson K^2, based on
+        skewness and kurtosis -- needs a larger n to be reliable, but is
+        less sensitive than Shapiro-Wilk to the tiny, practically
+        meaningless deviations that make "significant" too easy to reach
+        at large n).
+
+    Returns
+    -------
+    dict with keys "statistic", "p_value", "n" (non-NaN observations
+    actually used). Below each test's minimum n (3 for shapiro, ~8 for
+    normaltest), scipy returns "statistic"/"p_value" as NaN rather than
+    raising -- passed through unchanged here.
+    """
+    x = np.asarray(x, dtype=float)
+    x = x[~np.isnan(x)]
+    n = x.shape[0]
+
+    if test == "shapiro":
+        result = stats.shapiro(x)
+    elif test == "normaltest":
+        result = stats.normaltest(x)
+    else:
+        raise ValueError(f"Unknown test '{test}'. Choose 'shapiro' or 'normaltest'.")
+
+    return {"statistic": float(result.statistic), "p_value": float(result.pvalue), "n": n}
+
+
+def repeated_measures_anova(wide, test="friedman"):
+    """
+    One omnibus test across three or more matched groups (e.g. every
+    method's per-region values at once) -- answers "do these groups differ
+    at all", complementary to `paired_test`'s pairwise "does A differ from
+    B" (the standard next step after a significant result here is pairwise
+    testing + `correct_pvalues` as post-hoc, exactly how
+    `MetricSuite.stat.compare_groups` already works).
+
+    Parameters
+    ----------
+    wide: array-like of shape (n_subjects, n_groups)
+        Matched, complete-case observations -- `wide[i, j]` is subject i's
+        value for group j. No missing values -- both tests need a fully
+        balanced n x k matrix (drop/average incomplete rows before
+        calling, same convention `PairwiseResult.compute` uses for pairs).
+
+    test: str
+        "friedman" (default -- `scipy.stats.friedmanchisquare`; makes no
+        normality assumption, appropriate for the typically small,
+        non-normal per-region samples this library compares) | "anova" (a
+        one-way repeated-measures ANOVA, via the standard within-subjects
+        sum-of-squares partition -- computed directly here rather than via
+        `statsmodels.stats.anova.AnovaRM`, since a single within-factor
+        design needs nothing AnovaRM provides beyond this; cross-checked
+        against it numerically while developing this function).
+
+    Returns
+    -------
+    dict with keys "statistic", "p_value", "effect_size", "effect_size_type"
+    ("kendalls_w" -- Kendall's coefficient of concordance,
+    `statistic / (n * (k - 1))` -- for "friedman"; "eta_sq_p" -- partial
+    eta-squared, `ss_conditions / (ss_conditions + ss_error)` -- for
+    "anova"), "n" (subjects), "k" (groups).
+    """
+    wide = np.asarray(wide, dtype=float)
+    if wide.ndim != 2:
+        raise ValueError(f"`wide` must be 2D (n_subjects, n_groups), got shape {wide.shape}.")
+    n, k = wide.shape
+    if k < 3:
+        raise ValueError(f"An omnibus test needs at least 3 groups (got {k}) -- use paired_test for 2.")
+
+    if test == "friedman":
+        result = stats.friedmanchisquare(*[wide[:, j] for j in range(k)])
+        denom = n * (k - 1)
+        kendalls_w = float(result.statistic) / denom if denom > 0 else np.nan
+        return {
+            "statistic": float(result.statistic), "p_value": float(result.pvalue),
+            "effect_size": kendalls_w, "effect_size_type": "kendalls_w", "n": n, "k": k,
+        }
+
+    if test == "anova":
+        grand_mean = wide.mean()
+        condition_means = wide.mean(axis=0)
+        subject_means = wide.mean(axis=1)
+
+        ss_conditions = n * np.sum((condition_means - grand_mean) ** 2)
+        ss_subjects = k * np.sum((subject_means - grand_mean) ** 2)
+        ss_total = np.sum((wide - grand_mean) ** 2)
+        ss_error = ss_total - ss_conditions - ss_subjects
+
+        df_conditions = k - 1
+        df_error = (k - 1) * (n - 1)
+        ms_conditions = ss_conditions / df_conditions
+        ms_error = ss_error / df_error if df_error > 0 else np.nan
+
+        f_stat = ms_conditions / ms_error if ms_error and ms_error > 0 else np.nan
+        p_value = float(stats.f.sf(f_stat, df_conditions, df_error)) if np.isfinite(f_stat) else np.nan
+        denom = ss_conditions + ss_error
+        eta_sq_p = ss_conditions / denom if denom > 0 else np.nan
+
+        return {
+            "statistic": float(f_stat) if np.isfinite(f_stat) else np.nan, "p_value": p_value,
+            "effect_size": float(eta_sq_p), "effect_size_type": "eta_sq_p", "n": n, "k": k,
+        }
+
+    raise ValueError(f"Unknown test '{test}'. Choose 'friedman' or 'anova'.")
+
+
+def independent_test(a, b, test="mannwhitneyu"):
+    """
+    One independent-samples comparison between two unrelated arrays -- e.g.
+    a reference method's per-region values and a competitor's, when no
+    subject-level correspondence between them is assumed (unlike
+    `paired_test`, `a`/`b` don't need matching, and don't even need to be
+    the same length).
+
+    Parameters
+    ----------
+    a, b: array-like
+        Independent samples -- lengths may differ.
+
+    test: str
+        "mannwhitneyu" (default -- `scipy.stats.mannwhitneyu`; makes no
+        normality assumption, appropriate for the typically small,
+        non-normal per-region samples this library compares) | "ttest_ind"
+        (`scipy.stats.ttest_ind`).
+
+    Returns
+    -------
+    dict with keys "statistic", "p_value", "effect_size", "effect_size_type"
+    ("rank_biserial" for mannwhitneyu -- `1 - 2*U/(n_a*n_b)`; "cohens_d" for
+    ttest_ind -- mean difference over the pooled standard deviation), "n_a",
+    "n_b" (can differ, unlike `paired_test`'s single shared "n").
+    """
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    n_a, n_b = a.shape[0], b.shape[0]
+
+    if test == "mannwhitneyu":
+        result = stats.mannwhitneyu(a, b, alternative="two-sided")
+        denom = n_a * n_b
+        effect_size = 1 - (2 * result.statistic) / denom if denom > 0 else np.nan
+        return {
+            "statistic": float(result.statistic), "p_value": float(result.pvalue),
+            "effect_size": float(effect_size), "effect_size_type": "rank_biserial",
+            "n_a": n_a, "n_b": n_b,
+        }
+
+    if test == "ttest_ind":
+        result = stats.ttest_ind(a, b)
+        df = n_a + n_b - 2
+        if df > 0 and n_a > 1 and n_b > 1:
+            pooled_std = np.sqrt(((n_a - 1) * a.var(ddof=1) + (n_b - 1) * b.var(ddof=1)) / df)
+        else:
+            pooled_std = np.nan
+        effect_size = (a.mean() - b.mean()) / pooled_std if pooled_std and pooled_std > 0 else np.nan
+        return {
+            "statistic": float(result.statistic), "p_value": float(result.pvalue),
+            "effect_size": float(effect_size), "effect_size_type": "cohens_d",
+            "n_a": n_a, "n_b": n_b,
+        }
+
+    raise ValueError(f"Unknown test '{test}'. Choose 'mannwhitneyu' or 'ttest_ind'.")
 
 
 def correct_pvalues(p_values, method="fdr_bh", alpha=0.05):

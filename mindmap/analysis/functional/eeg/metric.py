@@ -21,6 +21,8 @@ from mindmap.core.metric import (
     calc_spatial_dispersion_grova, calc_ratio_spurious_activity,
     compute_distances, estimate_snr, calc_correlation_matrix,
     get_gfp, compute_cog_trajectory, calc_rem,
+    peak_amplitude_snr, peak_to_peak_snr, gfp_snr, power_snr,
+    peak_amplitude, peak_to_peak_amplitude, rms_amplitude,
 )
 
 from mindmap.core.utils import get_spike_extent_mask, get_spurious_mask
@@ -202,7 +204,150 @@ def estimate_evoked_snr(
     return estimate_snr(data, (b_start, b_stop), method=method)
 
 
-def estimate_raw_snr(
+def estimate_evoked_snr_peak(
+    evoked: mne.Evoked,
+    baseline: tuple[float, float],
+    signal_window: tuple[float, float],
+):
+    """
+    Peak-amplitude SNR on an evoked (already-averaged) response: max(|x|) in
+    `signal_window` over std(x) in `baseline`, per channel. The evoked
+    counterpart of `estimate_raw_snr_peak`.
+
+    Note: with non-zero `PropagationConfig.jitter`, averaging smears
+    inter-trial latency variability, so this will read systematically lower
+    than the corresponding single-trial (`estimate_raw_snr_peak`) value --
+    expected behavior, not a bug.
+
+    Parameters
+    ----------
+    evoked: mne.Evoked
+        Evoked data.
+
+    baseline: tuple[float, float]
+        Time window (s) for the noise estimate.
+
+    signal_window: tuple[float, float]
+        Time window (s) where the peak is expected to occur.
+
+    Returns
+    -------
+    snr: np.ndarray
+        SNR per channel.
+    """
+    s0, s1 = evoked.time_as_index(signal_window)
+    b0, b1 = evoked.time_as_index(baseline)
+    return peak_amplitude_snr(evoked.data, (s0, s1), (b0, b1))
+
+
+def estimate_evoked_snr_peak_to_peak(
+    evoked: mne.Evoked,
+    baseline: tuple[float, float],
+    signal_window: tuple[float, float],
+):
+    """
+    Peak-to-peak SNR on an evoked (already-averaged) response:
+    (max(x)-min(x)) in `signal_window` over the mean-rectified `baseline`,
+    per channel. The evoked counterpart of `estimate_raw_snr_peak_to_peak`
+    (see that function's docstring for the clinical convention it matches).
+
+    Parameters
+    ----------
+    evoked: mne.Evoked
+        Evoked data.
+
+    baseline: tuple[float, float]
+        Time window (s) for the noise estimate.
+
+    signal_window: tuple[float, float]
+        Time window (s) where the peak is expected to occur.
+
+    Returns
+    -------
+    snr: np.ndarray
+        SNR per channel.
+    """
+    s0, s1 = evoked.time_as_index(signal_window)
+    b0, b1 = evoked.time_as_index(baseline)
+    return peak_to_peak_snr(evoked.data, (s0, s1), (b0, b1))
+
+
+def estimate_evoked_snr_gfp(
+    evoked: mne.Evoked,
+    baseline: tuple[float, float],
+    signal_window: tuple[float, float],
+    noise_cov: mne.Covariance = None,
+):
+    """
+    Global Field Power (GFP) SNR on an evoked (already-averaged) response:
+    max(GFP) in `signal_window` over mean(GFP) in `baseline`. The evoked
+    counterpart of `estimate_raw_snr_gfp` -- see that function's docstring
+    for why whitening (via `noise_cov`) gives a low, stable, analytically
+    understood floor (~1.0).
+
+    Parameters
+    ----------
+    evoked: mne.Evoked
+        Evoked data.
+
+    baseline: tuple[float, float]
+        Time window (s) for the noise estimate.
+
+    signal_window: tuple[float, float]
+        Time window (s) where the peak is expected to occur.
+
+    noise_cov: mne.Covariance, optional
+        If provided, data is whitened before computing GFP.
+
+    Returns
+    -------
+    snr: float
+        GFP SNR.
+    """
+    data = evoked.data
+    if noise_cov is not None:
+        whitener, _ = mne.cov.compute_whitener(noise_cov, evoked.info, pca=False)
+        data = whitener @ data
+
+    s0, s1 = evoked.time_as_index(signal_window)
+    b0, b1 = evoked.time_as_index(baseline)
+    return float(gfp_snr(data, (s0, s1), (b0, b1), channel_axis=-2))
+
+
+def estimate_evoked_snr_power(
+    evoked: mne.Evoked,
+    baseline: tuple[float, float],
+    noise_cov: mne.Covariance = None,
+    method: str = "power",
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Thin naming-consistency wrapper around `estimate_evoked_snr` (unchanged,
+    still used by many other tutorials/pilot scripts) -- added only so the
+    "power" method has the same `estimate_evoked_snr_<method>` name as the
+    other three methods in this family.
+
+    Parameters
+    ----------
+    evoked: mne.Evoked
+        Evoked data.
+
+    baseline: tuple[float, float]
+        Time window (s) for noise estimate.
+
+    noise_cov: mne.Covariance, optional
+        If provided, data is whitened before SNR estimation.
+
+    method: str ['power', 'variance']
+        Whether to use power-based or variance-based estimate.
+
+    Returns
+    -------
+    snr, snr_db: tuple[np.ndarray, np.ndarray] of shapes (n_times,)
+    """
+    return estimate_evoked_snr(evoked, baseline, noise_cov=noise_cov, method=method)
+
+
+def _epoch_for_snr(
     raw: mne.io.Raw,
     events,
     event_id: int = None,
@@ -213,9 +358,11 @@ def estimate_raw_snr(
     picks: str = "eeg",
 ):
     """
-    Computes a robust single-trial SNR metric designed to anchor
-    generative simulations based on median single-trial statistics.
-    
+    Shared epoching step for the `estimate_raw_snr_*` family: epochs `raw`
+    around `events` (without MNE's baseline correction, so noise stays
+    intact), then converts `signal_window`/`baseline` (seconds) into sample
+    index tuples usable by `mindmap.core.metric`'s `*_snr` functions.
+
     Parameters
     ----------
     raw: mne.io.Raw
@@ -229,7 +376,7 @@ def estimate_raw_snr(
 
     tmin, tmax: float
         Total time window around the event. Must encompass both baseline
-        and signal winodws completely.
+        and signal windows completely.
 
     baseline: tuple of float (start, end)
         The time window to extract background noise from.
@@ -243,14 +390,13 @@ def estimate_raw_snr(
 
     Returns
     -------
-    snrs:
-        SNR per channel.
+    data: np.ndarray of shape (n_epochs, n_channels, n_times)
+    signal_idx, baseline_idx: tuple[int, int]
+        Sample index (start, stop) tuples for `signal_window`/`baseline`.
     """
-    # Default signal window
     if signal_window is None:
         signal_window = (0.0, tmax)
 
-    # Load epochs without MNE's baseline correction (keep noise intact)
     epochs = mne.Epochs(
         raw,
         events,
@@ -267,32 +413,411 @@ def estimate_raw_snr(
     data = epochs.get_data(copy=False)
     times = epochs.times
 
-    # 1. Isolate the Signal Window and find peak per trial, per channel
-    s_start = np.argmin(np.abs(times - signal_window[0]))
-    s_end = np.argmin(np.abs(times - signal_window[1]))
-    spike_data = data[:, :, s_start:s_end]
-    single_trial_peaks = np.max(np.abs(spike_data), axis=2)
+    s0 = np.argmin(np.abs(times - signal_window[0]))
+    s1 = np.argmin(np.abs(times - signal_window[1]))
+    b0 = np.argmin(np.abs(times - baseline[0]))
+    b1 = np.argmin(np.abs(times - baseline[1]))
 
-    # 2. Isolate the Baseline Window and find noise standard deviation per trial
-    # per channel
-    b_start = np.argmin(np.abs(times - baseline[0]))
-    b_end = np.argmin(np.abs(times - baseline[1]))
-    baseline_data = data[:, :, b_start:b_end]
-    single_trial_noise = np.std(baseline_data, axis=2)
+    return data, (s0, s1), (b0, b1)
 
-    # 3. Take the median across all trials (axis 0) for each channel seperately
-    median_peaks = np.median(single_trial_peaks, axis=0)
-    median_noise = np.median(single_trial_noise, axis=0)
 
-    # 4. Comptue SNR per channel, protecting against any dead/flat channels.
-    snrs = np.divide(
-        median_peaks,
-        median_noise,
-        out = np.zeros_like(median_peaks),
-        where = median_noise != 0,
+def estimate_raw_snr_peak(
+    raw: mne.io.Raw,
+    events,
+    event_id: int = None,
+    tmin: float = -0.05,
+    tmax: float = 0.05,
+    baseline: tuple[float, float] = (-0.05, -0.005),
+    signal_window: tuple[float, float] = None,
+    picks: str = "eeg",
+):
+    """
+    Robust single-trial peak-amplitude SNR: max(|x|) in `signal_window` over
+    std(x) in `baseline`, median across trials, per channel. Designed to
+    anchor generative simulations based on median single-trial statistics.
+
+    Parameters
+    ----------
+    raw: mne.io.Raw
+        The raw continuous data.
+
+    events: array, shape (n_events, 3)
+        The MNE events array.
+
+    event_id: int
+        The id of the event to epoch around.
+
+    tmin, tmax: float
+        Total time window around the event. Must encompass both baseline
+        and signal windows completely.
+
+    baseline: tuple of float (start, end)
+        The time window to extract background noise from.
+
+    signal_window: tuple of float (start, end)
+        The time window where the spike peak is expected to occur. If None,
+        defaults to (0, tmax).
+
+    picks: str | list
+        Channels to include.
+
+    Returns
+    -------
+    snrs: np.ndarray
+        SNR per channel (median across trials).
+    """
+    data, signal_idx, baseline_idx = _epoch_for_snr(
+        raw, events, event_id, tmin, tmax, baseline, signal_window, picks,
+    )
+    single_trial_snr = peak_amplitude_snr(data, signal_idx, baseline_idx)
+    return np.median(single_trial_snr, axis=0)
+
+
+def estimate_raw_snr_peak_to_peak(
+    raw: mne.io.Raw,
+    events,
+    event_id: int = None,
+    tmin: float = -0.05,
+    tmax: float = 0.05,
+    baseline: tuple[float, float] = (-0.05, -0.005),
+    signal_window: tuple[float, float] = None,
+    picks: str = "eeg",
+):
+    """
+    Robust single-trial peak-to-peak SNR: (max(x)-min(x)) in `signal_window`
+    over the mean-rectified `baseline`, median across trials, per channel.
+    Matches the clinical iEEG spike-SNR convention (e.g. the electrode-size
+    study, PMC9990369): peak-to-peak amplitude within the spike's own
+    duration against the mean of the rectified background over a longer
+    window not containing the spike.
+
+    Parameters
+    ----------
+    raw: mne.io.Raw
+        The raw continuous data.
+
+    events: array, shape (n_events, 3)
+        The MNE events array.
+
+    event_id: int
+        The id of the event to epoch around.
+
+    tmin, tmax: float
+        Total time window around the event. Must encompass both baseline
+        and signal windows completely.
+
+    baseline: tuple of float (start, end)
+        The time window to extract background noise from.
+
+    signal_window: tuple of float (start, end)
+        The time window where the spike peak is expected to occur. If None,
+        defaults to (0, tmax).
+
+    picks: str | list
+        Channels to include.
+
+    Returns
+    -------
+    snrs: np.ndarray
+        SNR per channel (median across trials).
+    """
+    data, signal_idx, baseline_idx = _epoch_for_snr(
+        raw, events, event_id, tmin, tmax, baseline, signal_window, picks,
+    )
+    single_trial_snr = peak_to_peak_snr(data, signal_idx, baseline_idx)
+    return np.median(single_trial_snr, axis=0)
+
+
+def estimate_raw_snr_gfp(
+    raw: mne.io.Raw,
+    events,
+    event_id: int = None,
+    tmin: float = -0.05,
+    tmax: float = 0.05,
+    baseline: tuple[float, float] = (-0.05, -0.005),
+    signal_window: tuple[float, float] = None,
+    picks: str = "eeg",
+    noise_cov: mne.Covariance = None,
+):
+    """
+    Robust single-trial Global Field Power (GFP) SNR: max(GFP) in
+    `signal_window` over mean(GFP) in `baseline`, median across trials.
+    Unlike `estimate_raw_snr_peak`/`estimate_raw_snr_peak_to_peak`, GFP
+    already aggregates across channels (it's the spatial std at each time
+    point), so this returns a single value, not one per channel.
+
+    If `noise_cov` is provided, the data is whitened first (each channel
+    made ~unit-variance and decorrelated), giving pure-noise GFP a known
+    expected value of ~1.0 -- a much lower and more stable floor than
+    unwhitened GFP or any single-channel metric, since it also removes the
+    "pick the best channel" selection bias those are prone to.
+
+    Parameters
+    ----------
+    raw: mne.io.Raw
+        The raw continuous data.
+
+    events: array, shape (n_events, 3)
+        The MNE events array.
+
+    event_id: int
+        The id of the event to epoch around.
+
+    tmin, tmax: float
+        Total time window around the event. Must encompass both baseline
+        and signal windows completely.
+
+    baseline: tuple of float (start, end)
+        The time window to extract background noise from.
+
+    signal_window: tuple of float (start, end)
+        The time window where the spike peak is expected to occur. If None,
+        defaults to (0, tmax).
+
+    picks: str | list
+        Channels to include.
+
+    noise_cov: mne.Covariance, optional
+        If provided, data is whitened before computing GFP.
+
+    Returns
+    -------
+    snr: float
+        GFP SNR (median across trials).
+    """
+    data, signal_idx, baseline_idx = _epoch_for_snr(
+        raw, events, event_id, tmin, tmax, baseline, signal_window, picks,
     )
 
-    return snrs
+    if noise_cov is not None:
+        info = raw.copy().pick(picks).info
+        whitener, _ = mne.cov.compute_whitener(noise_cov, info, pca=False)
+        data = np.einsum("ij,ejt->eit", whitener, data)
+
+    single_trial_snr = gfp_snr(data, signal_idx, baseline_idx, channel_axis=-2)
+    return float(np.median(single_trial_snr, axis=0))
+
+
+def estimate_raw_snr_power(
+    raw: mne.io.Raw,
+    events,
+    event_id: int = None,
+    tmin: float = -0.05,
+    tmax: float = 0.05,
+    baseline: tuple[float, float] = (-0.05, -0.005),
+    signal_window: tuple[float, float] = None,
+    picks: str = "eeg",
+):
+    """
+    Robust single-trial mean-power-ratio SNR: mean(x**2) in `signal_window`
+    over mean(x**2) in `baseline`, median across trials, per channel. The
+    single-trial analogue of the power/dB convention reported for individual
+    spikes in the literature (e.g. Goldenholz et al., ~3-5dB single-trial
+    scalp EEG spikes, >10dB averaged). Returns the linear ratio; convert to
+    dB with `10*np.log10(snr)` if needed.
+
+    Parameters
+    ----------
+    raw: mne.io.Raw
+        The raw continuous data.
+
+    events: array, shape (n_events, 3)
+        The MNE events array.
+
+    event_id: int
+        The id of the event to epoch around.
+
+    tmin, tmax: float
+        Total time window around the event. Must encompass both baseline
+        and signal windows completely.
+
+    baseline: tuple of float (start, end)
+        The time window to extract background noise from.
+
+    signal_window: tuple of float (start, end)
+        The time window where the spike peak is expected to occur. If None,
+        defaults to (0, tmax).
+
+    picks: str | list
+        Channels to include.
+
+    Returns
+    -------
+    snrs: np.ndarray
+        SNR per channel (median across trials), linear ratio.
+    """
+    data, signal_idx, baseline_idx = _epoch_for_snr(
+        raw, events, event_id, tmin, tmax, baseline, signal_window, picks,
+    )
+    single_trial_snr, _ = power_snr(data, signal_idx, baseline_idx)
+    return np.median(single_trial_snr, axis=0)
+
+
+def estimate_raw_amplitude_peak(
+    raw: mne.io.Raw,
+    events,
+    event_id: int = None,
+    tmin: float = -0.05,
+    tmax: float = 0.05,
+    baseline: tuple[float, float] = (-0.05, -0.005),
+    signal_window: tuple[float, float] = None,
+    picks: str = "eeg",
+    to_uv: bool = True,
+):
+    """
+    Delivered single-trial peak amplitude, median across trials, per
+    channel -- the absolute-amplitude counterpart of `estimate_raw_snr_peak`,
+    reporting the same signal-window statistic SNRConfig(method="peak")
+    calibrates against, in physical units instead of a ratio.
+
+    Parameters
+    ----------
+    raw: mne.io.Raw
+        The raw continuous data.
+
+    events: array, shape (n_events, 3)
+        The MNE events array.
+
+    event_id: int
+        The id of the event to epoch around.
+
+    tmin, tmax: float
+        Total time window around the event. Must encompass both baseline
+        and signal windows completely.
+
+    baseline: tuple of float (start, end)
+        The time window to extract background noise from.
+
+    signal_window: tuple of float (start, end)
+        The time window where the spike peak is expected to occur. If None,
+        defaults to (0, tmax).
+
+    picks: str | list
+        Channels to include.
+
+    to_uv: bool
+        If True (default), convert from Volts to microvolts.
+
+    Returns
+    -------
+    amplitude: np.ndarray
+        Peak amplitude per channel (median across trials).
+    """
+    data, signal_idx, _ = _epoch_for_snr(
+        raw, events, event_id, tmin, tmax, baseline, signal_window, picks,
+    )
+    vals = peak_amplitude(data, signal_idx)
+    return np.median(vals * 1e6 if to_uv else vals, axis=0)
+
+
+def estimate_raw_amplitude_peak_to_peak(
+    raw: mne.io.Raw,
+    events,
+    event_id: int = None,
+    tmin: float = -0.05,
+    tmax: float = 0.05,
+    baseline: tuple[float, float] = (-0.05, -0.005),
+    signal_window: tuple[float, float] = None,
+    picks: str = "eeg",
+    to_uv: bool = True,
+):
+    """
+    Delivered single-trial peak-to-peak amplitude, median across trials,
+    per channel -- directly comparable to clinical interictal-spike
+    peak-to-peak literature figures (~50-300uV).
+
+    Parameters
+    ----------
+    raw: mne.io.Raw
+        The raw continuous data.
+
+    events: array, shape (n_events, 3)
+        The MNE events array.
+
+    event_id: int
+        The id of the event to epoch around.
+
+    tmin, tmax: float
+        Total time window around the event. Must encompass both baseline
+        and signal windows completely.
+
+    baseline: tuple of float (start, end)
+        The time window to extract background noise from.
+
+    signal_window: tuple of float (start, end)
+        The time window where the spike peak is expected to occur. If None,
+        defaults to (0, tmax).
+
+    picks: str | list
+        Channels to include.
+
+    to_uv: bool
+        If True (default), convert from Volts to microvolts.
+
+    Returns
+    -------
+    amplitude: np.ndarray
+        Peak-to-peak amplitude per channel (median across trials).
+    """
+    data, signal_idx, _ = _epoch_for_snr(
+        raw, events, event_id, tmin, tmax, baseline, signal_window, picks,
+    )
+    vals = peak_to_peak_amplitude(data, signal_idx)
+    return np.median(vals * 1e6 if to_uv else vals, axis=0)
+
+
+def estimate_raw_baseline_rms(
+    raw: mne.io.Raw,
+    events,
+    event_id: int = None,
+    tmin: float = -0.05,
+    tmax: float = 0.05,
+    baseline: tuple[float, float] = (-0.05, -0.005),
+    picks: str = "eeg",
+    to_uv: bool = True,
+):
+    """
+    Delivered single-trial baseline RMS (noise floor), median across
+    trials, per channel -- directly comparable to the ~10-20uV RMS
+    "background fluctuation" figure cited for scalp EEG, and the most
+    direct end-to-end check that NoiseConfig's calibration (folding together
+    sensor_noise's fixed contribution and dipole_noise's solved-for
+    contribution) produced a realistic delivered noise floor.
+
+    Parameters
+    ----------
+    raw: mne.io.Raw
+        The raw continuous data.
+
+    events: array, shape (n_events, 3)
+        The MNE events array.
+
+    event_id: int
+        The id of the event to epoch around.
+
+    tmin, tmax: float
+        Total time window around the event. Must encompass the baseline
+        window completely.
+
+    baseline: tuple of float (start, end)
+        The time window to measure the noise floor from.
+
+    picks: str | list
+        Channels to include.
+
+    to_uv: bool
+        If True (default), convert from Volts to microvolts.
+
+    Returns
+    -------
+    amplitude: np.ndarray
+        Baseline RMS per channel (median across trials).
+    """
+    data, _, baseline_idx = _epoch_for_snr(
+        raw, events, event_id, tmin, tmax, baseline, (0.0, tmax), picks,
+    )
+    vals = rms_amplitude(data, baseline_idx)
+    return np.median(vals * 1e6 if to_uv else vals, axis=0)
 
 
 

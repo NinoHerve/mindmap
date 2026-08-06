@@ -5,6 +5,7 @@ DOC String
 from abc import ABC, abstractmethod
 from pathlib import Path
 import json
+import warnings
 
 import numpy as np
 
@@ -161,8 +162,27 @@ class SpikeSignal(Signal):
         window[:w1+1] = np.hanning(w1 + 1) * 5
         window[w1-1:] = np.hanning(w2 + 1) * (-0.5) * 5
 
+        # 2b. Renormalize so a single, isolated spike's discrete peak always
+        # matches the nominal target (5, from the `*5` above) exactly. The
+        # independent int() truncation of w1/w2 makes the as-built window's
+        # actual peak drift from that target by an amount that isn't
+        # monotonic in `width` (measured up to ~30% at 250Hz) -- correcting
+        # it here keeps `scale` a reliable amplitude control regardless of
+        # width/sampling-rate combination.
+        window_peak = np.max(np.abs(window))
+        correction = 5.0 / window_peak if window_peak > 0 else 1.0
+        if abs(correction - 1.0) > 0.1:
+            warnings.warn(
+                f"SpikeSignal(width={self.width}s) is poorly resolved at {sfreq:.0f}Hz "
+                f"(discrete peak off by {100*(correction-1):.0f}% before correction); "
+                "the waveform shape may still be a rough approximation even though "
+                "its peak amplitude is now corrected. Consider a wider `width` or a "
+                "higher sampling rate.",
+                stacklevel=2,
+            )
+
         # 3. Convolve
-        data = np.convolve(train, window, mode="same") * self.scale
+        data = np.convolve(train, window, mode="same") * correction * self.scale
         return {"data": data, "events": train, "wavelet": window}
 
     def __str__(self):

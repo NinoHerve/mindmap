@@ -1,12 +1,12 @@
 """
 Module Name: viz/stats.py
-Description: Significance overlays for the `metric_box`/`metric_relational`
+Description: Significance overlays for the `metric_box`/`metric_line`
 plots in `mindmap/viz/core.py` -- asterisk/bracket annotations vs a fixed
 reference method on box plots (`mindmap.analysis.stats.compare_methods`'s
 output), and shaded significant-cluster spans on curve plots
 (`mindmap.analysis.stats.cluster_permutation_mne`'s output).
 
-Both plot into a single `Axes` (matching `metric_box`/`metric_relational`'s
+Both plot into a single `Axes` (matching `metric_box`/`metric_line`'s
 `ax=None -> (fig, ax)` convention), so there is no per-metric Axes lookup to
 do -- the caller is responsible for `df`/`results`/`clusters` already
 corresponding to a single metric.
@@ -19,7 +19,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-from mindmap.viz.core import metric_box, metric_relational
+from mindmap.viz.core import metric_box, metric_line
 
 
 def metric_box_significance(
@@ -140,13 +140,12 @@ def metric_relational_clusters(
     p_col: str = "p_value",
     alpha: float = 0.05,
     colors: dict = None,
-    kind: str = "line",
     palette=None, title=None,
     ax=None,
     **kwargs,
 ):
     """
-    Draws `metric_relational` and shades each significant cluster's
+    Draws `metric_line` and shades each significant cluster's
     `[f"{x}_start", f"{x}_end"]` span via `ax.axvspan`, colored by
     `clusters["sign"]` -- directly analogous to the `ax.axvspan(...)` cells
     in the superseded `pilot_noise_cluster_permutation.ipynb` /
@@ -179,8 +178,8 @@ def metric_relational_clusters(
         `sign > 0` / `sign < 0` clusters. Defaults to
         `{"positive": "tab:green", "negative": "tab:red"}`.
 
-    group_name, kind, palette, title, ax
-        Forwarded to `metric_relational`.
+    group_name, palette, title, ax
+        Forwarded to `metric_line`.
 
     Returns
     -------
@@ -188,7 +187,7 @@ def metric_relational_clusters(
     """
     colors = colors or {"positive": "tab:green", "negative": "tab:red"}
 
-    fig, ax = metric_relational(df, x=x, group_name=group_name, kind=kind, palette=palette, title=title, ax=ax, **kwargs)
+    fig, ax = metric_line(df, x=x, group_name=group_name, palette=palette, title=title, ax=ax, **kwargs)
 
     sig = clusters[clusters[p_col] < alpha] if p_col in clusters.columns else clusters
 
@@ -261,7 +260,7 @@ def metric_relational_cluster_summary(
     filled/open styling that actually carries the significance result.
 
     Computes each method's median curve directly via pandas (not through
-    seaborn/`metric_relational`, unlike every other function in this module)
+    seaborn/`metric_line`, unlike every other function in this module)
     because per-segment styling needs the actual (x, median) arrays in hand
     to draw one `ax.plot` call per segment, rather than one call for the
     whole curve.
@@ -274,11 +273,12 @@ def metric_relational_cluster_summary(
 
     clusters_by_competitor: dict[str, pd.DataFrame]
         `{competitor_name: clusters_df}`, one entry per competitor --
-        typically built by calling `MetricSuite.cluster_permutation(...,
-        plot=False)["clusters"]` once per competitor (see
-        `MetricSuite.cluster_permutation_summary`, which does exactly that). Each
-        `clusters_df` has `mindmap.analysis.stats.cluster_permutation_mne`'s
-        columns: `f"{x}_start"`, `f"{x}_end"`, "sign", `p_col`.
+        typically built from `MetricSuite.cluster_permutation(..., comparisons=[...])`'s
+        returned `ClusterResult.clusters_by_pair` (see
+        `MetricSuite.plot_cluster_permutation`, which does exactly that
+        whenever more than one pair is requested). Each `clusters_df` has
+        `mindmap.analysis.stats.cluster_permutation_mne`'s columns:
+        `f"{x}_start"`, `f"{x}_end"`, "sign", `p_col`.
 
     x: str
         Coordinate column, same as `coord_col` passed to whatever produced

@@ -884,6 +884,186 @@ def get_gfp(data, axis=0):
     return np.std(data, axis=axis)
 
 
+def peak_amplitude_snr(data, signal_idx, baseline_idx):
+    """
+    Peak-amplitude SNR: max(|x|) in the signal window over std(x) in the baseline.
+
+    Parameters
+    ----------
+    data: np.ndarray of shape (..., n_times)
+        Broadcasts over any leading dims (e.g. (n_channels, n_times) for one
+        trial, or (n_epochs, n_channels, n_times) for many).
+
+    signal_idx, baseline_idx: tuple[int, int]
+        (start, stop) sample indices for the signal and baseline windows.
+
+    Returns
+    -------
+    snr: np.ndarray of shape (...)
+    """
+    s0, s1 = signal_idx
+    b0, b1 = baseline_idx
+    peak = np.max(np.abs(data[..., s0:s1]), axis=-1)
+    noise = np.std(data[..., b0:b1], axis=-1)
+    return np.divide(peak, noise, out=np.zeros_like(peak), where=noise != 0)
+
+
+def peak_to_peak_snr(data, signal_idx, baseline_idx):
+    """
+    Peak-to-peak SNR: (max(x)-min(x)) in the signal window over the
+    mean-rectified (mean of |x|) baseline. Matches the clinical iEEG spike-SNR
+    convention (e.g. the electrode-size study, PMC9990369), which measures
+    peak-to-peak amplitude within a spike's own duration against the mean of
+    the rectified background over a longer window not containing the spike.
+
+    Parameters
+    ----------
+    data: np.ndarray of shape (..., n_times)
+
+    signal_idx, baseline_idx: tuple[int, int]
+        (start, stop) sample indices for the signal and baseline windows.
+
+    Returns
+    -------
+    snr: np.ndarray of shape (...)
+    """
+    s0, s1 = signal_idx
+    b0, b1 = baseline_idx
+    peak_to_peak = np.max(data[..., s0:s1], axis=-1) - np.min(data[..., s0:s1], axis=-1)
+    noise = np.mean(np.abs(data[..., b0:b1]), axis=-1)
+    return np.divide(peak_to_peak, noise, out=np.zeros_like(peak_to_peak), where=noise != 0)
+
+
+def gfp_snr(data, signal_idx, baseline_idx, channel_axis=-2):
+    """
+    Global Field Power SNR: max(GFP) in the signal window over mean(GFP) in
+    the baseline, where GFP is the spatial std across channels at each time
+    point (`get_gfp`). Unlike `peak_amplitude_snr`/`peak_to_peak_snr`, this
+    already aggregates across channels, so it returns one value per leading
+    dim rather than one per channel -- e.g. shape (n_epochs,) for a
+    (n_epochs, n_channels, n_times) input, not (n_epochs, n_channels).
+
+    If `data` has already been whitened by a noise covariance (so each
+    channel's noise is ~unit-variance and decorrelated), pure-noise GFP has a
+    known expected value of ~1.0, giving a stable, low, and analytically
+    understood floor (see `mindmap/viz/sensor.py`'s `plot_gfp`, which plots
+    this same "Expected Noise Floor" at 1.0).
+
+    Parameters
+    ----------
+    data: np.ndarray of shape (..., n_channels, n_times)
+        Channels are expected at `channel_axis`.
+
+    signal_idx, baseline_idx: tuple[int, int]
+        (start, stop) sample indices for the signal and baseline windows.
+
+    channel_axis: int
+        Axis holding channels, collapsed by `get_gfp`. Default -2, matching
+        (..., n_channels, n_times).
+
+    Returns
+    -------
+    snr: np.ndarray with `channel_axis` removed.
+    """
+    gfp = get_gfp(data, axis=channel_axis)  # (..., n_times)
+    s0, s1 = signal_idx
+    b0, b1 = baseline_idx
+    peak = np.max(gfp[..., s0:s1], axis=-1)
+    noise = np.mean(gfp[..., b0:b1], axis=-1)
+    return np.divide(peak, noise, out=np.zeros_like(peak), where=noise != 0)
+
+
+def power_snr(data, signal_idx, baseline_idx):
+    """
+    Mean-power ratio SNR (+ dB): the single-trial analogue of the power/dB
+    convention reported for individual spikes in the literature (e.g.
+    Goldenholz et al., ~3-5dB single-trial scalp EEG spikes, >10dB averaged).
+
+    Parameters
+    ----------
+    data: np.ndarray of shape (..., n_times)
+
+    signal_idx, baseline_idx: tuple[int, int]
+        (start, stop) sample indices for the signal and baseline windows.
+
+    Returns
+    -------
+    snr, snr_db: tuple[np.ndarray, np.ndarray] of shape (...)
+    """
+    s0, s1 = signal_idx
+    b0, b1 = baseline_idx
+    signal_power = np.mean(data[..., s0:s1] ** 2, axis=-1)
+    noise_power = np.mean(data[..., b0:b1] ** 2, axis=-1)
+    snr = np.divide(signal_power, noise_power, out=np.zeros_like(signal_power), where=noise_power != 0)
+    snr_db = np.full_like(snr, -np.inf)
+    np.log10(snr, out=snr_db, where=snr > 0)
+    snr_db *= 10
+    return snr, snr_db
+
+
+def peak_amplitude(data, signal_idx):
+    """
+    Peak (single-sided) amplitude: max(|x|) in the signal window. The
+    absolute-amplitude analogue of `peak_amplitude_snr`, without dividing by
+    a baseline noise estimate.
+
+    Parameters
+    ----------
+    data: np.ndarray of shape (..., n_times)
+
+    signal_idx: tuple[int, int]
+        (start, stop) sample indices for the signal window.
+
+    Returns
+    -------
+    amplitude: np.ndarray of shape (...)
+    """
+    s0, s1 = signal_idx
+    return np.max(np.abs(data[..., s0:s1]), axis=-1)
+
+
+def peak_to_peak_amplitude(data, signal_idx):
+    """
+    Peak-to-peak amplitude: max(x)-min(x) in the signal window. The
+    absolute-amplitude analogue of `peak_to_peak_snr` -- matches the
+    clinical convention spike amplitudes are usually reported in (e.g. the
+    <50/50-100/100-150/>150uV interictal spike bands).
+
+    Parameters
+    ----------
+    data: np.ndarray of shape (..., n_times)
+
+    signal_idx: tuple[int, int]
+        (start, stop) sample indices for the signal window.
+
+    Returns
+    -------
+    amplitude: np.ndarray of shape (...)
+    """
+    s0, s1 = signal_idx
+    return np.max(data[..., s0:s1], axis=-1) - np.min(data[..., s0:s1], axis=-1)
+
+
+def rms_amplitude(data, window_idx):
+    """
+    RMS amplitude (std) within a window -- the standard way scalp EEG
+    "noise floor" is reported in the literature (~10-20uV RMS).
+
+    Parameters
+    ----------
+    data: np.ndarray of shape (..., n_times)
+
+    window_idx: tuple[int, int]
+        (start, stop) sample indices for the window.
+
+    Returns
+    -------
+    amplitude: np.ndarray of shape (...)
+    """
+    w0, w1 = window_idx
+    return np.std(data[..., w0:w1], axis=-1)
+
+
 def compute_cog_trajectory(data:np.ndarray, pos:np.ndarray) -> np.ndarray:
     """
     Compute the 3D Center of Gravity trajectory over time.

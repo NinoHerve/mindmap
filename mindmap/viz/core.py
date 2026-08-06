@@ -578,11 +578,90 @@ def metric_bar(df, group_name="Method", order=None, palette="magma", title=None,
     return fig, ax
 
 
+def metric_distribution(df, group_name=None, palette=None, title=None, ax=None, **kwargs):
+    """
+    Kernel-density estimate of "Value"'s distribution -- unlike
+    `metric_box`/`metric_violin`/`metric_bar`, `group_name` here is an
+    optional color overlay (`sns.kdeplot`'s `hue`), not a required x-axis
+    category: "Value" itself is the x-axis, so a single ungrouped curve is
+    just as meaningful as several overlaid ones.
+
+    Plots exactly the rows in `df` (one metric's worth -- filtering to a
+    single metric is the caller's responsibility), onto a single `Axes`.
+
+    Parameters
+    ----------
+    df: pd.DataFrame
+        The tidy dataframe.
+
+    group_name: str, optional
+        Column for color encoding -- when given, draws one filled,
+        translucent curve per group, independently normalized
+        (`common_norm=False`) so shapes are directly comparable regardless
+        of group size, overlaid rather than faceted. Omit for one curve
+        over the whole population.
+
+    palette: str | list | dict
+        Color palette for the `group_name` levels.
+
+    title: str, optional
+        Axes title.
+
+    ax: matplotlib.axes.Axes, optional
+        Axes to plot into. A new figure/axes is created if not given.
+
+    Returns
+    -------
+    (matplotlib.figure.Figure, matplotlib.axes.Axes)
+    """
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.get_figure()
+
+    defaults = {"fill": True, "common_norm": False, "alpha": 0.35, "linewidth": 1.5}
+    params = {**defaults, **kwargs}
+
+    sns.kdeplot(data=df, x="Value", hue=group_name, palette=palette, ax=ax, **params)
+    if title:
+        ax.set_title(title)
+
+    return fig, ax
+
+
+def metric_histogram(df, group_name=None, palette=None, title=None, ax=None, **kwargs):
+    """
+    Histogram of "Value" -- unlike `metric_box`/`metric_violin`/`metric_bar`,
+    `group_name` here is an optional color overlay (`sns.histplot`'s `hue`),
+    not a required x-axis category: "Value" itself is the x-axis, so a
+    single ungrouped histogram is just as meaningful as several overlaid
+    ones. See `metric_distribution` for the shared parameters/return shape.
+
+    !!! note "Technical details"
+        `multiple="layer"` (overlapping, not stacked/side-by-side) with a
+        translucent `alpha` is the default when `group_name` is given, so
+        overlapping bars stay readable instead of hiding each other.
+    """
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.get_figure()
+
+    defaults = {"multiple": "layer", "alpha": 0.4}
+    params = {**defaults, **kwargs}
+
+    sns.histplot(data=df, x="Value", hue=group_name, palette=palette, ax=ax, **params)
+    if title:
+        ax.set_title(title)
+
+    return fig, ax
+
+
 def metric_heatmap(df, group_name="Method", cmap="RdYlGn", title=None, figsize=(10, 6), ax=None, **kwargs):
     """
     Default style: Clean matrix with centered annotations.
 
-    Unlike `metric_box`/`metric_violin`/`metric_bar`/`metric_relational`,
+    Unlike `metric_box`/`metric_violin`/`metric_bar`/`metric_line`/`metric_scatter`,
     this plots multiple metrics at once by design -- "Metric" as columns is
     the actual feature (a metric x group summary matrix), not incidental
     faceting, so it's exempt from the "one metric per call" convention the
@@ -624,13 +703,37 @@ def metric_heatmap(df, group_name="Method", cmap="RdYlGn", title=None, figsize=(
     return fig, ax
 
 
-def metric_relational(df, x, group_name=None, kind="line", palette=None, title=None, ax=None, **kwargs):
+def _metric_relational(df, x, plot_func, group_name=None, palette=None, title=None, ax=None, **kwargs):
+    """Shared body for `metric_line`/`metric_scatter` -- only the seaborn plotting function differs between them."""
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.get_figure()
+
+    is_numeric = pd.api.types.is_numeric_dtype(df[x])
+    if not is_numeric:
+        df = df.sort_values(x)
+
+    plot_func(data=df, x=x, y="Value", hue=group_name, palette=palette, ax=ax, **kwargs)
+
+    if not is_numeric:
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+
+    ax.set_xlabel(x)
+    if title:
+        ax.set_title(title)
+
+    return fig, ax
+
+
+def metric_line(df, x, group_name=None, palette=None, title=None, ax=None, **kwargs):
     """
-    Line/scatter plot of "Value" against an explicit x-axis coordinate.
+    Line plot (`sns.lineplot`) of "Value" against an explicit x-axis
+    coordinate.
 
     Plots exactly the rows in `df` (one metric's worth -- filtering to a
     single metric is the caller's responsibility, e.g.
-    `MetricSuite.plot(metric=..., x=...)`), onto a single `Axes`.
+    `MetricSuite.plot.line(metric=..., x=...)`), onto a single `Axes`.
 
     Parameters
     ----------
@@ -643,9 +746,6 @@ def metric_relational(df, x, group_name=None, kind="line", palette=None, title=N
     group_name: str
         Column for color encoding (e.g. "Label") -- same name/role as
         `metric_box`'s `group_name`, for a consistent API across plot kinds.
-
-    kind: str
-        "line" (default, `sns.lineplot`) or "scatter" (`sns.scatterplot`).
 
     palette: str | list | dict
         Color palette for the `group_name` levels.
@@ -660,23 +760,14 @@ def metric_relational(df, x, group_name=None, kind="line", palette=None, title=N
     -------
     (matplotlib.figure.Figure, matplotlib.axes.Axes)
     """
-    if ax is None:
-        fig, ax = plt.subplots()
-    else:
-        fig = ax.get_figure()
+    return _metric_relational(df, x, sns.lineplot, group_name=group_name, palette=palette, title=title, ax=ax, **kwargs)
 
-    is_numeric = pd.api.types.is_numeric_dtype(df[x])
-    if not is_numeric:
-        df = df.sort_values(x)
 
-    plot_func = sns.lineplot if kind == "line" else sns.scatterplot
-    plot_func(data=df, x=x, y="Value", hue=group_name, palette=palette, ax=ax, **kwargs)
+def metric_scatter(df, x, group_name=None, palette=None, title=None, ax=None, **kwargs):
+    """
+    Scatter plot (`sns.scatterplot`) of "Value" against an explicit x-axis
+    coordinate.
 
-    if not is_numeric:
-        plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
-
-    ax.set_xlabel(x)
-    if title:
-        ax.set_title(title)
-
-    return fig, ax
+    See `metric_line` for the shared parameters/return shape.
+    """
+    return _metric_relational(df, x, sns.scatterplot, group_name=group_name, palette=palette, title=title, ax=ax, **kwargs)

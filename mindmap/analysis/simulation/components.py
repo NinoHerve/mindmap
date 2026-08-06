@@ -248,23 +248,43 @@ class HeadModel:
         conduction_speed: float = 500,
         nodal_delay: float = 0.1,
         jitter: float = 0.0,
+        u_fiber_speed: float | None = None,
+        u_fiber_max_length: float | None = None,
     ):
         """
         Compute delay with uncertainties.
-        
+
         Parameter
         ---------
         source_idx: int
             Source index.
-        
+
         - conduction_speed: float
-            Conduction speed in [mm/ms]
+            Conduction speed in [mm/ms], used for edges longer than
+            `u_fiber_max_length` (or all edges if the U-fiber split is disabled).
 
         - node_delay: float
             Nodal delay in [ms].
 
         jitter: float
-            Uncertainty of delay (standard deviation in [ms]).
+            Per-hop delay uncertainty (standard deviation, in [ms]). Applied
+            once per graph edge on the shortest path and accumulated along
+            it -- like `nodal_delay` -- rather than as a single perturbation
+            of the total path delay. Independent per-hop noise sums in
+            quadrature, so the realized total-delay std scales as
+            `jitter * sqrt(hops)`, not `jitter` alone: a target reached in
+            many hops picks up proportionally more timing uncertainty than
+            one reached directly, matching how compounding relay-to-relay
+            jitter would actually behave physically.
+
+        - u_fiber_speed: float or None
+            Conduction speed in [mm/ms] for short, U-fiber-like edges. If None
+            (default), the U-fiber split is disabled and `conduction_speed` is
+            applied uniformly to every edge.
+
+        - u_fiber_max_length: float or None
+            Edge length in [mm] at or below which `u_fiber_speed` is used
+            instead of `conduction_speed`. Ignored if `u_fiber_speed` is None.
 
         Returns
         -------
@@ -272,9 +292,14 @@ class HeadModel:
             Delays from source with added uncertainties.
         """
         # edge delay matrix
-        delays = self._lengths / conduction_speed
+        delays = self._lengths.copy()
+        if u_fiber_speed is not None and u_fiber_max_length is not None:
+            speeds = np.where(delays.data <= u_fiber_max_length, u_fiber_speed, conduction_speed)
+            delays.data = delays.data / speeds
+        else:
+            delays.data = delays.data / conduction_speed
         delays.data += nodal_delay
-        
+
         # dijkstra returns a (N,) array of distances from the source_idx
         delays_from_source = dijkstra(
             csgraph = delays,
@@ -284,7 +309,15 @@ class HeadModel:
         ).squeeze()
 
         if jitter > 0:
-            delays_from_source += np.random.normal(0, jitter, size=delays_from_source.size)
+            # Path SELECTION stays deterministic (based on the mean edge
+            # weights above) -- only the total delay along that fixed,
+            # anatomically-real path becomes noisy. This mirrors how
+            # `spatial_decay`'s hop count is computed: reuse the same
+            # unweighted shortest-path hop count so per-hop jitter variance
+            # (hops * jitter**2) accumulates consistently with nodal_delay's
+            # own per-hop accounting.
+            hops = self.compute_distance_from_source(source_idx, weight="hop")
+            delays_from_source += np.random.normal(0, jitter, size=delays_from_source.size) * np.sqrt(hops)
 
         return delays_from_source
 

@@ -14,12 +14,51 @@ from pathlib import Path
 import importlib
 from typing import Any
 import os
+import uuid
 import zipfile
 
 import yaml
 import numpy as np
 import pandas as pd
 from numpy.lib import format as npy_format
+
+
+def atomic_replace(path: Path, write_func):
+    """
+    Writes `path` by first calling `write_func(tmp_path)` to fully write the
+    content to a temporary sibling file, then atomically replacing `path`
+    with it via `os.replace` (atomic on both POSIX and Windows).
+
+    Guarantees `path` is always either its previous complete content or the
+    new complete content -- never a truncated/partial file -- even if the
+    process is killed mid-write. Plain `open(path, "w")` / `np.savez(path)`
+    truncate the destination immediately, so a crash mid-write would
+    otherwise destroy the previous good save, not just fail to add the new
+    one.
+
+    `tmp_path` keeps `path`'s full original filename as its tail (only a
+    unique token is prefixed), since some writers (numpy, MNE) validate or
+    auto-append a specific suffix -- e.g. MNE's source-space writer checks
+    for a "-src.fif" ending, which a token spliced in before the extension
+    would break, but a prefix never touches.
+    """
+    path = Path(path)
+    tmp_path = path.with_name(f".tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}-{path.name}")
+    try:
+        write_func(tmp_path)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def json_safe(val):
+    """Converts numpy/pandas scalars into plain JSON-serializable Python types."""
+    if isinstance(val, np.generic):
+        return val.item()
+    if isinstance(val, (np.bool_, bool)):
+        return bool(val)
+    return val
 
 
 def read_config(file: str | Path, env: bool = True) -> dict[str, Any]:

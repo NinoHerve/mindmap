@@ -15,7 +15,7 @@ import mne
 
 from mindmap.io import DatasetManager
 from mindmap.analysis.simulation.components import Source
-from mindmap.analysis.simulation.engine import Simulator, PropagationConfig
+from mindmap.analysis.simulation.engine import Simulator, PropagationConfig, SNRConfig, NoiseConfig
 from mindmap.tasks import Task, read_simulator
 
 
@@ -58,6 +58,8 @@ def _zero_scale_source(reference: Source) -> Source:
 def _run_one(
     simulator_dir: Path,
     prop_config: PropagationConfig,
+    snr_config: SNRConfig | None,
+    noise_config: NoiseConfig | None,
     src: Source,
     snr_target: float | None,
     count: int,
@@ -91,7 +93,7 @@ def _run_one(
     # ---------------
     # Run simulation
     # ---------------
-    gold, raw = simulator.run(src, prop_config, snr_target=snr_target)
+    gold, raw = simulator.run(src, prop_config, snr_target=snr_target, snr_config=snr_config, noise_config=noise_config)
 
     # -----------------------------------------
     # Process EEG (Referencing, Epoching, Cov)
@@ -142,6 +144,12 @@ def _run_one(
     source_label = "noise-only" if snr_target is None else \
         [str(item) for item in np.atleast_1d(src.loc)]
 
+    # Resolve to the same default the calibration itself falls back to, so
+    # the logged method/windows always reflect what was actually used (not
+    # just what was explicitly passed).
+    snr_cfg_log = snr_config if snr_config is not None else SNRConfig()
+    noise_cfg_log = noise_config if noise_config is not None else NoiseConfig()
+
     # Record metrics, parameters, and targets for the tracking registry
     return {
         "run": count,
@@ -149,7 +157,26 @@ def _run_one(
         "source_index_list": source_label, # Tracks active brain region
         "signal_type": src.signal.name,
         "target_snr": snr_target,
+        "snr_method": snr_cfg_log.method,
+        "snr_spike_window": snr_cfg_log.spike_window,
+        "snr_baseline": snr_cfg_log.baseline,
+        "snr_whiten": snr_cfg_log.whiten,
+        "snr_channel_selection": snr_cfg_log.channel_selection,
+        # Which channel(s) calibration actually locked onto (None for
+        # method="gfp" or channel_selection="all") -- re-measuring this run's
+        # SNR MUST use these same picks, or a fresh max-over-all-channels
+        # search reintroduces the winner's-curse bias calibration avoided.
+        "snr_picks": simulator.last_snr_picks,
+        "sensor_noise_scale_uv": noise_cfg_log.sensor_noise_scale_uv,
+        "target_sensor_noise_uv": noise_cfg_log.target_sensor_noise_uv,
+        "sensor_noise_color": noise_cfg_log.sensor_noise_color,
+        "dipole_noise_color": noise_cfg_log.dipole_noise_color,
+        # The actual solved dipole_noise Am-scale for this run (head-model-
+        # dependent, not a fixed config value) -- see NoiseConfig's docstring.
+        "dipole_noise_scale": simulator.last_dipole_noise_scale,
         "conduction_speed": prop_config.conduction_speed,
+        "u_fiber_speed": prop_config.u_fiber_speed,
+        "u_fiber_max_length": prop_config.u_fiber_max_length,
         "spatial_decay": prop_config.spatial_decay,
         "run_seed": run_seed,
         "ave_file": Path(fave).name,
@@ -167,6 +194,8 @@ def generate_simulation_dataset(
     prop_config: PropagationConfig,
     repetitions: int,
     snr_targets: list[float | None] = (10.0,),
+    snr_config: SNRConfig = None,
+    noise_config: NoiseConfig = None,
     entities: dict = None,
     base_seed: int = 42,
     n_jobs: int = 1,
@@ -194,6 +223,16 @@ def generate_simulation_dataset(
 
     repetitions: int
         Number of repetitions per source (and per noise-only run, if requested).
+
+    snr_config: SNRConfig
+        Controls which SNR estimator/windows the calibration targets for
+        every run in this dataset. Defaults to `SNRConfig()` (peak-amplitude
+        estimator, `EpochConfig` windows) when None -- see `Simulator.run`.
+
+    noise_config: NoiseConfig
+        Controls the absolute physical scale/color of the two noise sources
+        for every run in this dataset. Defaults to `NoiseConfig()` (15uV RMS
+        total sensor-level background) when None -- see `Simulator.run`.
 
     snr_targets: list[float | None]
         Target Signal to noise ratio(s) for single trial. Each value is run against
@@ -266,7 +305,7 @@ def generate_simulation_dataset(
     # receiving the live object, and sets np.random.seed in its own process, so
     # there's no cross-task race on numpy's global RNG state.
     results = Parallel(n_jobs=n_jobs)(
-        delayed(_run_one)(simulator_dir, prop_config, *task)
+        delayed(_run_one)(simulator_dir, prop_config, snr_config, noise_config, *task)
         for task in tqdm(tasks, desc=f"sub-{subject}")
     )
 
