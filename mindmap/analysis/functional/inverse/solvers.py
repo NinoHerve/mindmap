@@ -25,7 +25,7 @@ import pyxu.opt.stop as pxst
 from pyxu.opt.solver import PGD
 
 from .io import make_stc
-from .utils import compute_harmonic_prior, compute_depth_prior, DEFAULT_LOWPASS_BETA
+from .utils import compute_harmonic_prior, compute_depth_prior, DEFAULT_LOWPASS_BETA, DEFAULT_LOGPASS_BETA
 
 
 # --------------------------------------------
@@ -270,7 +270,7 @@ class MNE:
 
 class wCSET(MNE):
     """weighted Connectome Electromagnetic Tomography"""
-    def __init__(self, eigenvectors, eigenvalues, harm=None, harmonic_method="gap", **kwargs):
+    def __init__(self, eigenvectors, eigenvalues, harm=None, harmonic_method="gap", cutoff=None, **kwargs):
         """
         Parameters
         ----------
@@ -289,18 +289,32 @@ class wCSET(MNE):
             `compute_harmonic_prior.DEFAULT_LOWPASS_BETA` for
             `harmonic_method="lowpass"` (a starting point from the
             structure-function coupling literature, not a tuned value --
-            see that constant's comment in utils.py for the reasoning), or
-            to 1 for `harmonic_method="gap-spectrum"` (no tuned value yet --
-            same neutral "full-strength" default `compute_harmonic_prior`
-            itself falls back to).
+            see that constant's comment in utils.py for the reasoning), to
+            `compute_harmonic_prior.DEFAULT_LOGPASS_BETA` for
+            `harmonic_method="logpass"` (an inert placeholder -- this value
+            has NO effect on the reconstruction, see that constant's
+            comment in utils.py), or to 1 for `harmonic_method="gap-spectrum"`
+            (no tuned value yet -- same neutral "full-strength" default
+            `compute_harmonic_prior` itself falls back to).
 
         harmonic_method: str
             Which `compute_harmonic_prior` weighting scheme to use: "gap"
             (default, preserves this class's original behavior), "lowpass"
-            (exponential low-pass filter on eigenvalue magnitude), or
-            "gap-spectrum" (smoothing-spline version of "gap") -- see
+            (exponential low-pass filter on eigenvalue magnitude),
+            "gap-spectrum" (smoothing-spline version of "gap"), or "logpass"
+            (logarithmic spectral prior, Wang et al. 2026 Nat Biomed Eng's
+            GBF paper -- flat-then-wall shape over a hard-truncated set of
+            modes, rather than "lowpass"'s uniform geometric decay) -- see
             `compute_harmonic_prior`'s docstring for the motivation behind
             each.
+
+        cutoff: int, optional
+            Number of retained eigenmodes -- see `compute_harmonic_prior`'s
+            `cutoff` parameter for full semantics. Optional, pure truncation
+            for "gap"/"lowpass"/"gap-spectrum" (defaults to None, no
+            truncation). REQUIRED for `harmonic_method="logpass"` -- left at
+            its default None here, `.solve()` will raise a `ValueError` from
+            `compute_harmonic_prior` (e.g. pass `cutoff=300`, the paper's `S`).
 
         kwargs: dict
             Any parameters used in mindmap's MNE class.
@@ -310,6 +324,8 @@ class wCSET(MNE):
                 harm = 0.7
             elif harmonic_method == "lowpass":
                 harm = DEFAULT_LOWPASS_BETA
+            elif harmonic_method == "logpass":
+                harm = DEFAULT_LOGPASS_BETA
             else:
                 harm = 1
 
@@ -317,6 +333,7 @@ class wCSET(MNE):
         self.e = eigenvalues
         self.harm = harm
         self.harmonic_method = harmonic_method
+        self.cutoff = cutoff
 
         super().__init__(**kwargs)
 
@@ -330,7 +347,7 @@ class wCSET(MNE):
         w_depth = compute_depth_prior(gain_whitened, self.depth_coeff)
 
         # harmonic weighting
-        w_harm = compute_harmonic_prior(self.e, relaxation=self.harm, method=self.harmonic_method)
+        w_harm = compute_harmonic_prior(self.e, relaxation=self.harm, method=self.harmonic_method, cutoff=self.cutoff)
 
         # inverse prior mixing matrix
         return w_depth[:, np.newaxis] * (self.U * w_harm)

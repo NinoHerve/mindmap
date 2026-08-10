@@ -8,6 +8,7 @@ Last Modified: 2025-10-24
 License: MIT
 """
 
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +35,32 @@ from scipy.interpolate import LSQUnivariateSpline
 # across a real resolution gap, not a validated value for this pipeline --
 # a starting point to tune from, not a settled answer.
 DEFAULT_LOWPASS_BETA = 1.0
+
+
+# Placeholder beta for compute_harmonic_prior's "logpass" method. Unlike
+# DEFAULT_LOWPASS_BETA, this value has NO effect on the reconstructed source
+# estimate: wCSET.prepare_kernel renormalizes w_source by
+# sqrt(rank/trace(gain_weighted @ gain_weighted.T)) before the SVD, which
+# exactly cancels any global multiplicative constant applied to w_source --
+# and beta enters "logpass"'s weight formula as exactly such a constant
+# (weight_k = sqrt(-log(lambda_tilde_k) / beta), i.e. beta factors out as a
+# uniform 1/sqrt(beta) across every k, unlike "lowpass"'s exp(-beta*eigval)
+# where beta sits inside a per-k exponent and genuinely reshapes relative
+# weighting). Kept in the signature purely for parity with "lowpass" /
+# paper-fidelity (Wang et al. 2026, Nat Biomed Eng, Extended Data Fig. 1g's
+# "near beta=0.1"), not because it does anything here.
+DEFAULT_LOGPASS_BETA = 1.0
+
+# Clip floor for the normalized eigenvalue ratio in "logpass", guarding the
+# lambda->0 singularity in -log(lambda) at the DC/constant mode
+# (eigvals[0] == 0 by construction in both compute_cst and
+# compute_beltrami_harmonics -- two such modes for the mesh basis, one per
+# disconnected hemisphere). Pure floating-point necessity, not a design
+# choice -- same floor already used in wCSET.estimate_lambda2's
+# `np.maximum(signal_power, 1e-8)`. Internal only, not exposed as a
+# parameter: unlike `cutoff` this isn't "the paper's S", it's just what
+# standing in for an undefined log(0) requires.
+_LOGPASS_EPS = 1e-8
 
 
 def _spline_gap_spectrum(eigvals: np.ndarray) -> np.ndarray:
@@ -73,12 +100,32 @@ def _spline_gap_spectrum(eigvals: np.ndarray) -> np.ndarray:
     return np.clip(gap_spectrum, a_min=0, a_max=None)
 
 
+def _apply_cutoff(weights: np.ndarray, cutoff: int) -> np.ndarray:
+    """
+    Zero out weights at and beyond `cutoff`. Shared post-processing for the
+    "gap"/"lowpass"/"gap-spectrum" methods of compute_harmonic_prior, where
+    cutoff is a pure optional truncation (unlike "logpass", where cutoff
+    also sets the normalization reference and is handled inline there
+    instead of through this helper).
+    """
+    if cutoff is None:
+        return weights
+    if not (0 < cutoff <= len(weights)):
+        raise ValueError(
+            f"compute_harmonic_prior: cutoff={cutoff} out of range for "
+            f"eigvals of length {len(weights)}"
+        )
+    weights = weights.copy()
+    weights[cutoff:] = 0
+    return weights
+
+
 # harmonic prior
-def compute_harmonic_prior(eigvals : np.ndarray, relaxation : float = None, method : str = "gap") -> np.ndarray:
+def compute_harmonic_prior(eigvals : np.ndarray, relaxation : float = None, method : str = "gap", cutoff : int = None) -> np.ndarray:
     """
     Compute the harmonic prior according to eigenvalues.
 
-    Three weighting schemes, selected via `method`:
+    Four weighting schemes, selected via `method`:
 
     - "gap" (default -- preserves existing behavior for all current callers):
       weights each eigenvalue by its LOCAL GAP to its neighbors in the sorted
@@ -119,10 +166,40 @@ def compute_harmonic_prior(eigvals : np.ndarray, relaxation : float = None, meth
       both favored, degenerate suppressed) without needing "gap"'s
       `weights[5000:]` patch.
 
+    - "logpass": `weights = sqrt(-log(eigvals_tilde) / relaxation)` over the
+      first `cutoff` eigenvalues (all later ones get weight exactly 0), where
+      `eigvals_tilde = clip(eigvals[:cutoff] / eigvals[cutoff-1], eps, 1)` --
+      the logarithmic spectral prior from Wang et al. 2026 (Nat Biomed Eng,
+      "A geometry aware framework enhances noninvasive mapping of whole human
+      brain dynamics", the GBF paper), `Sigma^-1 = diag(-beta/log(lambda))`
+      (their Eq. 5) applied to their first `S=300` Laplace-Beltrami modes
+      (their Eq. 2). This function returns weights in the same
+      eigenvector-rescaling convention as "lowpass"/"gap" (i.e.
+      `weight_k = sqrt(Sigma_kk)`, the standard weighted-minimum-norm
+      equivalent of a Gaussian prior with covariance `Sigma`), not `Sigma^-1`
+      itself.
+
+      Qualitatively different shape from "lowpass": nearly flat across most
+      of the retained spectrum, then a steep wall right at the cutoff
+      boundary (`eigvals_tilde -> 1`), rather than "lowpass"'s uniform
+      geometric decay across the whole range.
+
+      IMPORTANT: unlike every other method here, `relaxation` (the paper's
+      beta) has NO effect on the weights' shape -- it only rescales every
+      entry by the same constant (`weight_k(beta) = weight_k(1)/sqrt(beta)`),
+      and that constant is exactly cancelled by `wCSET.prepare_kernel`'s
+      trace-renormalization before it ever reaches the solve. See
+      `DEFAULT_LOGPASS_BETA`'s comment. What actually shapes this prior is
+      `cutoff` (which modes are kept, and the normalization reference) --
+      required for this method, no default (raises `ValueError` if omitted;
+      see `cutoff`'s own entry below). A `RuntimeWarning` is raised if
+      `relaxation` is given a value other than `DEFAULT_LOGPASS_BETA`, since
+      that's otherwise a silent no-op easy to mistake for a real knob.
+
     Parameters
     ----------
     eigvals: np.ndarry (N,)
-        Eigenvalues of harmonics.
+        Eigenvalues of harmonics, ascending order.
 
     relaxation: float, optional
         "gap" / "gap-spectrum": relaxes small weights, intended range [0-1].
@@ -139,20 +216,95 @@ def compute_harmonic_prior(eigvals : np.ndarray, relaxation : float = None, meth
         Defaults to `DEFAULT_LOWPASS_BETA` if not given -- see that
         constant's comment for where it comes from.
 
+        "logpass": the paper's beta. Has NO effect on the resulting weights'
+        shape or on any `wCSET` reconstruction using them -- see "logpass"
+        above and `DEFAULT_LOGPASS_BETA`'s comment. Kept only for signature/
+        paper-fidelity parity with "lowpass". Defaults to
+        `DEFAULT_LOGPASS_BETA` if not given.
+
     method: str
-        "gap" (default), "lowpass", or "gap-spectrum" -- see above.
+        "gap" (default), "lowpass", "gap-spectrum", or "logpass" -- see above.
+
+    cutoff: int, optional
+        Number of leading (lowest-eigenvalue) modes to retain; all modes at
+        or beyond `cutoff` get weight exactly 0.
+
+        "logpass": also serves as the normalization reference
+        (`eigvals[cutoff-1]`) -- see that method's description above.
+        REQUIRED for this method -- raises `ValueError` if not given (e.g.
+        `cutoff=300`, the paper's `S`). No default: unlike the other three
+        methods, there's no sensible "no truncation" fallback here, since
+        `cutoff` also fixes what "1.0" means on the normalized eigenvalue
+        axis.
+
+        "gap" / "lowpass" / "gap-spectrum": a pure optional truncation on
+        top of that method's existing weight shape -- no normalization
+        interaction, since these methods don't have one. Defaults to None
+        (no truncation, full spectrum retained) if not given.
     """
     if relaxation is None:
-        relaxation = DEFAULT_LOWPASS_BETA if method == "lowpass" else 1
+        relaxation = DEFAULT_LOWPASS_BETA if method == "lowpass" else (
+            DEFAULT_LOGPASS_BETA if method == "logpass" else 1
+        )
 
     if method == "lowpass":
-        return np.exp(-relaxation * eigvals)
+        return _apply_cutoff(np.exp(-relaxation * eigvals), cutoff)
 
     if method == "gap-spectrum":
-        return _spline_gap_spectrum(eigvals) ** relaxation
+        return _apply_cutoff(_spline_gap_spectrum(eigvals) ** relaxation, cutoff)
+
+    if method == "logpass":
+        if relaxation != DEFAULT_LOGPASS_BETA:
+            warnings.warn(
+                f"compute_harmonic_prior: relaxation={relaxation} given for "
+                "method='logpass', but beta has no effect on the resulting "
+                "weights or on any wCSET reconstruction using them -- it's a "
+                "uniform rescale exactly cancelled by wCSET's own "
+                "trace-renormalization before the ridge solve (see "
+                "DEFAULT_LOGPASS_BETA's comment). If you intended to change "
+                "the log-form prior's strength or shape, use `cutoff` instead.",
+                RuntimeWarning,
+            )
+
+        if cutoff is None:
+            raise ValueError(
+                "compute_harmonic_prior: 'cutoff' must be given for "
+                "method='logpass' -- e.g. cutoff=300, the paper's S (Eq. 2). "
+                "Unlike 'gap'/'lowpass'/'gap-spectrum', this method has no "
+                "sensible no-truncation default: cutoff also sets the "
+                "normalization reference, and diag(-beta/log(lambda)) isn't "
+                "defined without one."
+            )
+        if not (0 < cutoff <= len(eigvals)):
+            raise ValueError(
+                f"compute_harmonic_prior: cutoff={cutoff} out of range for "
+                f"eigvals of length {len(eigvals)}"
+            )
+
+        lam_cutoff = eigvals[cutoff - 1]
+        if lam_cutoff <= 0:
+            raise ValueError(
+                "compute_harmonic_prior: eigvals[cutoff-1] must be > 0 to "
+                "normalize the 'logpass' spectrum -- cutoff is too small"
+            )
+
+        # normalize the retained eigenvalues into (0, 1] against the cutoff
+        # boundary itself (not eigvals.max()) -- Eq. 2 restricts k=1..S from
+        # the outset, so "lambda_max" in the paper's own formula can only
+        # mean the max within that retained set, not some larger untruncated
+        # spectrum. Clip away from exactly 0 (the DC mode) rather than
+        # let log(0) produce -inf; never evaluate log() on anything above 1
+        # (indices beyond cutoff are just zeroed, not computed through the
+        # formula, since eigvals[cutoff:] > lam_cutoff by construction and
+        # would otherwise make -log(...) negative -> sqrt(...) -> nan).
+        normalized = np.clip(eigvals[:cutoff] / lam_cutoff, _LOGPASS_EPS, 1.0)
+
+        weights = np.zeros_like(eigvals, dtype=float)
+        weights[:cutoff] = np.sqrt(-np.log(normalized) / relaxation)
+        return weights
 
     if method != "gap":
-        raise ValueError(f"compute_harmonic_prior: unknown method {method!r}, expected 'gap', 'lowpass', or 'gap-spectrum'")
+        raise ValueError(f"compute_harmonic_prior: unknown method {method!r}, expected 'gap', 'lowpass', 'gap-spectrum', or 'logpass'")
 
     # compute eigenvalue gaps
     arr1 = np.abs(eigvals - np.roll(eigvals, -1))
@@ -168,7 +320,7 @@ def compute_harmonic_prior(eigvals : np.ndarray, relaxation : float = None, meth
     weights[5000:] = weights[5000]  # high harmonics seems to be problematic ...
     weights = weights**relaxation
 
-    return weights
+    return _apply_cutoff(weights, cutoff)
 
 
 def compute_depth_prior(gain, depth):
