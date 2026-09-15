@@ -42,6 +42,7 @@ from .sensor import (
 
 from .graph import (
     plot_eigvec,
+    plot_eigvec_multi,
     plot_eigval,
     plot_con_summary,
     plot_spectrum,
@@ -83,6 +84,7 @@ __all__ = [
     "plot_brain",
     "plot_source_estimate",
     "plot_eigvec",
+    "plot_eigvec_multi",
     "plot_ieeg",
     "plot_ieeg_static",
     "plot_channel_grid",

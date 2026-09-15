@@ -114,8 +114,8 @@ class NoiseConfig:
     confirmed against the real MNE sample forward solution.
 
     The actual solved dipole_noise Am-scale used for a given run is exposed
-    afterward as `Simulator.last_dipole_noise_scale`, mirroring how
-    `Simulator.last_snr_picks` exposes the auto-selected SNR channel --
+    afterward as `SimulationResult.dipole_noise_scale`, mirroring how
+    `SimulationResult.snr_picks` exposes the auto-selected SNR channel --
     useful for logging/reproducibility since it's head-model-dependent, not
     a fixed config value.
     """
@@ -127,6 +127,139 @@ class NoiseConfig:
     def to_dict(self) -> dict:
         """To dictionary."""
         return asdict(self)
+
+
+class SimulationResult:
+    """
+    Per-call container returned by Simulator.run(). Holds this run's clean
+    activity and the two noise realizations already drawn, so both the
+    noisy and clean variants of ground truth/EEG can be built on demand
+    without re-running propagation or SNR/noise calibration (the expensive
+    parts of a run). Never stored as mutable state on Simulator itself,
+    which is reused across many run() calls.
+
+    Each getter is lazy and memoized per with_noise value -- the first call
+    for a given value builds and caches it; later calls with the same value
+    return the same cached object (call .copy() first if you need to mutate
+    it non-destructively, e.g. before raw.set_eeg_reference(...), which
+    mutates its Raw in place).
+
+    snr_picks: the channel(s) SNR calibration auto-selected for this run
+    (SNRConfig.channel_selection="auto", the default for non-gfp methods).
+    Re-measuring the delivered recording MUST use these same picks --
+    searching all channels again reintroduces the channel-selection bias
+    calibration was built to avoid, and can land on a different channel than
+    the one actually calibrated.
+
+    dipole_noise_scale: the actual dipole_noise Am-scale solved for by the
+    NoiseConfig joint-calibration step -- head-model-dependent (varies with
+    this source's forward gain), not a fixed config value, exposed here for
+    logging/reproducibility.
+    """
+    def __init__(self, simulator, activity, dipole_noise, sensor_noise, events, snr_picks, dipole_noise_scale):
+        self._simulator = simulator
+        self._activity = activity
+        self._dipole_noise = dipole_noise
+        self._sensor_noise = sensor_noise
+        self._events = events
+        self.snr_picks = snr_picks
+        self.dipole_noise_scale = dipole_noise_scale
+        self._gt_cache = {}
+        self._eeg_cache = {}
+
+    def save(self, folder: str | Path):
+        """Save this run's raw ingredients (activity, noise realizations,
+        events) and per-run facts (snr_picks, dipole_noise_scale) to folder.
+        Does NOT save the Simulator itself (use Simulator.save/load for
+        that) -- reconstructing via SimulationResult.load needs that same
+        Simulator passed back in, since the getters rely on its head
+        model/epoch config."""
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+
+        # 1. Save the dense arrays in NumPy's native multi-array format
+        np.savez(
+            folder/"arrays.npz",
+            activity=self._activity,
+            dipole_noise=self._dipole_noise,
+            sensor_noise=self._sensor_noise,
+            events=self._events,
+        )
+
+        # 2. Save per-run scalar facts in a JSON file
+        meta = {
+            "snr_picks": self.snr_picks,
+            "dipole_noise_scale": float(self.dipole_noise_scale),
+        }
+        with open(folder/"result_config.json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=4)
+
+    @classmethod
+    def load(cls, folder: str | Path, simulator: "Simulator") -> "SimulationResult":
+        """Reconstructs a SimulationResult from saved state. `simulator`
+        must be the (already loaded, e.g. via Simulator.load) Simulator
+        this result belongs to -- it isn't re-saved here, since it's
+        reusable structural configuration, not a per-run fact."""
+        folder = Path(folder)
+        if not folder.exists():
+            raise FileNotFoundError(f"Could not find folder '{folder}'")
+
+        with open(folder/"result_config.json", "r", encoding="utf-8") as f:
+            meta = json.load(f)
+
+        arrays = np.load(folder/"arrays.npz")
+
+        return cls(
+            simulator = simulator,
+            activity = arrays["activity"],
+            dipole_noise = arrays["dipole_noise"],
+            sensor_noise = arrays["sensor_noise"],
+            events = arrays["events"],
+            snr_picks = meta["snr_picks"],
+            dipole_noise_scale = meta["dipole_noise_scale"],
+        )
+
+    def _make_source_stc(self, with_noise, tstep):
+        source = self._activity + self._dipole_noise if with_noise else self._activity
+        return make_stc(
+            self._simulator.hm.src, source,
+            tmin=self._simulator.hm.sens.times[0], tstep=tstep,
+        )
+
+    def get_ground_truth(self, with_noise: bool = False) -> mne.SourceEstimate:
+        """
+        Source-space ground truth, cropped/baselined/trial-averaged
+        (Simulator._average_stc) regardless of with_noise, so both variants
+        share identical shape/units/vertices and are directly comparable.
+
+        with_noise=False (default): clean activity only -- reproduces the
+        historical `gold` output exactly (no dipole noise at all).
+
+        with_noise=True: `activity + dipole_noise`, averaged the same way,
+        so ground truth can be compared against delivered EEG under a
+        matched noise condition.
+        """
+        if with_noise not in self._gt_cache:
+            stc = self._make_source_stc(with_noise, tstep=1/self._simulator.sfreq)
+            self._gt_cache[with_noise] = self._simulator._average_stc(stc, self._events)
+        return self._gt_cache[with_noise]
+
+    def get_eeg(self, with_noise: bool = True) -> mne.io.Raw:
+        """
+        Sensor-space continuous recording via forward projection.
+
+        with_noise=True (default): dipole_noise added source-side plus
+        sensor_noise added sensor-side -- reproduces the historical `raw`
+        output exactly.
+
+        with_noise=False: fully clean forward projection of activity alone
+        -- no dipole_noise, no sensor_noise.
+        """
+        if with_noise not in self._eeg_cache:
+            stc = self._make_source_stc(with_noise, tstep=1/self._simulator.sfreq)
+            noise = self._sensor_noise if with_noise else np.zeros_like(self._sensor_noise)
+            self._eeg_cache[with_noise] = self._simulator._project_to_sensors(stc, noise, self._events)
+        return self._eeg_cache[with_noise]
 
 
 class Simulator:
@@ -141,20 +274,6 @@ class Simulator:
 
         # If no config is provided, fall back to a default instance
         self.epoch_config = epoch_config if epoch_config is not None else EpochConfig()
-
-        # Set by run() whenever SNR calibration restricts to specific channel(s)
-        # (SNRConfig.channel_selection="auto", the default for non-gfp methods).
-        # Re-measuring the delivered recording MUST use these same picks --
-        # searching all channels again reintroduces the channel-selection bias
-        # calibration was built to avoid, and can land on a different channel
-        # than the one actually calibrated.
-        self.last_snr_picks = None
-
-        # Set by run() to the actual dipole_noise Am-scale solved for by the
-        # NoiseConfig joint-calibration step -- head-model-dependent (varies
-        # with this source's forward gain), not a fixed config value, so it's
-        # exposed here the same way last_snr_picks is, for logging/reproducibility.
-        self.last_dipole_noise_scale = None
 
     def save(
         self,
@@ -364,6 +483,12 @@ class Simulator:
             background, 2uV of which is a fixed instrument-noise floor and
             the rest solved for via dipole_noise's forward-projected
             contribution) when None.
+
+        Returns
+        -------
+        result: SimulationResult
+            Per-call container exposing get_ground_truth(with_noise) and
+            get_eeg(with_noise), plus this run's snr_picks/dipole_noise_scale.
         """
         n_dipoles = self.hm.fwd["nsource"]
         n_sensors = len(self.hm.sens.ch_names)
@@ -479,12 +604,12 @@ class Simulator:
 
         dipole_noise_scale = needed_contribution_v / contribution_per_unit if contribution_per_unit > 0 else 0.0
         dipole_noise = dipole_noise_unit * dipole_noise_scale  # baseline brain [Am]
-        self.last_dipole_noise_scale = dipole_noise_scale
 
         # -------------------
         # 3. SNR Calibration
         # -------------------
 
+        snr_picks = None
         if snr_target is not None:
             snr_cfg = snr_config if snr_config is not None else SNRConfig()
             spike_window = snr_cfg.spike_window if snr_cfg.spike_window is not None else self.epoch_config.signal_window
@@ -616,8 +741,7 @@ class Simulator:
                         if contribution_this_channel > 0 else 0.0
                     )
                     dipole_noise = dipole_noise_unit * dipole_noise_scale
-                    self.last_dipole_noise_scale = dipole_noise_scale
-            self.last_snr_picks = picks if snr_cfg.method != "gfp" else None
+            snr_picks = picks if snr_cfg.method != "gfp" else None
 
             def _measure_snr(scale):
                 return _measure_snr_raw(scale, picks=picks).max() if snr_cfg.method != "gfp" \
@@ -654,29 +778,15 @@ class Simulator:
 
             activity *= scale
 
-        # -------------------------------------
-        # 4. Final Projection & MNE Conversion
-        # -------------------------------------
-
-        # Ground Truth activity (clean averaged activity)
-        ground_truth_stc = make_stc(
-            self.hm.src,
-            activity,
-            tmin = self.hm.sens.times[0],
-            tstep = 1/self.hm.sens.info["sfreq"],
+        return SimulationResult(
+            simulator=self,
+            activity=activity,
+            dipole_noise=dipole_noise,
+            sensor_noise=sensor_noise,
+            events=events,
+            snr_picks=snr_picks,
+            dipole_noise_scale=dipole_noise_scale,
         )
-        ground_truth_stc = self._average_stc(ground_truth_stc, events)
-
-        # Actual recording
-        noisy_stc = make_stc(
-            self.hm.src,
-            activity + dipole_noise,
-            tmin = self.hm.sens.times[0],
-            tstep = 1/self.sfreq,
-        )
-        recordings = self._project_to_sensors(noisy_stc, sensor_noise, events)
-
-        return ground_truth_stc, recordings
 
 
     def _project_to_sensors(

@@ -24,6 +24,7 @@ import seaborn as sns
 import plotly.graph_objects as go
 
 import mne
+import pyvista as pv
 
 from .utils import find_clim, default_cmap, BaseBrainPlotter, build_hemi_pair
 
@@ -152,6 +153,152 @@ class MultiMesh(BaseBrainPlotter):
             font_size = 12,
             color = "black"
         )
+
+        self.plotter.render()
+
+
+def plot_eigvec_multi(source_space, eigs, eigenvalues=None):
+    """
+    Plot several conditions' eigenvectors side by side (e.g. a true
+    connectome and its surrogates), one panel per condition, scrolled
+    through harmonics together with a single shared slider/keyboard.
+
+    Parameters
+    ----------
+    source_space: mne.SourceSpaces
+        Source space, shared across every condition/panel.
+
+    eigs: dict[str, np.ndarray]
+        Mapping from condition label (used as the panel title) to its
+        eigenvectors, shape (n_dipoles, n_modes). Panels are laid out
+        left-to-right in dict order. Conditions may have different numbers
+        of modes - scrolling is capped at the smallest one.
+
+    eigenvalues: dict[str, np.ndarray], optional
+        Mapping from condition label to its eigenvalues, same keys as
+        `eigs`. A missing/None entry falls back to a plain harmonic index
+        for that panel's label.
+    """
+    mesh_params = {}
+    for name, eigvec in eigs.items():
+        clim = find_clim(eigvec)
+        mesh_params[name] = {
+            "smooth_shading" : True,
+            "clim" : clim,
+            "cmap" : default_cmap(clim),
+        }
+
+    return MultiConditionMesh(
+        source_space = source_space,
+        eigs         = eigs,
+        eigenvalues  = eigenvalues,
+        mesh_params  = mesh_params,
+    )
+
+
+class MultiConditionMesh(BaseBrainPlotter):
+    """
+    Interactive side-by-side visualization of several conditions' harmonics,
+    each in its own panel (linked camera), scrolled through together with
+    one shared "Harmonic" slider/keyboard - for comparing e.g. a true
+    connectome's harmonics against its surrogates'.
+    """
+
+    def __init__(
+        self,
+        source_space : mne.SourceSpaces,
+        eigs         : dict,
+        eigenvalues  : Optional[dict] = None,
+        mesh_params  : Optional[dict] = None,
+    ):
+        """
+        Parameters
+        ----------
+        source_space: mne.SourceSpaces
+            Source space, shared across every condition/panel.
+
+        eigs: dict[str, np.ndarray of shape (n_dipoles, n_modes)]
+            Eigenvectors per condition; panels laid out in this order.
+
+        eigenvalues: dict[str, np.ndarray of shape (n_modes,)], optional
+            Eigenvalues per condition, for panel labels.
+
+        mesh_params: dict[str, dict]
+            Per-condition parameters passed to plotter.add_mesh.
+        """
+        self.names  = list(eigs.keys())
+        self.data   = eigs
+        self.eigval = eigenvalues or {}
+
+        mesh_params = mesh_params or {}
+        n_states    = min(vec.shape[1] for vec in eigs.values())
+        plotter     = pv.Plotter(shape=(1, len(self.names)))
+
+        super().__init__(plotter=plotter, n_states=n_states)
+
+        self.hemi_l, self.hemi_r = {}, {}
+        self.map_l, self.map_r   = {}, {}
+        self.nuse_l = {}
+
+        for i, name in enumerate(self.names):
+            hemi_l, hemi_r, map_l, map_r, nuse_l = build_hemi_pair(source_space)
+            self.hemi_l[name], self.hemi_r[name] = hemi_l, hemi_r
+            self.map_l[name], self.map_r[name] = map_l, map_r
+            self.nuse_l[name] = nuse_l
+
+            self.plotter.subplot(0, i)
+            self.plotter.add_mesh(hemi_l, **mesh_params.get(name, {}))
+            self.plotter.add_mesh(hemi_r, **mesh_params.get(name, {}))
+            self.plotter.add_text(name, position="upper_edge", font_size=10, color="black")
+
+        self.plotter.link_views()
+
+        # events (slider lives in the first panel, keyboard is window-wide)
+        self.setup_keys(fast_step=50, super_step=500)
+        self.plotter.subplot(0, 0)
+        self.add_slider(label="Harmonic")
+
+        # render first image
+        self.update_display(self.current_idx)
+
+
+    def _label_text(self, name: str, idx: int) -> str:
+        eigval = self.eigval.get(name)
+        if eigval is None:
+            return f"Harmonic {idx + 1}"
+        return f"Eigenvalue: {eigval[idx]:.4g}"
+
+
+    # -------------------
+    # Inherited methods
+    # -------------------
+
+    def update_display(self, idx):
+        """
+        Update every panel's brain image to harmonic `idx`.
+        """
+        for i, name in enumerate(self.names):
+            image = self.data[name][:, int(idx)]
+            nuse_l = self.nuse_l[name]
+
+            sig_l = image[:nuse_l].squeeze()
+            sig_r = image[nuse_l:].squeeze()
+
+            # append 0 for vertices mapped to -1
+            sig_l = np.concatenate([sig_l, [0.0]])
+            sig_r = np.concatenate([sig_r, [0.0]])
+
+            self.hemi_l[name]["signal"][:] = sig_l[self.map_l[name]]
+            self.hemi_r[name]["signal"][:] = sig_r[self.map_r[name]]
+
+            self.plotter.subplot(0, i)
+            self.plotter.add_text(
+                self._label_text(name, idx),
+                name = "info_text",
+                position = "lower_edge",
+                font_size = 10,
+                color = "black",
+            )
 
         self.plotter.render()
 

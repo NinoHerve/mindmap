@@ -55,6 +55,28 @@ def _zero_scale_source(reference: Source) -> Source:
     return Source(reference.loc, signal)
 
 
+def _reference_and_epoch(raw: mne.io.Raw, epoch_config) -> mne.Epochs:
+    """
+    Common average reference + epoch a continuous recording, shared between
+    `_run_one`'s noisy and clean EEG variants so the two are processed
+    identically apart from which `raw` (with/without noise) went in.
+    """
+    raw = raw.set_eeg_reference(
+        ref_channels = "average",
+        projection = True,
+        verbose = "warning",
+    )
+    events = mne.events_from_annotations(raw, verbose="warning")[0]
+    return mne.Epochs(
+        raw,
+        events,
+        tmin = epoch_config.tmin,
+        tmax = epoch_config.tmax,
+        baseline = epoch_config.baseline,
+        verbose = "warning",
+    )
+
+
 def _run_one(
     simulator_dir: Path,
     prop_config: PropagationConfig,
@@ -69,6 +91,8 @@ def _run_one(
     fcov: Path,
     fgold: Path,
     fsource: Path,
+    fgoldnoisy: Path,
+    faveclean: Path,
 ) -> dict:
     """
     Runs and saves a single simulation run.
@@ -93,26 +117,17 @@ def _run_one(
     # ---------------
     # Run simulation
     # ---------------
-    gold, raw = simulator.run(src, prop_config, snr_target=snr_target, snr_config=snr_config, noise_config=noise_config)
+    result = simulator.run(src, prop_config, snr_target=snr_target, snr_config=snr_config, noise_config=noise_config)
+    gold = result.get_ground_truth(with_noise=False)
+    gold_noisy = result.get_ground_truth(with_noise=True)
+    raw = result.get_eeg(with_noise=True)
+    raw_clean = result.get_eeg(with_noise=False)
 
     # -----------------------------------------
     # Process EEG (Referencing, Epoching, Cov)
     # -----------------------------------------
-    raw = raw.set_eeg_reference(
-        ref_channels = "average",
-        projection = True,
-        verbose = "warning",
-    )
-
-    events = mne.events_from_annotations(raw, verbose="warning")[0]
-    epochs = mne.Epochs(
-        raw,
-        events,
-        tmin = epoch_config.tmin,
-        tmax = epoch_config.tmax,
-        baseline = epoch_config.baseline,
-        verbose = "warning",
-    )
+    epochs = _reference_and_epoch(raw, epoch_config)
+    epochs_clean = _reference_and_epoch(raw_clean, epoch_config)
 
     noise_cov = mne.compute_covariance(
         epochs,
@@ -121,17 +136,22 @@ def _run_one(
         verbose = "warning",
     )
     ave = epochs.average()
+    # No noise covariance for the clean variant: there's no noise in it to
+    # estimate one from.
+    ave_clean = epochs_clean.average()
 
     # -------------
     # Save results
     # -------------
     # Ensure subdirectories exist
-    for fpath in [fave, fcov, fgold]:
+    for fpath in [fave, fcov, fgold, fgoldnoisy, faveclean]:
         fpath.parent.mkdir(parents=True, exist_ok=True)
 
     ave.save(fave, verbose="warning")
     noise_cov.save(fcov, verbose="warning")
     gold.save(fgold, verbose="warning")
+    gold_noisy.save(fgoldnoisy, verbose="warning")
+    ave_clean.save(faveclean, verbose="warning")
 
     # ------------------------------------------
     # Save Source State & Populate Metadata Log
@@ -166,14 +186,14 @@ def _run_one(
         # method="gfp" or channel_selection="all") -- re-measuring this run's
         # SNR MUST use these same picks, or a fresh max-over-all-channels
         # search reintroduces the winner's-curse bias calibration avoided.
-        "snr_picks": simulator.last_snr_picks,
+        "snr_picks": result.snr_picks,
         "sensor_noise_scale_uv": noise_cfg_log.sensor_noise_scale_uv,
         "target_sensor_noise_uv": noise_cfg_log.target_sensor_noise_uv,
         "sensor_noise_color": noise_cfg_log.sensor_noise_color,
         "dipole_noise_color": noise_cfg_log.dipole_noise_color,
         # The actual solved dipole_noise Am-scale for this run (head-model-
         # dependent, not a fixed config value) -- see NoiseConfig's docstring.
-        "dipole_noise_scale": simulator.last_dipole_noise_scale,
+        "dipole_noise_scale": result.dipole_noise_scale,
         "conduction_speed": prop_config.conduction_speed,
         "u_fiber_speed": prop_config.u_fiber_speed,
         "u_fiber_max_length": prop_config.u_fiber_max_length,
@@ -182,6 +202,8 @@ def _run_one(
         "ave_file": Path(fave).name,
         "cov_file": Path(fcov).name,
         "gold_file": Path(fgold).name,
+        "gold_noisy_file": Path(fgoldnoisy).name,
+        "ave_clean_file": Path(faveclean).name,
         "source_file": Path(fsource).name,
     }
 
@@ -282,7 +304,9 @@ def generate_simulation_dataset(
         fcov = dm.get_path(subject, "cov", run=count, **entities)
         fgold = dm.get_path(subject, "gold", run=count, **entities)
         fsource = sources_dir/f"run-{count:03d}_source.json"
-        return (src, snr, count, rep, run_seed, fave, fcov, fgold, fsource)
+        fgoldnoisy = dm.get_path(subject, "gold", run=count, desc="noisy", **entities)
+        faveclean = dm.get_path(subject, "ave", run=count, desc="clean", **entities)
+        return (src, snr, count, rep, run_seed, fave, fcov, fgold, fsource, fgoldnoisy, faveclean)
 
     tasks = []
     count = 0

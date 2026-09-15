@@ -57,6 +57,8 @@ class TutoManager(DatasetManager):
         self.add_datatype("resec-ramp", "ramps", self._build_path, read_mri)
         self.add_datatype("t1w", "raw", self._build_path, lambda f: read_mri(f, mri_dtype="ants"))
 
+        self.subjects.append("simf10-highsnr")
+
     def load_ref(self, ref_key):
         # Make thalamic atlas exception.
         if ref_key.lower() == "ref_thal":
@@ -120,6 +122,10 @@ class TutoManager(DatasetManager):
                 run = kwargs.get("run")
                 run = f"_run-{run}" if run else ""
 
+                # `desc` distinguishes variants of the same ground truth
+                # (e.g. desc="noisy" for the noise-added source estimate,
+                # bare/no desc for the clean one) within the same "stc"
+                # folder -- same convention as `fwd`'s desc="sim"/"inv".
                 desc = kwargs.get("desc")
                 desc = f"_desc-{desc}" if desc else ""
 

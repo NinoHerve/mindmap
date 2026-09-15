@@ -32,6 +32,12 @@ class InverseSimTask(Task):
     method name to the output path it should be written to (precomputed by
     the caller, e.g. via `dm.get_path(...)`, since `dm` itself can't cross
     into a worker process).
+
+    fgoldnoisy/faveclean are optional, saved alongside `fgold`/`fave` by
+    `_run_one` (mindmap.analysis.simulation.pipeline) -- the noisy source-space
+    ground truth and the clean (noise-free) sensor-space EEG, respectively.
+    Pass faveclean instead of recomputing a clean signal via
+    `mne.apply_forward(simulator.hm.fwd, gold, ave.info)` in preprocess_fn.
     """
     run: int
     simulator_dir: Path
@@ -41,15 +47,22 @@ class InverseSimTask(Task):
     fsource: Path
     target_snr: float | None = None
     foutputs: dict[str, Path] | None = None
+    fgoldnoisy: Path | None = None
+    faveclean: Path | None = None
 
     def load(self) -> dict:
-        return {
+        ctx = {
             "simulator": read_simulator(self.simulator_dir),
             "ave": read_ave(self.fave),
             "ncov": read_cov(self.fcov),
             "gold": mne.read_source_estimate(self.fgold),
             "src": Source.load(self.fsource),
         }
+        if self.fgoldnoisy is not None:
+            ctx["gold-noisy"] = mne.read_source_estimate(self.fgoldnoisy)
+        if self.faveclean is not None:
+            ctx["ave-clean"] = read_ave(self.faveclean)
+        return ctx
 
 
 @dataclass
@@ -63,6 +76,12 @@ class MeasureTask(Task):
     fave/fcov/simulator_dir are optional and only needed if `preprocess_fn`
     has to recompute something from the original sensor data (e.g. hrp/pp
     phase indices, or a crop window) rather than working off `gold` alone.
+
+    fgoldnoisy/faveclean are optional, saved alongside `fgold`/`fave` by
+    `_run_one` (mindmap.analysis.simulation.pipeline) -- the noisy source-space
+    ground truth and the clean (noise-free) sensor-space EEG, respectively.
+    Pass faveclean instead of recomputing a clean signal via
+    `mne.apply_forward(simulator.hm.fwd, gold, ave.info)` in preprocess_fn.
     """
     run: int
     fgold: Path
@@ -70,6 +89,8 @@ class MeasureTask(Task):
     fave: Path | None = None
     fcov: Path | None = None
     simulator_dir: Path | None = None
+    fgoldnoisy: Path | None = None
+    faveclean: Path | None = None
 
     def load(self) -> dict:
         ctx = {
@@ -84,6 +105,10 @@ class MeasureTask(Task):
             ctx["ncov"] = read_cov(self.fcov)
         if self.simulator_dir is not None:
             ctx["simulator"] = read_simulator(self.simulator_dir)
+        if self.fgoldnoisy is not None:
+            ctx["gold-noisy"] = mne.read_source_estimate(self.fgoldnoisy)
+        if self.faveclean is not None:
+            ctx["ave-clean"] = read_ave(self.faveclean)
         return ctx
 
 
