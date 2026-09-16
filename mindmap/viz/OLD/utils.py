@@ -354,6 +354,135 @@ class BrainMesh(BaseMesh):
             self.hemi_r[self.scalar_name][:] = paint_on_dense_mesh(signal[self.split:], self.map_r)
 
 
+class SurfaceMesh(BaseMesh):
+    """
+    Class to manage a single arbitrary surface mesh with an optional
+    functional map. Unlike `BrainMesh`, this is not tied to a two-hemisphere
+    `mne.SourceSpaces` - it takes a bare `pv.PolyData`, so it can represent
+    one hemisphere, a non-brain surface, or any custom mesh.
+    """
+    def __init__(self, polydata, functional=None, times=None, vertex_map=None, scalar_name="functional", **kwargs):
+        """
+        Parameters
+        ----------
+        polydata: pv.PolyData
+            Surface mesh (e.g. one hemisphere, a whole head, or any custom surface).
+
+        functional: np.ndarray
+            Functional of shape (n, n_timepoints) or (n,). If `vertex_map` is
+            given, `n` is the number of dipoles (sparse, painted onto the
+            surface). Otherwise `n` must equal `polydata.n_points` (already
+            dense, per-vertex).
+
+        times: np.ndarray
+            Time points.
+
+        vertex_map: np.ndarray, optional
+            Per-dense-vertex index into `functional` (its nearest dipole), or
+            -1 for vertices whose nearest dipole isn't in-use. When given,
+            `functional` is broadcast onto `polydata` via `paint_on_dense_mesh`.
+            See `mindmap.anatomy.source_space.build_dense_vertex_map`.
+        """
+        self.polydata = polydata
+        self.vertex_map = vertex_map
+
+        super().__init__(times=times, functional=functional, scalar_name=scalar_name)
+
+        # default aesthetics
+        if self.scalar_name is None:
+            self.plot_kwargs = {
+                "smooth_shading": True,
+                "color": "white",
+                "opacity": 0.5,
+            } | kwargs
+
+        else:
+            self.plot_kwargs = {
+                "smooth_shading": True,
+                "cmap": "Reds",
+            } | kwargs
+
+            # Initialize PolyData
+            self.polydata[self.scalar_name] = np.zeros(self.polydata.n_points)
+            self.update_signal(0)
+
+    def update_signal(self, idx):
+        """Maps signal to the actual PolyData object for plotting."""
+
+        if self.scalar_name is not None:
+            signal = self.get_column(idx)
+
+            if self.vertex_map is not None:
+                signal = paint_on_dense_mesh(signal, self.vertex_map)
+
+            self.polydata[self.scalar_name][:] = signal
+
+
+def build_hemi_meshes(
+    src,
+    functional=None,
+    times=None,
+    hemi="both",
+    scalar_name="functional",
+    **kwargs,
+) -> list:
+    """
+    Build per-hemisphere `SurfaceMesh` objects from an `mne.SourceSpaces`.
+
+    This is the source-space-aware wrapper around `SurfaceMesh`: it does the
+    dipole-to-dense-vertex mapping for one or both hemispheres, so a caller
+    only needs to hand it a source space (and optionally restrict to a
+    single hemisphere) instead of building meshes by hand.
+
+    Parameters
+    ----------
+    src: mne.SourceSpaces
+        Source space (both hemispheres).
+
+    functional: np.ndarray, optional
+        Dipole-space functional of shape (n_dipoles, n_timepoints) or
+        (n_dipoles,), ordered [left hemisphere dipoles, right hemisphere
+        dipoles]. Split at `src[0]["nuse"]` when `hemi="both"`.
+
+    times: np.ndarray, optional
+        Time points, shared across hemispheres.
+
+    hemi: {"both", "lh", "rh"}
+        Which hemisphere(s) to build. "lh"/"rh" build a single `SurfaceMesh`
+        for that hemisphere only (no split needed).
+
+    scalar_name: str
+        Name assigned to the painted scalar array.
+
+    Returns
+    -------
+    list[SurfaceMesh]
+        One mesh for "lh"/"rh", two (left, then right) for "both".
+    """
+    if hemi not in ("both", "lh", "rh"):
+        raise ValueError(f"hemi must be 'both', 'lh' or 'rh', got {hemi!r}")
+
+    def _one(hemi_src, func):
+        return SurfaceMesh(
+            polydata = surf_to_polydata(hemi_src["rr"], hemi_src["tris"]),
+            functional = func,
+            times = times,
+            vertex_map = build_dense_vertex_map(hemi_src),
+            scalar_name = scalar_name,
+            **kwargs,
+        )
+
+    if hemi == "lh":
+        return [_one(src[0], functional)]
+    if hemi == "rh":
+        return [_one(src[1], functional)]
+
+    split = src[0]["nuse"]
+    func_l = functional[:split] if functional is not None else None
+    func_r = functional[split:] if functional is not None else None
+    return [_one(src[0], func_l), _one(src[1], func_r)]
+
+
 class SourceMesh(BrainMesh):
     """
     Class to manage SourceEstimates.

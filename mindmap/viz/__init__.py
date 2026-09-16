@@ -1,68 +1,45 @@
 """
 Visualization tools for the MindMap package.
 
-This sub-package contains plots for visualization outputs.
-"""
+The 3D/mesh plotting side (brain surfaces, source spaces, sensors,
+forward/inverse models, connectomes) is being rewritten from scratch -
+the previous implementation is kept for reference in `viz/OLD/` but is no
+longer imported here. 2D array/dataframe plotting (`core`, `stats`,
+`power`) is unaffected and still live.
 
-from .dispatch import (
-    plot_brain_activity,
-    plot_signal,
-    plot_source,
-)
+`mesh`/`scene`/`panel`/`surface`/`brain` are the new 3D framework:
+- `Layer` (one mesh + an optional scalar field) and `Scene` (a multi-panel
+  interactive plotter) are the low-level primitives.
+- `Panel` typed shortcuts (`SurfacePlot`, `BrainPlot`) hold clean, named
+  parameters for one plot; combine them with `+` (merge into one panel),
+  `|` (side by side) or `&` (stacked, data model ready - rendering not
+  implemented yet) into a `Layout`.
+"""
 
 from .core import (
     plot_multi_scatterplots,
 )
 
-from .volume import (
-    show_slices,
-    plot_segmentation,
-    plot_bem,
+from .mesh import (
+    Layer,
+)
+
+from .scene import (
+    Scene,
+)
+
+from .panel import (
+    Panel,
+    CombinedPanel,
+    Layout,
 )
 
 from .surface import (
-    plot_brain,
-    plot_source_estimate,
+    SurfacePlot,
 )
 
-from .sensor import (
-    plot_ieeg,
-    plot_ieeg_static,
-    plot_channel_grid,
-    plot_gfp_comparison,
-    plot_alignment,
-    plot_avg_ref,
-    plot_baseline_topo,
-    create_pipeline_report,
-    plot_whitened_cov,
-    plot_gfp,
-    plot_evoked_cog,
-    plot_evoked_rem,
-)
-
-from .graph import (
-    plot_eigvec,
-    plot_eigvec_multi,
-    plot_eigval,
-    plot_con_summary,
-    plot_spectrum,
-    plot_adj_matrix,
-)
-
-from .forward import (
-    plot_fwd_avg_ref,
-    plot_fwd_sensitivity,
-    plot_fwd_correlation,
-    plot_fwd_singular_values,
-    plot_leadfield,
-)
-
-from .inverse import(
-    plot_predicted_data_covariance,
-)
-
-from .utils import (
-    get_brain_view,
+from .brain import (
+    BrainPlot,
 )
 
 from .power import (
@@ -76,39 +53,14 @@ from .stats import (
 )
 
 __all__ = [
-    "plot_brain_activity",
-    "show_slices",
-    "plot_segmentation",
-    "plot_bem",
-    "plot_alignment",
-    "plot_brain",
-    "plot_source_estimate",
-    "plot_eigvec",
-    "plot_eigvec_multi",
-    "plot_ieeg",
-    "plot_ieeg_static",
-    "plot_channel_grid",
-    "plot_gfp_comparison",
-    "plot_avg_ref",
-    "plot_baseline_topo",
-    "create_pipeline_report",
-    "plot_eigval",
-    "plot_leadfield",
-    "plot_con_summary",
-    "plot_fwd_avg_ref",
-    "plot_fwd_sensitivity",
-    "plot_fwd_correlation",
-    "plot_fwd_singular_values",
-    "plot_whitened_cov",  
-    "plot_gfp",
-    "plot_predicted_data_covariance",
-    "plot_spectrum",
     "plot_multi_scatterplots",
-    "plot_evoked_cog",
-    "plot_evoked_rem",
-    "plot_signal",
-    "get_brain_view",
-    "plot_adj_matrix",
+    "Layer",
+    "Scene",
+    "Panel",
+    "CombinedPanel",
+    "Layout",
+    "SurfacePlot",
+    "BrainPlot",
     "plot_power_precision_curves",
     "metric_box_significance",
     "metric_relational_clusters",

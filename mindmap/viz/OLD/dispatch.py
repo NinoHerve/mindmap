@@ -27,11 +27,11 @@ from mindmap.anatomy.mri.io import nib_to_polydata
 from mindmap.analysis.functional.eeg.process import normalize_evoked
 from mindmap.analysis.simulation.signals import Signal
 from mindmap.analysis.simulation.components import Source, HeadModel
-from mindmap.viz.utils import (
+from mindmap.viz.OLD.utils import (
     store_in_lists, find_clim, default_cmap,
-    BrainMesh, SourceMesh, ChannelMesh, OverlayMesh
+    BrainMesh, ChannelMesh, OverlayMesh, build_hemi_meshes,
 )
-from mindmap.viz.vista import TimeMesh
+from mindmap.viz.OLD.vista import TimeMesh
 
 
 
@@ -42,6 +42,7 @@ def plot_brain_activity(
     overlay : np.ndarray | nib.Nifti1Image | list[np.ndarray | nib.Nifti1Image] = None,
     ras2tkras : np.ndarray | list[np.ndarray] = None,
     title : str | list[str] = "",
+    hemi : str = "both",
     mesh_params : dict = None,
     func_params : dict = None,
     sensor_params : dict = None,
@@ -52,7 +53,7 @@ def plot_brain_activity(
 
     Parameters
     ----------
-    source_space: mne.SourceSpaces | list[mne.SourceSpaces] 
+    source_space: mne.SourceSpaces | list[mne.SourceSpaces]
         Source space.
 
     timeseries: mne.SourceEstimate | list[mne.SourceEstimate]
@@ -64,14 +65,17 @@ def plot_brain_activity(
     ras2tkras: np.ndarray
         Affine transform (T1 ras -> freesurfer ras). Necessary to align MRI images with meshes.
 
+    hemi: {"both", "lh", "rh"}
+        Which hemisphere(s) to plot. Applies to every subplot.
+
     mesh_params: dict
         key : value
         key : value
-    
+
     func_params: dict
         normalize: max | minmax | zscore
         absolute: True | False
-    
+
     overlay_params: dict
         key : value
         key : value
@@ -141,25 +145,16 @@ def plot_brain_activity(
     for i, src in enumerate(source_space):
         subplot_items = []
 
-        # add brain/source mesh
-        if isinstance(functionals[i], mne.SourceEstimate):
-            stc = functionals[i].copy()
-            stc.data = processed_data[i]
-            bm = SourceMesh(
-                src = src,
-                stc = stc,
-                scalar_name = "Source Activity",
-                **mesh_params,
-            )
-        else:
-            bm = BrainMesh(
-                src = source_space[i],
-                functional = processed_data[i],
-                times = processed_times[i],
-                scalar_name = "Source Activity",
-                **mesh_params,
-            )
-        subplot_items.append(bm)
+        # add brain/source mesh(es)
+        hemi_meshes = build_hemi_meshes(
+            src = src,
+            functional = processed_data[i],
+            times = processed_times[i],
+            hemi = hemi,
+            scalar_name = "Source Activity",
+            **mesh_params,
+        )
+        subplot_items.extend(hemi_meshes)
 
         # add sensors
         if sensors[i] is not None:

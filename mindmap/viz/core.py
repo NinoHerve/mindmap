@@ -23,7 +23,15 @@ import seaborn as sns
 import plotly.graph_objects as go
 import pyvista as pv
 
-from mindmap.viz.utils import create_line_mesh
+def create_line_mesh(pts: np.ndarray) -> pv.PolyData:
+    """Create a polydata line"""
+    if len(pts) < 2:
+        return pv.PolyData(pts)
+
+    cells = np.hstack(([len(pts)], np.arange(len(pts))))
+
+    return pv.PolyData(pts, lines=cells)
+
 
 def plot_multi_scatterplots(
     data_ref:np.ndarray, 
