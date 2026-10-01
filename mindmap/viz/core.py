@@ -491,7 +491,7 @@ def plot_pr(
     return fig, ax
 
 
-def metric_box(df, group_name="Method", order=None, palette="viridis", points=True, title=None, ax=None, **kwargs):
+def metric_box(df, group_name="Method", order=None, palette="viridis", points=True, title=None, ax=None, fill_alpha=None, **kwargs):
     """
     Default style: Boxplot with overlaid raw data points.
 
@@ -523,10 +523,17 @@ def metric_box(df, group_name="Method", order=None, palette="viridis", points=Tr
     ax: matplotlib.axes.Axes, optional
         Axes to plot into. A new figure/axes is created if not given.
 
+    fill_alpha: float, optional
+        Opacity of the box fills only, in [0, 1] -- edges, whiskers and
+        medians stay opaque. Default `None` leaves seaborn's opaque fills.
+
     Returns
     -------
     (matplotlib.figure.Figure, matplotlib.axes.Axes)
     """
+    if fill_alpha is not None and not (isinstance(fill_alpha, (int, float)) and 0 <= fill_alpha <= 1):
+        raise ValueError(f"`fill_alpha` must be a number in [0, 1], got {fill_alpha!r}.")
+
     if ax is None:
         fig, ax = plt.subplots()
     else:
@@ -535,7 +542,13 @@ def metric_box(df, group_name="Method", order=None, palette="viridis", points=Tr
     defaults = {"linewidth": 1.5}
     params = {**defaults, **kwargs}
 
+    n_patches = len(ax.patches)
     sns.boxplot(data=df, x=group_name, y="Value", hue=group_name, order=order, palette=palette, ax=ax, legend=False, **params)
+    if fill_alpha is not None:
+        # Only the patches this call just drew -- anything already on `ax` (e.g. a shaded band) is left alone.
+        for patch in ax.patches[n_patches:]:
+            r, g, b, _ = patch.get_facecolor()
+            patch.set_facecolor((r, g, b, fill_alpha))
     if points:
         sns.stripplot(data=df, x=group_name, y="Value", order=order, color=".2", alpha=0.4, ax=ax)
     if title:

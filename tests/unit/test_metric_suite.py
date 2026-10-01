@@ -1856,3 +1856,281 @@ def test_metricsuite_plot_group_comparison_respects_result_filters():
     fig, ax = suite.plot.group_comparison(result)
     assert isinstance(ax, plt.Axes)
     plt.close(fig)
+
+
+# --- reference vs. competitors: PairwiseResult.vs / paired differences -------
+
+def _make_vs_suite(n_regions=12, missing_noise=(), seed=0):
+    """`reference` is clearly better than `worse` (+2) and ~equal to `noise`; `noise` can miss some regions."""
+    rng = np.random.default_rng(seed)
+    regions = [f"r{i:02d}" for i in range(n_regions)]
+    reference_vals = rng.normal(0, 1, size=n_regions)
+    suite = MetricSuite()
+    suite.register("outcome", reference_vals, Method="reference", region=regions)
+    suite.register("outcome", reference_vals - 2.0 + rng.normal(0, 0.1, size=n_regions), Method="worse", region=regions)
+    keep = [i for i in range(n_regions) if regions[i] not in missing_noise]
+    suite.register(
+        "outcome", reference_vals[keep] + rng.normal(0, 1, size=len(keep)), Method="noise",
+        region=[regions[i] for i in keep],
+    )
+    return suite
+
+
+def test_pairwise_result_vs_orients_effect_toward_reference_as_group_a():
+    suite = _make_vs_suite()
+    result = suite.stat.wilcoxon(
+        "outcome", group_by="Method", comparisons=[("reference", "worse"), ("reference", "noise")], pairing_col="region",
+    )
+    s = result.vs("reference")
+
+    assert list(s.index) == ["worse", "noise"]
+    assert s.index.name == "Method"
+    assert list(s.columns) == ["p_value", "p_corrected", "significant", "effect", "effect_size_type", "n_pairs"]
+    assert s.loc["worse", "effect"] == pytest.approx(1.0)  # reference higher in every region
+    assert s.loc["worse", "effect"] == result.table.loc[0, "effect_size"]
+    assert s.loc["worse", "p_corrected"] == result.table.loc[0, "p_corrected"]
+
+
+def test_pairwise_result_vs_flips_effect_when_reference_is_group_b():
+    suite = _make_vs_suite()
+    result = suite.stat.paired_ttest(
+        "outcome", group_by="Method", comparisons=[("worse", "reference"), ("noise", "reference")], pairing_col="region",
+    )
+    s = result.vs("reference")
+
+    assert result.table.loc[0, "effect_size"] < 0  # stored as worse - reference
+    assert s.loc["worse", "effect"] == pytest.approx(-result.table.loc[0, "effect_size"])
+    assert s.loc["worse", "effect"] > 0
+    assert (s["effect_size_type"] == "cohens_dz").all()
+
+    # Seen from the competitor's side, the same row reads the other way round.
+    assert result.vs("worse").loc["reference", "effect"] == pytest.approx(result.table.loc[0, "effect_size"])
+
+
+def test_pairwise_result_vs_higher_is_better_false_negates_effect():
+    suite = _make_vs_suite()
+    result = suite.stat.wilcoxon(
+        "outcome", group_by="Method", comparisons=[("worse", "reference")], pairing_col="region",
+    )
+    hib = result.vs("reference")
+    lib = result.vs("reference", higher_is_better=False)
+    assert lib.loc["worse", "effect"] == pytest.approx(-hib.loc["worse", "effect"])
+    assert lib.loc["worse", "effect"] < 0
+
+
+def test_pairwise_result_vs_includes_n_eff_only_when_present():
+    suite = _make_vs_suite(n_regions=30)
+    comparisons = [("reference", "worse"), ("reference", "noise")]
+    ess = suite.stat.ttest_ess("outcome", group_by="Method", comparisons=comparisons, pairing_col="region")
+    wil = suite.stat.wilcoxon("outcome", group_by="Method", comparisons=comparisons, pairing_col="region")
+    assert "n_eff" in ess.vs("reference").columns
+    assert "n_eff" not in wil.vs("reference").columns
+
+
+def test_pairwise_result_vs_unknown_reference_raises():
+    suite = _make_vs_suite()
+    result = suite.stat.wilcoxon("outcome", group_by="Method", comparisons=[("reference", "worse")], pairing_col="region")
+    with pytest.raises(ValueError, match="appears in no pair"):
+        result.vs("noise")
+
+
+def test_stat_paired_differences_rows_match_n_pairs_and_sign():
+    """One non-missing value per tested unit (= n_pairs, per competitor), reference - competitor, NaN where a competitor has no data."""
+    suite = _make_vs_suite(missing_noise=("r03", "r07"))
+    result = suite.stat.paired_ttest(
+        "outcome", group_by="Method", comparisons=[("reference", "worse"), ("noise", "reference")], pairing_col="region",
+    )
+    d = suite.stat.paired_differences(result)
+
+    assert list(d.columns) == ["worse", "noise"]
+    assert d.index.name == "region"
+    s = result.vs("reference")
+    for c in d.columns:
+        assert d[c].notna().sum() == s.loc[c, "n_pairs"]
+    assert d.loc[["r03", "r07"], "noise"].isna().all()
+
+    raw = suite.to_df(metrics="outcome").pivot(index="region", columns="Method", values="Value")
+    np.testing.assert_allclose(d["worse"], (raw["reference"] - raw["worse"]).loc[d.index])
+    assert (d["worse"] > 0).all()
+
+    # Same sign as the oriented effect size, and negated for lower-is-better metrics.
+    lower = suite.stat.paired_differences(result, higher_is_better=False)
+    pd.testing.assert_frame_equal(lower, -d)
+
+
+def test_stat_paired_differences_collapses_units_like_the_test():
+    n_regions, n_reps = 6, 4
+    suite = _make_compare_suite_with_reps(n_regions=n_regions, n_reps=n_reps)
+    result = suite.stat.wilcoxon(
+        "outcome", group_by="Method", comparisons=[("reference", "shifted")], pairing_col="region", unit_col="rep",
+    )
+    d = suite.stat.paired_differences(result)
+    assert len(d) == n_regions == result.table.loc[0, "n_pairs"]
+
+    means = suite.to_df(metrics="outcome").groupby(["region", "Method"])["Value"].mean().unstack()
+    np.testing.assert_allclose(d["shifted"], (means["reference"] - means["shifted"]).loc[d.index])
+
+
+def test_stat_paired_differences_follows_subject_order_and_filters():
+    suite, true_order = _make_ar1_diff_suite(n=40)
+    result = suite.stat.ttest_ess(
+        "outcome", group_by="Method", comparisons=[("reference", "competitor")], pairing_col="unit",
+        subject_order=true_order,
+    )
+    d = suite.stat.paired_differences(result)
+    assert list(d.index) == true_order
+
+    suite = _make_condition_suite()
+    result = suite.stat.wilcoxon(
+        "outcome", group_by="Method", comparisons=[("a", "b")], pairing_col="region", filters={"condition": "rest"},
+    )
+    d = suite.stat.paired_differences(result)
+    assert len(d) == result.table.loc[0, "n_pairs"]
+
+
+def test_stat_paired_differences_rejects_independent_result():
+    suite = _make_independent_suite()
+    result = suite.stat.ttest("outcome", group_by="Method", comparisons=[("a", "b")])
+    with pytest.raises(ValueError, match="paired result"):
+        suite.stat.paired_differences(result)
+
+
+def _texts(ax):
+    return [t.get_text() for t in ax.texts]
+
+
+def test_metricsuite_plot_paired_differences_annotation_keys():
+    suite = _make_vs_suite(n_regions=30, missing_noise=("r03",))
+    result = suite.stat.ttest_ess(
+        "outcome", group_by="Method", comparisons=[("reference", "worse"), ("reference", "noise")], pairing_col="region",
+    )
+    s = result.vs("reference")
+    d = suite.stat.paired_differences(result)
+
+    fig, ax = suite.plot.paired_differences(
+        result, annotate=("stars", "effect", "winrate", "counts", "n_eff"),
+    )
+    texts = _texts(ax)
+    assert texts[:5] == [
+        "***", f"dz={s.loc['worse', 'effect']:+.2f}", "+50%", "30/0/0", f"n_eff={s.loc['worse', 'n_eff']:.0f}",
+    ]
+    noise = d["noise"].dropna()
+    assert texts[7] == f"{(noise > 0).mean() - 0.5:+.0%}"
+    assert texts[8] == f"{(noise > 0).sum()}/{(noise == 0).sum()}/{(noise < 0).sum()}"
+    assert [t.get_text() for t in ax.get_xticklabels()] == ["worse", "noise"]
+
+    # First line on top and larger, same height for every column.
+    assert ax.texts[0].get_position()[1] > ax.texts[1].get_position()[1]
+    assert ax.texts[0].get_fontsize() > ax.texts[1].get_fontsize()
+    assert ax.texts[0].get_position()[1] == ax.texts[5].get_position()[1]
+    plt.close(fig)
+
+
+def test_metricsuite_plot_paired_differences_rank_biserial_and_orientation():
+    """Wilcoxon results print r=..., and lower-is-better flips both the plotted values and the effect sign."""
+    suite = _make_vs_suite()
+    result = suite.stat.wilcoxon("outcome", group_by="Method", comparisons=[("worse", "reference")], pairing_col="region")
+
+    fig, ax = suite.plot.paired_differences(result, reference="reference", annotate=("effect",))
+    assert _texts(ax) == ["r=+1.00"]
+    plt.close(fig)
+
+    fig, ax = suite.plot.paired_differences(result, reference="reference", higher_is_better=False, annotate=("effect", "counts"))
+    assert _texts(ax) == ["r=-1.00", "0/0/12"]
+    plt.close(fig)
+
+
+def test_metricsuite_plot_paired_differences_n_eff_skipped_when_absent():
+    suite = _make_vs_suite()
+    result = suite.stat.wilcoxon("outcome", group_by="Method", comparisons=[("reference", "worse")], pairing_col="region")
+    fig, ax = suite.plot.paired_differences(result, annotate=("stars", "n_eff"))
+    assert _texts(ax) == ["***"]
+    plt.close(fig)
+
+
+def test_metricsuite_plot_paired_differences_rejects_unknown_annotation():
+    suite = _make_vs_suite()
+    result = suite.stat.wilcoxon("outcome", group_by="Method", comparisons=[("reference", "worse")], pairing_col="region")
+    with pytest.raises(ValueError, match="Unknown annotation"):
+        suite.plot.paired_differences(result, annotate=("stars", "cohen"))
+
+
+def test_metricsuite_plot_paired_differences_violin_vs_points():
+    """A column with at least violin_min_n units is a violin; below that, jittered points."""
+    from matplotlib.collections import PathCollection, PolyCollection
+
+    suite = _make_vs_suite(n_regions=12, missing_noise=("r00", "r01", "r02"))
+    result = suite.stat.wilcoxon(
+        "outcome", group_by="Method", comparisons=[("reference", "worse"), ("reference", "noise")], pairing_col="region",
+    )
+    fig, ax = suite.plot.paired_differences(result, violin_min_n=10, palette={"worse": "red", "noise": "blue"})
+    violins = [c for c in ax.collections if isinstance(c, PolyCollection)]
+    points = [c for c in ax.collections if isinstance(c, PathCollection)]
+    assert len(violins) == 1  # worse: 12 units
+    assert len(points) == 1 and len(points[0].get_offsets()) == 9  # noise: 9 units
+    assert violins[0].get_alpha() == pytest.approx(0.45)
+    plt.close(fig)
+
+    fig, ax = suite.plot.paired_differences(result)  # default violin_min_n=30: points only
+    assert not [c for c in ax.collections if isinstance(c, PolyCollection)]
+    plt.close(fig)
+
+
+def test_metricsuite_plot_paired_differences_order_labels_and_direction():
+    suite = _make_vs_suite()
+    result = suite.stat.wilcoxon(
+        "outcome", group_by="Method", comparisons=[("reference", "worse"), ("reference", "noise")], pairing_col="region",
+    )
+    fig_in, ax_in = plt.subplots()
+    fig, ax = suite.plot.paired_differences(
+        result, order=["noise", "worse"], tick_labels={"noise": "Noise"}, annotate=(),
+        direction_labels=("ref better", "other better"), ax=ax_in,
+    )
+    assert ax is ax_in and fig is fig_in
+    assert [t.get_text() for t in ax.get_xticklabels()] == ["Noise", "worse"]
+    assert _texts(ax) == ["ref better ↑", "other better ↓"]
+    plt.close(fig)
+
+    with pytest.raises(ValueError):
+        suite.plot.paired_differences(result, order=["unknown"])
+
+
+def test_metricsuite_plot_group_comparison_defaults_unchanged():
+    """No new keyword given: opaque fills, no extra lines or bands, tick labels are the group names."""
+    suite = _make_compare_suite()
+    result = suite.stat.wilcoxon(
+        "outcome", group_by="Method",
+        comparisons=suite.stat.build_comparisons("reference", ["shifted", "noise"]), pairing_col="region",
+    )
+    fig, ax = suite.plot.group_comparison(result, order=["reference", "shifted", "noise"])
+    assert all(p.get_facecolor()[3] == 1.0 for p in ax.patches)
+    assert len(ax.patches) == 3
+    assert not [l for l in ax.lines if l.get_linestyle() in ("--", ":")]
+    assert [t.get_text() for t in ax.get_xticklabels()] == ["reference", "shifted", "noise"]
+    plt.close(fig)
+
+
+def test_metricsuite_plot_group_comparison_decorations():
+    suite = _make_compare_suite()
+    result = suite.stat.wilcoxon(
+        "outcome", group_by="Method",
+        comparisons=suite.stat.build_comparisons("reference", ["shifted", "noise"]), pairing_col="region",
+    )
+    fig, ax = suite.plot.group_comparison(
+        result, order=["reference", "shifted", "noise"], chance=(-0.5, 0.5), chance_value=0.0,
+        reference_lines={"dSPM": 1.0, "sLORETA": (2.0, "green")}, fill_alpha=0.45,
+        tick_labels={"reference": "Ref", "noise": "Noisy"}, reference_suffix=" (ref.)",
+    )
+    band, *boxes = ax.patches
+    assert band.get_zorder() == 0
+    assert len(boxes) == 3 and all(p.get_facecolor()[3] == pytest.approx(0.45) for p in boxes)
+    assert all(p.get_edgecolor()[3] == 1.0 for p in boxes)
+    dashed = {l.get_label(): l for l in ax.lines if l.get_linestyle() == "--"}
+    assert set(dashed) == {"dSPM", "sLORETA"}
+    assert dashed["sLORETA"].get_ydata()[0] == 2.0 and dashed["sLORETA"].get_color() == "green"
+    assert len([l for l in ax.lines if l.get_linestyle() == ":"]) == 1
+    assert [t.get_text() for t in ax.get_xticklabels()] == ["Ref (ref.)", "shifted", "Noisy"]
+    plt.close(fig)
+
+    with pytest.raises(ValueError):
+        suite.plot.group_comparison(result, fill_alpha=2)

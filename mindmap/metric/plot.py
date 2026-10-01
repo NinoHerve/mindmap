@@ -9,17 +9,21 @@ already-computed `PairwiseResult`/`ClusterResult`/`NormalityResult`/
 `AnovaResult` -- never a metric name -- so the two families can never be
 confused with each other at a call site. `group_comparison` accepts a
 `PairwiseResult` from any of `suite.stat.wilcoxon`/`.ttest`/
-`.mannwhitneyu`/`.paired_ttest`/`.ttest_ess`.
+`.mannwhitneyu`/`.paired_ttest`/`.ttest_ess`; `paired_differences` draws
+the per-unit differences behind a paired one.
 
 Author: Nino Herve
 """
 
+import numpy as np
 import pandas as pd
 
 from mindmap.viz.core import (
     metric_box, metric_violin, metric_bar, metric_line, metric_scatter, metric_distribution, metric_histogram,
 )
-from mindmap.viz.stats import metric_box_significance, metric_relational_clusters, metric_relational_cluster_summary
+from mindmap.viz.stats import (
+    metric_box_significance, metric_relational_clusters, metric_relational_cluster_summary, metric_paired_differences,
+)
 
 from mindmap.metric.results import PairwiseResult, ClusterResult, NormalityResult, AnovaResult
 
@@ -98,6 +102,17 @@ def _collapse_for_plot(df, group_by, pairing_col, unit_col):
     if unit_col is not None:
         return df.groupby([group_by, unit_col] + metric_key, as_index=False)["Value"].mean()
     return df
+
+
+_ANNOTATION_KEYS = ("stars", "effect", "winrate", "counts", "n_eff")
+_EFFECT_SYMBOLS = {"cohens_dz": "dz", "rank_biserial": "r"}
+
+
+def _stars(p):
+    """Significance stars at 0.001/0.01/0.05, `"ns"` otherwise (including a missing p-value)."""
+    if pd.isna(p):
+        return "ns"
+    return "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
 
 
 class PlotAccessor:
@@ -223,7 +238,10 @@ class PlotAccessor:
 
     # -- Stat views: a computed result in, never a metric name ---------------
 
-    def group_comparison(self, result, reference=None, alpha=0.05, ax=None, **kwargs):
+    def group_comparison(
+        self, result, reference=None, alpha=0.05, ax=None, *, chance=None, chance_value=None,
+        reference_lines=None, fill_alpha=None, tick_labels=None, reference_suffix=None, **kwargs,
+    ):
         """
         Draws `result` (from `suite.stat.wilcoxon`/`.ttest`/
         `.mannwhitneyu`/`.paired_ttest`/`.ttest_ess`) as an annotated box
@@ -261,6 +279,28 @@ class PlotAccessor:
         ax: matplotlib.axes.Axes, optional
             Axes to plot into. A new figure/axes is created if not given.
 
+        chance: tuple[float, float], optional
+            `(lo, hi)` range shaded in gray behind the boxes (e.g. a
+            permutation chance range).
+
+        chance_value: float, optional
+            Dotted horizontal line behind the boxes (e.g. 0 or 0.5).
+
+        reference_lines: dict, optional
+            `{label: value}` or `{label: (value, color)}` -- dashed
+            horizontal lines behind the boxes, labelled for `ax.legend()`
+            (e.g. other methods' medians).
+
+        fill_alpha: float, optional
+            Box fill opacity in [0, 1], edges kept opaque. Default `None`
+            keeps seaborn's opaque fills.
+
+        tick_labels: dict, optional
+            `{group: display name}` for the x tick labels.
+
+        reference_suffix: str, optional
+            Appended to `reference`'s tick label, e.g. `" (ref.)"`.
+
         **kwargs
             Passed straight through to `metric_box`.
 
@@ -291,8 +331,148 @@ class PlotAccessor:
         collapsed_df = _collapse_for_plot(df, result.group_by, result.pairing_col, result.unit_col)
 
         view = _reference_view(result.table, result.group_by, reference)
+        if fill_alpha is not None:
+            kwargs["fill_alpha"] = fill_alpha
         return metric_box_significance(
-            collapsed_df, view, group_name=result.group_by, reference=reference, alpha=alpha, ax=ax, **kwargs,
+            collapsed_df, view, group_name=result.group_by, reference=reference, alpha=alpha, ax=ax,
+            chance=chance, chance_value=chance_value, reference_lines=reference_lines,
+            tick_labels=tick_labels, reference_suffix=reference_suffix, **kwargs,
+        )
+
+    def paired_differences(
+        self, result, reference=None, higher_is_better=True, order=None, palette=None,
+        annotate=("stars", "effect"), violin_min_n=30, fill_alpha=0.45, seed=0, ax=None, *,
+        tick_labels=None, direction_labels=None,
+    ):
+        """
+        Draws the per-unit paired differences behind `result` (from
+        `suite.stat.wilcoxon`/`.paired_ttest`/`.ttest_ess`), `reference`
+        minus each competitor, one column per competitor -- violins for
+        large samples, points for small ones -- annotated with each test's
+        significance, effect size and win rate.
+
+        !!! note "Technical details"
+            The differences are `suite.stat.paired_differences(result,
+            reference, higher_is_better)` -- the exact units each test saw
+            -- and every annotation is read from `result.vs(reference,
+            higher_is_better)`, so positive always means `reference`
+            better, in the plot and in the numbers. Nothing is recomputed.
+            Annotation keys, stacked top to bottom in the order given:
+
+            - `"stars"`: `***`/`**`/`*`/`ns` from `p_corrected` (0.001/
+              0.01/0.05; falls back to `p_value` on an uncorrected result);
+            - `"effect"`: `dz=+0.56` (Cohen's dz) or `r=+0.42`
+              (rank-biserial), oriented as above;
+            - `"winrate"`: share of units where `reference` is better,
+              minus 50% (e.g. `+26%` = better at 76% of units);
+            - `"counts"`: better/tied/worse unit counts, e.g. `61/0/39`;
+            - `"n_eff"`: `n_eff=35`, only for `ttest_ess` results (no line
+              otherwise).
+
+            Win rate and counts come from the plotted differences, so ties
+            are units with exactly equal values -- the ones Wilcoxon drops
+            from its own `n_pairs`.
+
+        Parameters
+        ----------
+        result: PairwiseResult
+            A paired result, e.g. from
+            `suite.stat.ttest_ess(metric, group_by, comparisons=..., pairing_col=...)`.
+
+        reference: str, optional
+            The group every difference is taken from. Inferred from
+            `result` when every pair shares one common group; required
+            otherwise.
+
+        higher_is_better: bool, optional
+            Whether a larger metric value is better (default True); when
+            False, differences and effects are negated.
+
+        order: list, optional
+            Competitors to draw, left to right. Defaults to the order of
+            `result.table`.
+
+        palette: dict | str | list, optional
+            `{group: color}`, or anything `sns.color_palette` accepts.
+
+        annotate: tuple[str, ...], optional
+            Which annotation lines to draw, top to bottom (default
+            `("stars", "effect")`); see technical details. `()` for none.
+
+        violin_min_n: int, optional
+            Minimum number of units for a violin instead of points
+            (default 30).
+
+        fill_alpha: float, optional
+            Violin fill opacity (default 0.45).
+
+        seed: int, optional
+            Seed for the point jitter (default 0).
+
+        ax: matplotlib.axes.Axes, optional
+            Axes to plot into. A new figure/axes is created if not given.
+
+        tick_labels: dict, optional
+            `{group: display name}` for the x tick labels.
+
+        direction_labels: tuple[str, str], optional
+            `(positive, negative)` labels written right of the axes at
+            y = 0, e.g. `("wCSET better", "other method better")`.
+
+        Returns
+        -------
+        (matplotlib.figure.Figure, matplotlib.axes.Axes)
+        """
+        if not isinstance(result, PairwiseResult):
+            raise TypeError(
+                f"suite.plot.paired_differences() expects a PairwiseResult (from suite.stat.wilcoxon(...)/"
+                f".paired_ttest(...)/.ttest_ess(...)), got {type(result).__name__}."
+            )
+        if isinstance(annotate, str):
+            annotate = (annotate,)
+        unknown = [k for k in annotate if k not in _ANNOTATION_KEYS]
+        if unknown:
+            raise ValueError(f"Unknown annotation key(s) {unknown}. Choose from {list(_ANNOTATION_KEYS)}.")
+
+        if reference is None:
+            reference = _infer_reference(list(zip(result.table["group_a"], result.table["group_b"])))
+        if reference is None:
+            raise ValueError(
+                "`reference` is required -- this result's pairs don't share one common group "
+                "for it to be inferred from (an arbitrary many-to-many `comparisons` result)."
+            )
+
+        summary = result.vs(reference, higher_is_better=higher_is_better)
+        diffs = self._suite.stat.paired_differences(result, reference=reference, higher_is_better=higher_is_better)
+        if order is None:
+            order = list(summary.index)
+        missing = [c for c in order if c not in summary.index]
+        if missing:
+            raise ValueError(f"`order` entries {missing} were not compared against reference {reference!r} in `result`.")
+
+        annotations = {}
+        for c in order:
+            row = summary.loc[c]
+            d = diffs[c].dropna().to_numpy(dtype=float)
+            lines = []
+            for key in annotate:
+                if key == "stars":
+                    p = row["p_corrected"] if pd.notna(row["p_corrected"]) else row["p_value"]
+                    lines.append(_stars(p))
+                elif key == "effect":
+                    symbol = _EFFECT_SYMBOLS.get(row["effect_size_type"], row["effect_size_type"])
+                    lines.append(f"{symbol}={row['effect']:+.2f}")
+                elif key == "winrate":
+                    lines.append(f"{(d > 0).mean() - 0.5:+.0%}")
+                elif key == "counts":
+                    lines.append(f"{(d > 0).sum()}/{(d == 0).sum()}/{(d < 0).sum()}")
+                elif key == "n_eff" and pd.notna(row.get("n_eff", np.nan)):
+                    lines.append(f"n_eff={row['n_eff']:.0f}")
+            annotations[c] = lines
+
+        return metric_paired_differences(
+            diffs, order=order, palette=palette, annotations=annotations, violin_min_n=violin_min_n,
+            fill_alpha=fill_alpha, seed=seed, tick_labels=tick_labels, direction_labels=direction_labels, ax=ax,
         )
 
     def cluster_permutation(self, result, reference=None, alpha=0.05, ax=None, **kwargs):

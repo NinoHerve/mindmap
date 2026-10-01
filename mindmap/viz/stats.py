@@ -4,7 +4,9 @@ Description: Significance overlays for the `metric_box`/`metric_line`
 plots in `mindmap/viz/core.py` -- asterisk/bracket annotations vs a fixed
 reference method on box plots (`mindmap.analysis.stats.compare_methods`'s
 output), and shaded significant-cluster spans on curve plots
-(`mindmap.analysis.stats.cluster_permutation_mne`'s output).
+(`mindmap.analysis.stats.cluster_permutation_mne`'s output), plus a
+reference-vs-competitors paired-difference panel
+(`metric_paired_differences`).
 
 Both plot into a single `Axes` (matching `metric_box`/`metric_line`'s
 `ax=None -> (fig, ax)` convention), so there is no per-metric Axes lookup to
@@ -14,12 +16,18 @@ corresponding to a single metric.
 Author: Nino Herve
 """
 
+import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
 from mindmap.viz.core import metric_box, metric_line
+
+
+#: Neutral gray for reference/zero lines, and the lighter gray of shaded chance bands.
+LINE_COLOR = "#898781"
+CHANCE_COLOR = "#c3c2b7"
 
 
 def metric_box_significance(
@@ -33,6 +41,12 @@ def metric_box_significance(
     bracket: bool = True,
     palette="viridis", title=None,
     ax=None,
+    *,
+    chance=None,
+    chance_value=None,
+    reference_lines=None,
+    tick_labels=None,
+    reference_suffix=None,
     **kwargs,
 ):
     """
@@ -83,12 +97,42 @@ def metric_box_significance(
     palette, title, ax
         Forwarded to `metric_box`.
 
+    chance: tuple[float, float], optional
+        `(lo, hi)` range shaded in gray behind the boxes (e.g. a
+        permutation chance range).
+
+    chance_value: float, optional
+        Dotted horizontal line behind the boxes (e.g. 0 or 0.5).
+
+    reference_lines: dict, optional
+        `{label: value}` or `{label: (value, color)}` -- one dashed
+        horizontal line per entry, behind the boxes, labelled `label` so
+        `ax.legend()` picks it up (e.g. other methods' medians). Default
+        color: neutral gray.
+
+    tick_labels: dict, optional
+        `{group: display name}` for the x tick labels; groups not listed
+        keep their own name.
+
+    reference_suffix: str, optional
+        Appended to `reference`'s tick label (e.g. `" (ref.)"`).
+
+    **kwargs
+        Forwarded to `metric_box` (e.g. `points=`, `fill_alpha=`, or
+        seaborn `boxplot` arguments).
+
     Returns
     -------
     (matplotlib.figure.Figure, matplotlib.axes.Axes)
     """
     if reference is None:
         raise ValueError("`reference` is required to place significance annotations.")
+    if chance is not None and (not isinstance(chance, (tuple, list)) or len(chance) != 2):
+        raise ValueError(f"`chance` must be a (lo, hi) pair, got {chance!r}.")
+    if reference_lines is not None and not isinstance(reference_lines, dict):
+        raise TypeError(f"`reference_lines` must be a dict {{label: value | (value, color)}}, got {type(reference_lines).__name__}.")
+    if tick_labels is not None and not isinstance(tick_labels, dict):
+        raise TypeError(f"`tick_labels` must be a dict {{group: label}}, got {type(tick_labels).__name__}.")
 
     if order is None:
         order = list(pd.unique(df[group_name]))
@@ -96,7 +140,23 @@ def metric_box_significance(
         raise ValueError(f"reference '{reference}' not found in `order`/`df['{group_name}']`.")
     ref_x = order.index(reference)
 
+    if ax is None:
+        _, ax = plt.subplots()
+    if chance is not None:
+        ax.axhspan(*chance, color=CHANCE_COLOR, alpha=0.35, linewidth=0, zorder=0)
+    if chance_value is not None:
+        ax.axhline(chance_value, color=LINE_COLOR, linestyle=":", linewidth=1, zorder=0)
+    for label, spec in (reference_lines or {}).items():
+        value, color = spec if isinstance(spec, (tuple, list)) else (spec, LINE_COLOR)
+        ax.axhline(value, color=color, linestyle="--", linewidth=1.5, zorder=0.5, label=label)
+
     fig, ax = metric_box(df, group_name=group_name, order=order, palette=palette, title=title, ax=ax, **kwargs)
+
+    if tick_labels is not None or reference_suffix is not None:
+        labels = [str((tick_labels or {}).get(g, g)) for g in order]
+        labels[ref_x] += reference_suffix or ""
+        ax.set_xticks(range(len(order)))
+        ax.set_xticklabels(labels)
 
     if df.empty:
         return fig, ax
@@ -432,5 +492,155 @@ def metric_relational_cluster_summary(
     ax.set_xlabel(x)
     if title:
         ax.set_title(title)
+
+    return fig, ax
+
+
+def metric_paired_differences(
+    diffs,
+    order=None,
+    palette=None,
+    annotations=None,
+    violin_min_n=30,
+    fill_alpha=0.45,
+    seed=0,
+    tick_labels=None,
+    direction_labels=None,
+    ax=None,
+):
+    """
+    Per-unit paired differences, one column per competitor: violins (with
+    an IQR line) for large samples, jittered points for small ones, a thick
+    median line each, a horizontal line at 0, and optional text lines
+    stacked above each column.
+
+    !!! note "Technical details"
+        The switch is per column: a column with at least `violin_min_n`
+        values is drawn as a violin (`ax.violinplot`, no extrema) plus a
+        thin black Q1-Q3 line; below that, as points jittered uniformly in
+        +/-0.12 around the column (reproducible through `seed`). Every
+        column gets a thick black median line. Annotation lines are stacked
+        so the *first* line of every column sits on top, at the same height
+        for every column, 7.5% of the data span apart; the first line is
+        drawn larger and darker than the rest. The y-limits leave room for
+        the tallest stack.
+
+    Parameters
+    ----------
+    diffs: pd.DataFrame | dict
+        One column (or `{name: 1-D array}` entry) per competitor; `NaN`s
+        are dropped per column. Already oriented by the caller (e.g.
+        positive = reference better).
+
+    order: list, optional
+        Columns to draw, left to right. Defaults to `diffs`' own order.
+
+    palette: dict | str | list, optional
+        `{name: color}`, or anything `sns.color_palette` accepts (assigned
+        in `order`). Default: seaborn's current palette.
+
+    annotations: dict, optional
+        `{name: [line, ...]}` drawn above each column, first line on top.
+
+    violin_min_n: int, optional
+        Minimum number of values for a violin instead of points (default 30).
+
+    fill_alpha: float, optional
+        Violin fill opacity (default 0.45).
+
+    seed: int, optional
+        Seed for the point jitter (default 0).
+
+    tick_labels: dict, optional
+        `{name: display name}` for the x tick labels.
+
+    direction_labels: tuple[str, str], optional
+        `(positive, negative)` labels, e.g. `("wCSET better", "other method
+        better")`, written just right of the axes on either side of y = 0
+        with an up/down arrow.
+
+    ax: matplotlib.axes.Axes, optional
+        Axes to plot into. A new figure/axes is created if not given.
+
+    Returns
+    -------
+    (matplotlib.figure.Figure, matplotlib.axes.Axes)
+    """
+    if isinstance(diffs, pd.DataFrame):
+        values = {c: diffs[c].dropna().to_numpy(dtype=float) for c in diffs.columns}
+    elif isinstance(diffs, dict):
+        values = {c: np.asarray(v, dtype=float) for c, v in diffs.items()}
+        values = {c: v[~np.isnan(v)] for c, v in values.items()}
+    else:
+        raise TypeError(f"`diffs` must be a pd.DataFrame or a dict of arrays, got {type(diffs).__name__}.")
+
+    if order is None:
+        order = list(values)
+    missing = [c for c in order if c not in values]
+    if missing:
+        raise ValueError(f"`order` entries {missing} not found in `diffs` (available: {list(values)}).")
+    empty = [c for c in order if len(values[c]) == 0]
+    if empty:
+        raise ValueError(f"No values to draw for {empty}.")
+    if not (isinstance(fill_alpha, (int, float)) and 0 <= fill_alpha <= 1):
+        raise ValueError(f"`fill_alpha` must be a number in [0, 1], got {fill_alpha!r}.")
+    if direction_labels is not None and (not isinstance(direction_labels, (tuple, list)) or len(direction_labels) != 2):
+        raise ValueError(f"`direction_labels` must be a (positive, negative) pair of strings, got {direction_labels!r}.")
+
+    if isinstance(palette, dict):
+        unknown = [c for c in order if c not in palette]
+        if unknown:
+            raise ValueError(f"`palette` has no color for {unknown}.")
+        colors = palette
+    else:
+        colors = dict(zip(order, sns.color_palette(palette, n_colors=len(order))))
+
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.get_figure()
+
+    ax.axhline(0, color=LINE_COLOR, linewidth=1, zorder=0)
+    rng = np.random.default_rng(seed)
+    for i, c in enumerate(order):
+        y = values[c]
+        if len(y) >= violin_min_n:
+            vp = ax.violinplot([y], positions=[i], widths=0.7, showextrema=False)
+            for body in vp["bodies"]:
+                body.set_facecolor(colors[c])
+                body.set_edgecolor(colors[c])
+                body.set_alpha(fill_alpha)
+                body.set_zorder(1)
+            q1, q3 = np.percentile(y, [25, 75])
+            ax.plot([i, i], [q1, q3], color="#0b0b0b", linewidth=1.5, zorder=3)
+        else:
+            x = i + rng.uniform(-0.12, 0.12, size=len(y))
+            ax.scatter(x, y, s=18, color=colors[c], alpha=0.8, edgecolors="white", linewidths=0.6, zorder=2)
+        med = np.median(y)
+        ax.plot([i - 0.22, i + 0.22], [med, med], color="#0b0b0b", linewidth=2, zorder=4)
+
+    ymax = max(np.max(values[c]) for c in order)
+    ymin = min(np.min(values[c]) for c in order)
+    span = (ymax - ymin) or 1.0
+    n_lines = max((len(annotations.get(c, [])) for c in order), default=0) if annotations else 0
+    step = 0.075 * span
+    for i, c in enumerate(order):
+        for k, line in enumerate((annotations or {}).get(c, [])):
+            ax.text(
+                i, ymax + 0.02 * span + (n_lines - 1 - k) * step, line, ha="center", va="bottom",
+                fontsize=8 if k == 0 else 7, color="#222222" if k == 0 else "#555555",
+            )
+    ax.set_ylim(ymin - 0.05 * span, ymax + (0.06 + n_lines * 0.075) * span)
+    ax.set_xticks(range(len(order)))
+    ax.set_xticklabels([str((tick_labels or {}).get(c, c)) for c in order])
+    ax.spines[["top", "right"]].set_visible(False)
+
+    if direction_labels is not None:
+        better, worse = direction_labels
+        for text, dy, va in [(f"{better} \u2191", 4, "bottom"), (f"{worse} \u2193", -4, "top")]:
+            ax.annotate(
+                text, xy=(1.0, 0.0), xycoords=("axes fraction", "data"), xytext=(4, dy),
+                textcoords="offset points", fontsize=7, color="#666666", ha="left", va=va,
+            )
 
     return fig, ax

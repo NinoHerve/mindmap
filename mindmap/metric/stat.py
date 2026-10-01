@@ -13,8 +13,9 @@ Author: Nino Herve
 import pandas as pd
 
 from mindmap.metric.results import (
-    PairwiseResult, ClusterResult, NormalityResult, AnovaResult, _freeze_filter, _freeze_filters,
+    PairwiseResult, ClusterResult, NormalityResult, AnovaResult, _freeze_filter, _freeze_filters, _paired_wide,
 )
+from mindmap.metric.plot import _infer_reference, _filters_to_dict
 
 
 class StatAccessor:
@@ -369,6 +370,87 @@ class StatAccessor:
         PairwiseResult
         """
         return self._pairwise(metric, group_by, comparisons, "mannwhitneyu", correction, alpha, unit_col, None, None, filters)
+
+    def paired_differences(self, result, reference=None, higher_is_better=True):
+        """
+        The per-unit paired differences `reference - competitor` behind a
+        paired `PairwiseResult` -- one column per competitor, one row per
+        `pairing_col` value -- e.g. to plot or summarize what each test
+        actually compared. For the plot, see
+        `suite.plot.paired_differences`.
+
+        !!! note "Technical details"
+            Rebuilt from the suite's data with exactly the test's own
+            filters, `unit_col` collapsing, `subject_order` reindexing and
+            per-pair complete-case dropping (shared code with
+            `PairwiseResult.compute`), so each column has exactly that
+            pair's `n_pairs` non-missing values. Rows are the union of
+            every competitor's complete cases, in the test's
+            `pairing_col` order (`subject_order` when the test had one);
+            a unit missing for one competitor only is `NaN` in that
+            column. Read-only: the cached test is neither recomputed nor
+            modified. `reference` is inferred like
+            `suite.plot.group_comparison` does when every pair shares one
+            common group. Only paired results (`wilcoxon`/`paired_ttest`/
+            `ttest_ess`) have per-unit differences.
+
+        Parameters
+        ----------
+        result: PairwiseResult
+            A paired result, e.g. from `suite.stat.wilcoxon(...)`.
+
+        reference: str, optional
+            The group subtracted from. Inferred from `result` when every
+            pair shares one common group; required otherwise.
+
+        higher_is_better: bool, optional
+            Whether a larger metric value is better (default True). When
+            False, differences are negated (`competitor - reference`), so
+            positive always means `reference` better, matching
+            `PairwiseResult.vs`.
+
+        Returns
+        -------
+        pd.DataFrame
+            Index = `pairing_col` values, columns = competitors (in
+            `result.vs(reference)` order).
+        """
+        if not isinstance(result, PairwiseResult):
+            raise TypeError(
+                f"suite.stat.paired_differences() expects a PairwiseResult (from suite.stat.wilcoxon(...)/"
+                f".paired_ttest(...)/.ttest_ess(...)), got {type(result).__name__}."
+            )
+        if result.pairing_col is None:
+            raise ValueError(
+                f"suite.stat.paired_differences() needs a paired result, but test={result.test!r} is an "
+                f"independent-samples test (no `pairing_col`)."
+            )
+        if not isinstance(higher_is_better, bool):
+            raise TypeError(f"`higher_is_better` must be a bool, got {type(higher_is_better).__name__}.")
+
+        if reference is None:
+            reference = _infer_reference(list(zip(result.table["group_a"], result.table["group_b"])))
+        if reference is None:
+            raise ValueError(
+                "`reference` is required -- this result's pairs don't share one common group "
+                "for it to be inferred from (an arbitrary many-to-many `comparisons` result)."
+            )
+        competitors = list(result.vs(reference).index)
+
+        df = self._suite.to_df(metrics=result.metric, filters=_filters_to_dict(result.filters))
+        if df.empty:
+            raise ValueError(f"No data registered for metric '{result.metric}'.")
+        wide = _paired_wide(df, result.group_by, result.pairing_col, result.unit_col, result.subject_order)
+
+        sign = 1.0 if higher_is_better else -1.0
+        columns = {}
+        for c in competitors:
+            complete = wide[[reference, c]].dropna()
+            columns[c] = sign * (complete[reference] - complete[c])
+        diffs = pd.DataFrame(columns, index=wide.index, columns=competitors)
+        diffs = diffs.dropna(how="all")
+        diffs.columns.name = result.group_by
+        return diffs
 
     # ------------------------------------------------------------------
     # Cluster permutation.

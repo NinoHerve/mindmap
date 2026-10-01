@@ -82,11 +82,23 @@ def _collapse(df, group_by, match_col, unit_col):
     return df.groupby([group_by, match_col], as_index=False)["Value"].mean()
 
 
-def _compute_paired_rows(df, group_by, pairing_col, unit_col, comparisons, core_test, subject_order):
+def _paired_wide(df, group_by, pairing_col, unit_col, subject_order):
+    """
+    One row per `pairing_col` value, one column per group -- the collapsed,
+    `subject_order`-reindexed table every paired test reads its pairs from
+    (each pair then drops its own incomplete rows). Shared with
+    `StatAccessor.paired_differences` so the differences it returns are
+    exactly the ones the test saw.
+    """
     collapsed = _collapse(df, group_by, pairing_col, unit_col)
     wide = collapsed.pivot(index=pairing_col, columns=group_by, values="Value")
     if subject_order is not None:
-        wide = wide.reindex(subject_order)
+        wide = wide.reindex(list(subject_order))
+    return wide
+
+
+def _compute_paired_rows(df, group_by, pairing_col, unit_col, comparisons, core_test, subject_order):
+    wide = _paired_wide(df, group_by, pairing_col, unit_col, subject_order)
 
     rows = []
     for a, b in comparisons:
@@ -303,6 +315,67 @@ class PairwiseResult:
             unit_col=self.unit_col, pairing_col=self.pairing_col, subject_order=self.subject_order,
             filters=self.filters, table=table, computed_at=self.computed_at,
         )
+
+    def vs(self, reference, higher_is_better=True):
+        """
+        One row per competitor of `reference` -- its p-values and an effect
+        size oriented so that **positive = `reference` better**, whichever
+        order each pair was stored in.
+
+        !!! note "Technical details"
+            Competitors are every group paired with `reference` in
+            `self.table`, in table order; pairs not involving `reference`
+            are ignored. `effect` is `effect_size` as stored when
+            `reference` is `group_a` (`paired_test`'s `diff = group_a -
+            group_b`), negated when it is `group_b`, and negated again when
+            `higher_is_better=False` (e.g. an error metric). Both
+            `"rank_biserial"` and `"cohens_dz"` are antisymmetric in the
+            two groups, so the flip is exact. Nothing is recomputed: the
+            values come straight from `self.table`, so `p_corrected`/
+            `significant` are `NaN`/`None` on a result that was never
+            `correct`-ed.
+
+        Parameters
+        ----------
+        reference: str
+            The group every competitor is read against.
+
+        higher_is_better: bool, optional
+            Whether a larger metric value is better (default True).
+
+        Returns
+        -------
+        pd.DataFrame
+            Indexed by competitor (index named after `group_by`), columns
+            `p_value`, `p_corrected`, `significant`, `effect`,
+            `effect_size_type`, `n_pairs`, and `n_eff` when any row has it.
+        """
+        if not isinstance(higher_is_better, bool):
+            raise TypeError(f"`higher_is_better` must be a bool, got {type(higher_is_better).__name__}.")
+
+        t = self.table
+        as_a = t["group_a"] == reference
+        as_b = t["group_b"] == reference
+        if not (as_a | as_b).any():
+            groups = sorted({*t["group_a"], *t["group_b"]}, key=str)
+            raise ValueError(
+                f"reference {reference!r} appears in no pair of this result "
+                f"(groups compared: {groups})."
+            )
+
+        rows = t[as_a | as_b]
+        sign = np.where(rows["group_a"] == reference, 1.0, -1.0) * (1.0 if higher_is_better else -1.0)
+        out = pd.DataFrame({
+            "p_value": rows["p_value"].to_numpy(),
+            "p_corrected": rows["p_corrected"].to_numpy(),
+            "significant": rows["significant"].to_numpy(),
+            "effect": rows["effect_size"].to_numpy(dtype=float) * sign,
+            "effect_size_type": rows["effect_size_type"].to_numpy(),
+            "n_pairs": rows["n_pairs"].to_numpy(),
+        }, index=pd.Index(np.where(rows["group_a"] == reference, rows["group_b"], rows["group_a"]), name=self.group_by))
+        if rows["n_eff"].notna().any():
+            out["n_eff"] = rows["n_eff"].to_numpy()
+        return out
 
     @classmethod
     def merge(cls, results):
