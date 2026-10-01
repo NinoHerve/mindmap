@@ -164,8 +164,15 @@ def apply_view(plotter: pv.Plotter, direction, viewup, padding: float = 0.05):
     vertical_extent = abs(size @ viewup)
     horizontal_extent = abs(size @ horizontal)
 
+    # The exact distance is arbitrary for the *projection* under parallel
+    # projection, but it isn't arbitrary for `ResetCameraClippingRange`
+    # below: too close (e.g. distance=1) puts the camera inside the mesh,
+    # so the near clip plane slices through the surface facing it. Scaling
+    # by the bounding-box diagonal keeps the camera safely outside the
+    # mesh regardless of subject/mesh size.
+    distance = np.linalg.norm(size)
     plotter.camera.SetViewUp(*viewup)
-    plotter.camera.SetPosition(*(focus + direction))  # distance is arbitrary under parallel projection
+    plotter.camera.SetPosition(*(focus + direction * distance))
     plotter.camera.SetFocalPoint(*focus)
 
     parallel_scale = max(horizontal_extent / aspect[0], vertical_extent) / 2

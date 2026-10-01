@@ -76,6 +76,21 @@ def test_layer_style_autodetects_points_vs_surface(sphere):
     assert Layer(cloud).style == "points"
 
 
+def test_layer_style_reaches_plot_kwargs(sphere):
+    """Regression: `style` must actually reach `add_mesh(style=...)`, not
+    just select which _default_style() kwargs bundle applies - a mesh
+    with faces requesting a non-default style (e.g. "wireframe") used to
+    silently render as a plain opaque surface instead."""
+    layer = Layer(sphere, style="wireframe", color="crimson")
+    assert layer.plot_kwargs["style"] == "wireframe"
+
+    default_layer = Layer(sphere)
+    assert default_layer.plot_kwargs["style"] == "surface"
+
+    cloud = pv.PolyData(np.random.randn(20, 3))
+    assert Layer(cloud).plot_kwargs["style"] == "points"
+
+
 def test_find_clim_and_default_cmap():
     assert find_clim([None, np.array([])]) is None
 

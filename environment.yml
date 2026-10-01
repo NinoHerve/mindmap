@@ -227,7 +227,7 @@ dependencies:
       - python-json-logger==3.3.0
       - python-keycloak==5.7.0
       - pytz==2025.2
-      - pyvista==0.46.3
+      - pyvista==0.48.4
       - pywavelets==1.8.0
       - pyxu==2.0.3
       - pyyaml==6.0.2

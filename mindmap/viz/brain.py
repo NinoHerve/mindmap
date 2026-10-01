@@ -242,7 +242,11 @@ class BrainPlot(Panel):
         BrainPlot
         """
         hemis = HEMI_INDICES[hemi]
-        surfaces = [surf_to_polydata(src[i]["rr"], src[i]["tris"]) for i in hemis]
+        # mne.SourceSpaces stores `rr` in meters; every other surface in
+        # mindmap (read_bem, dm.load(subject, "white"/"pial"), ...) is in
+        # FreeSurfer's native mm - scale here so a from_source_space
+        # BrainPlot composes correctly (e.g. `+ HeadModelPlot(bem)`).
+        surfaces = [surf_to_polydata(src[i]["rr"] * 1000, src[i]["tris"]) for i in hemis]
         dense_values = _inpaint_dipole_values(src, values, hemis)
         hemi_labels = ["lh" if i == 0 else "rh" for i in hemis]
 

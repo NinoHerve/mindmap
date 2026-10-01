@@ -129,7 +129,7 @@ def _make_provider(values, states):
 
 
 def _default_style(style: str, has_scalar: bool) -> dict:
-    base = (
+    base = {"style": style} | (
         {"render_points_as_spheres": True, "point_size": 8}
         if style == "points"
         else {"smooth_shading": True}
@@ -178,8 +178,10 @@ class Layer:
         scalar_name: str
             Name of the scalar array painted onto `mesh`.
 
-        style: {"surface", "points"}, optional
-            Rendering style. Auto-detected from whether `mesh` has faces.
+        style: {"surface", "wireframe", "points"}, optional
+            Rendering style, passed straight through to `add_mesh(style=...)`.
+            Auto-detected as "surface"/"points" from whether `mesh` has
+            faces when left unset.
 
         toggle: bool
             Whether a visibility checkbox should be shown for this layer

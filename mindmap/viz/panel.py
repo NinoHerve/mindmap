@@ -71,9 +71,9 @@ class Panel(ABC):
         to open a native window instead of the inline Jupyter widget)."""
         Layout([[self]]).show(**kwargs)
 
-    def screenshot(self, **kwargs):
+    def screenshot(self, path=None, **kwargs):
         """Export this panel alone as a fixed image. See `Layout.screenshot`."""
-        return Layout([[self]]).screenshot(**kwargs)
+        return Layout([[self]]).screenshot(path, **kwargs)
 
 
 @dataclass
