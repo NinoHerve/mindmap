@@ -17,7 +17,7 @@ import pyvista as pv
 import mne
 
 from mindmap.analysis.functional.eeg.io import get_ch_positions
-from mindmap.viz.mesh import Layer, find_clim, preprocess
+from mindmap.viz.mesh import Layer, find_clim, preprocess, pop_clim_options
 from mindmap.viz.panel import Panel
 
 
@@ -89,11 +89,12 @@ class SensorPlot(Panel):
         processed = preprocess(values, self.func_params)
 
         mesh_params = dict(self.mesh_params)
+        clim_options = pop_clim_options(mesh_params)
         if processed is None:
             mesh_params.setdefault("color", "black")
             mesh_params.setdefault("opacity", 1.0)
         else:
-            mesh_params.setdefault("clim", find_clim([processed]))
-            mesh_params.setdefault("cmap", _default_sensor_cmap(processed))
+            mesh_params.setdefault("clim", find_clim([processed], **clim_options))
+            mesh_params.setdefault("cmap", _default_sensor_cmap(processed) if not clim_options["symmetric"] else "bkr")
 
         return [Layer(mesh, processed, states, scalar_name=self.scalar_name, **mesh_params)]

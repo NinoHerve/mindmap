@@ -19,7 +19,7 @@ import mne
 from mindmap.geometry.io import surf_to_polydata
 from mindmap.anatomy.source_space.process import build_dense_vertex_map
 from mindmap.core.process import paint_on_dense_mesh
-from mindmap.viz.mesh import Layer, Provider, find_clim, default_cmap, preprocess
+from mindmap.viz.mesh import Layer, Provider, find_clim, default_cmap, preprocess, pop_clim_options
 from mindmap.viz.panel import Panel
 from mindmap.viz.camera import resolve_hemi_view
 
@@ -138,7 +138,12 @@ class BrainPlot(Panel):
         Passed to every surface's `Layer`. Unlike `SurfacePlot`, `clim`/
         `cmap` default to one range shared across all surfaces in this
         `BrainPlot` (both hemispheres are one brain, not independent
-        plots) - set them explicitly to override.
+        plots) - set them explicitly to override, or steer the inferred
+        `clim` with `clim_percentile` (default 99, the percentile of
+        |values| used as the limit) and `symmetric` (True: always
+        `(-m, m)`, even for all-positive values) - see
+        `viz.mesh.find_clim`. Values beyond `clim` saturate, so there is
+        no need to clip them first.
 
     func_params: dict
         `normalize`: "max" | "minmax" | "zscore"
@@ -182,8 +187,9 @@ class BrainPlot(Panel):
         processed = [preprocess(v, self.func_params) for v in self.values]
 
         mesh_params = dict(self.mesh_params)
+        clim_options = pop_clim_options(mesh_params)
         if not mesh_params.get("clim"):
-            mesh_params["clim"] = find_clim([p for p in processed if not callable(p)])
+            mesh_params["clim"] = find_clim([p for p in processed if not callable(p)], **clim_options)
         if not mesh_params.get("cmap"):
             mesh_params["cmap"] = default_cmap(mesh_params["clim"])
 
@@ -247,6 +253,22 @@ class BrainPlot(Panel):
         # FreeSurfer's native mm - scale here so a from_source_space
         # BrainPlot composes correctly (e.g. `+ HeadModelPlot(bem)`).
         surfaces = [surf_to_polydata(src[i]["rr"] * 1000, src[i]["tris"]) for i in hemis]
+
+        # The lazy provider below is a callable, which `layers` can neither
+        # preprocess nor infer a color range from - so for a plain array,
+        # apply `func_params` and infer `clim` here, on the dipole values
+        # (once, across both hemispheres) before inpainting.
+        if values is not None and not callable(values):
+            values = preprocess(values, kwargs.get("func_params") or {})
+            if states is None:
+                states = np.arange(values.shape[1] if values.ndim == 2 else 1)
+            mesh_params = dict(kwargs.get("mesh_params") or {})
+            clim_options = pop_clim_options(mesh_params)
+            if not mesh_params.get("clim"):
+                mesh_params["clim"] = find_clim(values, **clim_options)
+            kwargs["mesh_params"] = mesh_params
+            kwargs.pop("func_params", None)
+
         dense_values = _inpaint_dipole_values(src, values, hemis)
         hemi_labels = ["lh" if i == 0 else "rh" for i in hemis]
 

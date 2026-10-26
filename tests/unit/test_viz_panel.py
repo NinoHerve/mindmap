@@ -200,9 +200,28 @@ def test_show_forwards_jupyter_backend_to_plotter_show(sphere, monkeypatch):
     monkeypatch.setattr(pv.Plotter, "show", fake_show)
 
     plot = _plot(sphere)
+    plot.show(jupyter_backend="static", slider_label="Time [s]")
+
+    assert captured == {"jupyter_backend": "static"}
+
+
+def test_show_native_window_builds_a_non_notebook_plotter(sphere, monkeypatch):
+    """Inside a kernel pyvista forces a plotter off-screen at construction,
+    so `jupyter_backend="none"` must become `notebook=False` on the
+    Plotter - forwarding it to show() alone opens no window at all."""
+    captured = {}
+    original_show = pv.Plotter.show
+
+    def fake_show(self, **kwargs):
+        captured.update(kwargs, notebook=self.notebook)
+        return original_show(self)
+
+    monkeypatch.setattr(pv.Plotter, "show", fake_show)
+
+    plot = _plot(sphere)
     plot.show(jupyter_backend="none", slider_label="Time [s]")
 
-    assert captured == {"jupyter_backend": "none"}
+    assert captured == {"notebook": False}
 
 
 def test_show_without_jupyter_backend_passes_no_extra_kwargs(sphere, monkeypatch):
@@ -373,3 +392,15 @@ def test_screenshot_with_brainplot_camera(sphere):
     plot = BrainPlot(sphere, hemi="lh", view="lateral")
     img = plot.screenshot()
     assert img.ndim == 3
+
+
+def test_link_scale_honours_the_panels_clim_options(sphere):
+    rng = np.random.default_rng(0)
+    a, b = np.abs(rng.normal(size=sphere.n_points)), np.abs(rng.normal(size=sphere.n_points))
+    params = {"clim_percentile": 90, "symmetric": True}
+    layout = Layout([[SurfacePlot(sphere, a, scalar_name="v", mesh_params=dict(params)),
+                      SurfacePlot(sphere, b, scalar_name="v", mesh_params=dict(params))]])
+    layout.link_scale("v")
+    from mindmap.viz.mesh import find_clim
+    expected = find_clim([a, b], percentile=90, symmetric=True)
+    assert all(p.mesh_params["clim"] == expected for p in layout._leaves())

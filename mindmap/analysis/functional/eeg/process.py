@@ -182,6 +182,7 @@ def align_eeg_timeseries(
     max_lag_idx = int((max_lag / 1000.0) * ref.info["sfreq"])
 
     if window is not None:
+        # TODO: truncates (MNE default); use_rounding=True would fix edges landing one sample early, but shifts SNR/lambda and the Study III windows, so rerun first.
         start_idx, end_idx = ref.time_as_index(window)
         window_idx = (start_idx, end_idx)
     else:
@@ -218,6 +219,7 @@ def normalize_evoked_by_baseline(
     norm_evoked = evoked.copy()
 
     # select the baseline time indices
+    # TODO: truncates (MNE default); use_rounding=True would fix edges landing one sample early, but shifts SNR/lambda and the Study III windows, so rerun first.
     idx_min, idx_max = evoked.time_as_index(baseline)
 
     # apply normalization

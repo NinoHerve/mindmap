@@ -335,3 +335,27 @@ def test_surfaceplot_distinct_scalar_names_avoid_pyvista_aliasing(sphere):
     assert actor_b.mapper.scalar_range == pytest.approx(layers_b[0].plot_kwargs["clim"])
     assert actor_a.mapper.scalar_range != actor_b.mapper.scalar_range
     scene.plotter.close()
+
+
+def test_find_clim_percentile_and_symmetric():
+    values = np.concatenate([np.linspace(0, 1, 99), [50.0]])  # one outlier
+    assert find_clim(values, percentile=100) == (0, 50.0)
+    assert find_clim(values, percentile=95)[1] < 1.0
+    assert find_clim(values, percentile=100, symmetric=True) == (-50.0, 50.0)
+    with pytest.raises(ValueError, match="clim_percentile"):
+        find_clim(values, percentile=0)
+
+
+def test_default_cmap_follows_the_module_colormaps(monkeypatch):
+    import mindmap.viz.mesh as mesh
+
+    monkeypatch.setattr(mesh, "DIVERGING_CMAP", "RdBu_r")
+    assert default_cmap((-1, 1)) == "RdBu_r" and default_cmap((0, 1)) == "Reds"
+
+
+def test_surfaceplot_clim_options_steer_the_inferred_clim_and_never_reach_pyvista(sphere):
+    values = np.abs(np.random.default_rng(0).normal(size=sphere.n_points))
+    layer, = SurfacePlot(sphere, values, mesh_params={"clim_percentile": 95, "symmetric": True}).layers
+    assert layer.plot_kwargs["clim"] == find_clim(values, percentile=95, symmetric=True)
+    assert layer.plot_kwargs["cmap"] == "bwr"
+    assert "clim_percentile" not in layer.plot_kwargs and "symmetric" not in layer.plot_kwargs

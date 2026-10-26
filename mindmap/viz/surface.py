@@ -16,7 +16,7 @@ from typing import Optional, Union
 import numpy as np
 import pyvista as pv
 
-from mindmap.viz.mesh import Layer, Provider, find_clim, default_cmap, preprocess
+from mindmap.viz.mesh import Layer, Provider, find_clim, default_cmap, preprocess, pop_clim_options
 from mindmap.viz.panel import Panel
 
 
@@ -62,7 +62,11 @@ class SurfacePlot(Panel):
         to this plot's own data range - each `SurfacePlot` is independent,
         so combining several with different ranges no longer forces a
         shared scale; pass matching `clim`/`cmap` explicitly (or use
-        `Layout.link_scale`) to compare panels on the same scale.
+        `Layout.link_scale`) to compare panels on the same scale. Two keys
+        steer that inferred `clim` instead: `clim_percentile` (default 99,
+        the percentile of |values| used as the limit) and `symmetric`
+        (True: always `(-m, m)`, even for all-positive values) -- see
+        `viz.mesh.find_clim`. Values beyond `clim` saturate.
 
     func_params: dict
         `normalize`: "max" | "minmax" | "zscore"
@@ -83,8 +87,9 @@ class SurfacePlot(Panel):
         processed = preprocess(self.values, self.func_params)
 
         mesh_params = dict(self.mesh_params)
+        clim_options = pop_clim_options(mesh_params)
         if processed is not None and not callable(processed):
-            mesh_params.setdefault("clim", find_clim([processed]))
+            mesh_params.setdefault("clim", find_clim([processed], **clim_options))
             mesh_params.setdefault("cmap", default_cmap(mesh_params["clim"]))
 
         return [Layer(self.mesh, processed, self.states, scalar_name=self.scalar_name, **mesh_params)]

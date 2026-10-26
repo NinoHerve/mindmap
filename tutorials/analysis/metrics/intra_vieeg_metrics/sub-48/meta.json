@@ -1,0 +1,429 @@
+{
+  "name": "Intra vIEEG fidelity, sub-48",
+  "group_name": "Label",
+  "subject": "48",
+  "metadata": {},
+  "saved_at": "2026-07-22T02:54:55.150127",
+  "entries": [
+    {
+      "label": "wcset",
+      "metric": "correlation_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    },
+    {
+      "label": "wcset",
+      "metric": "cosine_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    },
+    {
+      "label": "wcset",
+      "metric": "correlation_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "wcset",
+      "metric": "cosine_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "wcset",
+      "metric": "correlation_spatio-temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "wcset",
+      "metric": "cosine_spatio-temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "wcset",
+      "metric": "explained_variance",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "wcset",
+      "metric": "rem_correlation_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "wcset",
+      "metric": "rem_correlation_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    },
+    {
+      "label": "sloreta",
+      "metric": "correlation_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    },
+    {
+      "label": "sloreta",
+      "metric": "cosine_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    },
+    {
+      "label": "sloreta",
+      "metric": "correlation_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "sloreta",
+      "metric": "cosine_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "sloreta",
+      "metric": "correlation_spatio-temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "sloreta",
+      "metric": "cosine_spatio-temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "sloreta",
+      "metric": "explained_variance",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "sloreta",
+      "metric": "rem_correlation_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "sloreta",
+      "metric": "rem_correlation_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    },
+    {
+      "label": "cset",
+      "metric": "correlation_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    },
+    {
+      "label": "cset",
+      "metric": "cosine_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    },
+    {
+      "label": "cset",
+      "metric": "correlation_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "cset",
+      "metric": "cosine_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "cset",
+      "metric": "correlation_spatio-temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "cset",
+      "metric": "cosine_spatio-temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "cset",
+      "metric": "explained_variance",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "cset",
+      "metric": "rem_correlation_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "cset",
+      "metric": "rem_correlation_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    },
+    {
+      "label": "dspm",
+      "metric": "correlation_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    },
+    {
+      "label": "dspm",
+      "metric": "cosine_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    },
+    {
+      "label": "dspm",
+      "metric": "correlation_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "dspm",
+      "metric": "cosine_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "dspm",
+      "metric": "correlation_spatio-temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "dspm",
+      "metric": "cosine_spatio-temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "dspm",
+      "metric": "explained_variance",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "dspm",
+      "metric": "rem_correlation_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "dspm",
+      "metric": "rem_correlation_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    },
+    {
+      "label": "wmne",
+      "metric": "correlation_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    },
+    {
+      "label": "wmne",
+      "metric": "cosine_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    },
+    {
+      "label": "wmne",
+      "metric": "correlation_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "wmne",
+      "metric": "cosine_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "wmne",
+      "metric": "correlation_spatio-temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "wmne",
+      "metric": "cosine_spatio-temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "wmne",
+      "metric": "explained_variance",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": []
+    },
+    {
+      "label": "wmne",
+      "metric": "rem_correlation_temporal",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "channel"
+      ]
+    },
+    {
+      "label": "wmne",
+      "metric": "rem_correlation_spatial",
+      "scalar_coords": {
+        "Subject": "48"
+      },
+      "array_coord_names": [
+        "times"
+      ]
+    }
+  ]
+}

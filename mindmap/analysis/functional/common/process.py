@@ -50,6 +50,7 @@ def binarize_mne_object(
     t_min = baseline[0] or times[0]
     t_max = baseline[1] or times[-1]
 
+    # TODO: truncates (MNE default); use_rounding=True would fix edges landing one sample early, but shifts SNR/lambda and the Study III windows, so rerun first.
     start, stop = obj.time_as_index((t_min, t_max))
 
     # binarize data

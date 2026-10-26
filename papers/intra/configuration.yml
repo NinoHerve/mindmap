@@ -1,0 +1,19 @@
+CONN: /media/nino/DATA/atlas/probconnatlas/wm.connatlas.scale4.h5
+DS_DIR: /media/nino/DATA/INTRA
+SPK_DIR: /media/nino/DATA/INTRA/derivatives/spike_trials
+FS_DIR: /media/nino/DATA/INTRA/derivatives/freesurfer
+FS_HOME: /home/nino/Softwares/freesurfer
+LAUSL: /media/nino/DATA/atlas/laus2018/lh.atlas-laus2018_desc-scale4.annot
+LAUSR: /media/nino/DATA/atlas/laus2018/rh.atlas-laus2018_desc-scale4.annot
+MM_DIR: /media/nino/DATA/INTRA/derivatives/mindmap
+MNI: /media/nino/DATA/templates/mni_icbm152_nlin_asym_09c_nifti/mni_icbm152_nlin_asym_09c/mni_icbm152_t1_tal_nlin_asym_09c.nii
+NAME: intra
+SUBS:
+- 12
+- 34
+- 48
+- 50
+TASKS:
+- spk
+THAL: /media/nino/DATA/atlas/Thalamic_Nuclei/Thalamus_Nuclei-HCP-4DSPAMs.nii.gz
+THAL_CLUT: /media/nino/DATA/atlas/Thalamic_Nuclei/Thalamic_Nuclei-ColorLUT.txt

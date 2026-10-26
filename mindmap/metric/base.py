@@ -11,7 +11,7 @@ License: MIT
 """
 
 import json
-import shutil
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -20,9 +20,10 @@ import pandas as pd
 
 from mindmap.core.io import read_npz_fast, atomic_replace, json_safe
 
-from mindmap.metric.results import PairwiseResult, ClusterResult, NormalityResult, AnovaResult
-from mindmap.metric.plot import PlotAccessor
+from mindmap.metric.results import _data_key, bootstrap_metrics
+from mindmap.metric.plot import PlotAccessor, _filters_to_dict
 from mindmap.metric.stat import StatAccessor
+from mindmap.metric.estimate import EstimateAccessor
 
 
 def _is_arraylike(val):
@@ -111,16 +112,21 @@ class MetricSuite:
             raise TypeError("metadata must be a dictionary.")
         self.metadata = metadata or {}
 
-        # suite.plot.box(...)/.violin(...)/.bar(...)/.line(...)/.scatter(...) for raw views (metric
-        # name in, no test); suite.plot.group_comparison(result)/.cluster_permutation(result) for
-        # annotated views (an already-computed PairwiseResult/ClusterResult in, never a metric name)
-        # -- see mindmap.metric.plot.PlotAccessor.
+        # suite.plot.box(...)/.point(...)/.line(...)/... for raw views (metric name in, no test);
+        # suite.plot.group_comparison(result)/.paired_differences(result)/.estimate(result)/... for
+        # result views (an already-computed result in, never a metric name) -- computed by the
+        # suite, drawn with matplotlib, returned as a Plot -- see mindmap.metric.plot.PlotAccessor.
         self.plot = PlotAccessor(self)
 
         # suite.stat.wilcoxon(...)/.ttest(...)/.mannwhitneyu(...)/.paired_ttest(...)/.ttest_ess(...)/
-        # .cluster_permutation(...)/.normality_test(...)/.anova(...) -- pure computation, cached,
-        # typed results -- see mindmap.metric.stat.StatAccessor.
+        # .cluster_permutation(...)/.normality_test(...)/.anova(...) -- pure computation, typed,
+        # self-describing results -- see mindmap.metric.stat.StatAccessor.
         self.stat = StatAccessor(self)
+
+        # suite.estimate.mean(...)/.median(...)/.mean_diff(...)/.hodges_lehmann(...)/<effect size>(...)/
+        # .from_result(...) -- point estimates with optional confidence intervals, as
+        # EstimateResult -- see mindmap.metric.estimate.EstimateAccessor.
+        self.estimate = EstimateAccessor(self)
 
     def register(self, metric, values, **coords):
         """
@@ -176,12 +182,9 @@ class MetricSuite:
             are accessed - this keeps registering large stacks (e.g.
             thousands of per-run curves) cheap.
 
-            Adding an entry always clears every cached stats result (see
-            `suite.stat.wilcoxon`/`.cluster_permutation`/
-            `.list_cached_stats`) -- cheaper and safer than figuring out
-            which cached results a given new entry could affect, and it
-            guarantees a suite never silently returns stats computed
-            before some of its current data existed.
+            Adding an entry changes the fingerprint of its `metric`'s data,
+            so results computed on that metric before no longer pass
+            `verify()` -- results for other metrics are unaffected.
 
         Parameters
         ----------
@@ -227,9 +230,63 @@ class MetricSuite:
             "coords": stored_coords,
         })
 
-        self.stat.clear_stats_cache()
-
         return self
+
+    def verify(self, result):
+        """
+        Whether `result` was computed from this suite's current data --
+        e.g. after reloading several suites, or after registering more data
+        since the result was computed.
+
+        !!! note "Technical details"
+            Compares `result.data_key` (a fingerprint of the exact rows the
+            result was computed from: its metric, after its filters) with
+            the same fingerprint of this suite's rows now (with registered
+            bootstrap replicates, the replicate metric's rows too).
+            Independent of row order and of other metrics' data. Works on every result
+            type (`PairwiseResult`, `ClusterResult`, `NormalityResult`,
+            `AnovaResult`, `EstimateResult`).
+
+        Parameters
+        ----------
+        result
+            Any result returned by `suite.stat.*` or `suite.estimate.*`.
+
+        Returns
+        -------
+        bool
+
+        Raises
+        ------
+        ValueError
+            If `result` has no `data_key` -- a result saved by an older
+            version, before `data_key` existed.
+        """
+        if getattr(result, "data_key", None) is None:
+            raise ValueError(
+                f"This {type(result).__name__} has no data_key, so its origin can't be checked "
+                "(saved before data_key existed)."
+            )
+        return self._data_key_for(result) == result.data_key
+
+    def _data_key_for(self, result):
+        metrics = bootstrap_metrics(result.metric, getattr(result, "bootstrap", None))
+        filters = _filters_to_dict(result.filters)
+        registered = {name for entry in self._entries for name in entry["coords"]}
+        if any(name not in registered for name in filters):
+            return None  # the result was filtered on a column this suite never had: not its data
+        return _data_key(self.to_df(metrics=metrics, filters=filters))
+
+    def _require_origin(self, result):
+        """Raises when `result` provably comes from other data than this suite's; a result without a `data_key` can't be checked and passes."""
+        if getattr(result, "data_key", None) is None:
+            return
+        if not self.verify(result):
+            raise ValueError(
+                f"This {type(result).__name__} (metric={result.metric!r}) was computed from different data than "
+                "this suite now holds -- another suite, or this one before more data was registered. "
+                "Recompute it from this suite."
+            )
 
     def to_df(self, metrics=None, filters=None):
         """
@@ -320,7 +377,7 @@ class MetricSuite:
             each other's rows here (unlike `to_df()`'s single wide table,
             where an unrelated metric's coord shows up as all-NaN).
             Categorical/numerical is decided the same way
-            `mindmap.viz.core.metric_line`/`metric_scatter` decide their
+            `suite.plot.line`/`.scatter` decide their
             x-axis (`pd.api.types.is_numeric_dtype`). Categorical values
             are listed up to 8; beyond that, truncated with a count of how
             many more.
@@ -364,22 +421,18 @@ class MetricSuite:
 
     def save(self, folder: str | Path, overwrite: bool = False):
         """
-        Saves the whole study to a folder -- raw data and any cached
-        statistics -- so it can be reloaded later with `load()`.
+        Saves the study's data to a folder, so it can be reloaded later
+        with `load()`. Statistics are not part of the suite: save each
+        result on its own (`result.save(folder)`).
 
         !!! note "Technical details"
             Data is stored as a compact array store (data.npz) plus a
             small metadata file (meta.json), rather than exploding
             everything into a long-format CSV -- this keeps saving cheap
             even for studies with thousands of registered per-run curves.
-            Every currently cached stats result (see
-            `suite.stat.wilcoxon`/`.cluster_permutation`/
-            `.list_cached_stats`) is also persisted, into a `stats/`
-            subfolder, so an expensive cluster-permutation test never
-            needs to rerun just because a notebook was reopened -- `stats/`
-            is entirely rewritten from `self.stat._stats_cache` on every
-            save (removed outright if the cache is empty), never left
-            holding stale entries from an earlier save.
+            Folders written by older versions also hold a `stats/`
+            subfolder of cached results -- left untouched here (see
+            `load()`).
 
         Parameters
         ----------
@@ -423,28 +476,10 @@ class MetricSuite:
 
         atomic_replace(folder/"data.npz", lambda p: np.savez(p, **arrays))
 
-        # 2. Save/refresh cached stats -- always mirrors self.stat._stats_cache
-        # exactly (see docstring above).
-        stats_dir = folder/"stats"
-        if stats_dir.exists():
-            shutil.rmtree(stats_dir)
-        if self.stat._stats_cache:
-            stats_dir.mkdir(parents=True, exist_ok=True)
-            index = {}
-            for i, result in enumerate(self.stat._stats_cache.values()):
-                sub_name = f"{i:04d}"
-                result.save(stats_dir/sub_name)
-                index[sub_name] = result.KIND
-
-            def _write_stats_index(p):
-                with open(p, "w", encoding="utf-8") as f:
-                    json.dump(index, f, indent=2)
-            atomic_replace(stats_dir/"index.json", _write_stats_index)
-
-        # 3. Write meta.json last, atomically, and only once the data/stats
-        # it describes are already safely on disk -- so a crash can never
+        # 2. Write meta.json last, atomically, and only once the data it
+        # describes is already safely on disk -- so a crash can never
         # leave a meta.json that references entries data.npz doesn't have
-        # yet (the reverse -- data.npz/stats holding entries meta.json
+        # yet (the reverse -- data.npz holding entries meta.json
         # hasn't caught up to describing yet -- is harmless: load() only
         # reads what meta.json points to).
         def _write_meta(p):
@@ -506,15 +541,15 @@ class MetricSuite:
     @staticmethod
     def load(folder: str | Path):
         """
-        Loads a study back from a folder written by `save()` -- data and
-        cached statistics both included.
+        Loads a study's data back from a folder written by `save()`.
 
         !!! note "Technical details"
-            Reconstructs entries from `data.npz`/`meta.json` and, if
-            present, repopulates the stats cache from `stats/`, so
-            previously computed (and potentially expensive, e.g.
-            cluster-permutation) results don't need to be recomputed
-            after reloading.
+            Reconstructs entries from `data.npz`/`meta.json`. Folders
+            saved by older versions may also hold a `stats/` subfolder of
+            cached results: those are no longer loaded (a warning says so),
+            but each `stats/NNNN` subfolder still loads on its own with its
+            result class's `load()` (`stats/index.json` maps each to its
+            kind), and `verify()` tells whether it matches the data.
 
             Folders saved before this class's grouping axis became a
             per-call `group_by` choice stored a suite-level `"group_name"`
@@ -570,44 +605,14 @@ class MetricSuite:
                 coords[legacy_group_name] = entry_meta["label"]
             suite.register(entry_meta["metric"], value, **coords)
 
-        # 3. Repopulate cached stats, if this save included any. register()
-        # above already cleared _stats_cache -- this runs after, so the
-        # reloaded cache is the last word.
-        stats_dir = folder/"stats"
-        index_path = stats_dir/"index.json"
-        if index_path.exists():
-            with open(index_path, "r", encoding="utf-8") as f:
-                index = json.load(f)
-            for sub_name, kind in index.items():
-                if kind == PairwiseResult.KIND:
-                    result = PairwiseResult.load(stats_dir/sub_name)
-                    pair = (result.table.loc[0, "group_a"], result.table.loc[0, "group_b"])
-                    key = suite.stat._pairwise_key(
-                        result.metric, result.group_by, result.test, result.unit_col, result.pairing_col,
-                        result.subject_order, result.filters, pair,
-                    )
-                elif kind == ClusterResult.KIND:
-                    result = ClusterResult.load(stats_dir/sub_name)
-                    pair = next(iter(result.clusters_by_pair.keys()))
-                    key = suite.stat._cluster_key(
-                        result.metric, result.coord, result.pairing_col, result.unit_col, result.group_by,
-                        result.higher_is_better, result.coord_order, result.cluster_alpha,
-                        result.n_permutations, result.seed, result.effect_size_summary,
-                        result.filters, pair,
-                    )
-                elif kind == NormalityResult.KIND:
-                    result = NormalityResult.load(stats_dir/sub_name)
-                    group = result.table.loc[0, "group"]
-                    key = suite.stat._normality_key(result.metric, result.group_by, result.test, result.filters, group)
-                elif kind == AnovaResult.KIND:
-                    result = AnovaResult.load(stats_dir/sub_name)
-                    key = suite.stat._anova_key(
-                        result.metric, result.group_by, result.pairing_col, result.unit_col,
-                        result.test, result.filters, result.groups,
-                    )
-                else:
-                    continue
-                suite.stat._stats_cache[key] = result
+        # 3. Older saves also cached stats here -- no longer read, but not ignored silently.
+        if (folder/"stats"/"index.json").exists():
+            warnings.warn(
+                f"'{folder}' holds a stats/ folder from an older version: cached results are no longer "
+                "loaded with the suite. Load one with its class's load() (stats/index.json lists each "
+                "subfolder's kind), or recompute it.",
+                stacklevel=2,
+            )
 
         return suite
 
@@ -629,10 +634,12 @@ class MetricSuite:
             mechanism for that, plain explicit `register()` calls are the
             whole mechanism.
 
-            Cached stats are *not* pooled (each input suite's cache was
-            computed against its own, narrower data) -- the combined
-            suite starts with an empty stats cache, same as any freshly
-            constructed `MetricSuite`.
+            Results keep matching the combined suite where its data
+            didn't change: `verify()` compares a fingerprint of one
+            metric's rows, so a result on a metric only one input suite
+            holds still verifies, while one on a metric that gained rows
+            from another input (e.g. batch 1 + batch 2 of the same metric)
+            doesn't -- recompute it on the combined data.
 
             Works just as well on suites you built by hand as on ones
             reloaded via `load()` -- `concat` doesn't care where a suite's

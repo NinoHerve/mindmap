@@ -31,7 +31,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Union
 
-from mindmap.viz.mesh import Layer, find_clim, default_cmap
+from mindmap.viz.mesh import Layer, find_clim, default_cmap, CLIM_OPTIONS
 from mindmap.viz.scene import Scene
 
 
@@ -211,7 +211,11 @@ class Layout:
                     v for p in matches
                     if (v := getattr(p, "values", None)) is not None and not callable(v)
                 ]
-                resolved_clim = find_clim(values)
+                # The panels' own `clim_percentile`/`symmetric` steer the shared range too.
+                options = {k: v for p in matches for k, v in getattr(p, "mesh_params", {}).items() if k in CLIM_OPTIONS}
+                resolved_clim = find_clim(
+                    values, percentile=options.get("clim_percentile", 99), symmetric=bool(options.get("symmetric", False)),
+                )
                 if resolved_clim is None:
                     raise ValueError(
                         f"link_scale: can't auto-infer a color scale for {name!r} "
@@ -268,9 +272,9 @@ class Layout:
             render, which gets slow for large meshes since every slider
             drag re-renders). Pass "none" to instead open a native OS
             render window - much faster interaction, at the cost of it
-            no longer being embedded in the notebook (needs a real
-            display reachable from the kernel; on a genuinely headless/
-            remote kernel this silently does nothing - see
+            no longer being embedded in the notebook; the cell blocks
+            until the window is closed (needs a real display reachable
+            from the kernel - see
             `pv.set_jupyter_backend` for the full list of options,
             including "static" for a single non-interactive image).
             Ignored outside a notebook, where `.show()` already opens a
@@ -280,6 +284,12 @@ class Layout:
             Forwarded to `build_scene` (`slider_label`, `link_views`,
             `interaction_event`).
         """
+        # pyvista forces a plotter created inside a kernel off-screen, so a
+        # native window has to be requested at construction, not at show().
+        if jupyter_backend is not None and jupyter_backend.lower() == "none":
+            self.build_scene(notebook=False, **kwargs).show()
+            return
+
         scene = self.build_scene(**kwargs)
         show_kwargs = {} if jupyter_backend is None else {"jupyter_backend": jupyter_backend}
         scene.show(**show_kwargs)

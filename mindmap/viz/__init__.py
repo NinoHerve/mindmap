@@ -4,8 +4,9 @@ Visualization tools for the MindMap package.
 The 3D/mesh plotting side (brain surfaces, source spaces, sensors,
 forward/inverse models, connectomes) is being rewritten from scratch -
 the previous implementation is kept for reference in `viz/OLD/` but is no
-longer imported here. 2D array/dataframe plotting (`core`, `stats`,
-`power`) is unaffected and still live.
+longer imported here. 2D array/dataframe plotting (`core`, `power`) is
+unaffected and still live; metric plots live in `MetricSuite.plot`
+(`mindmap.metric.plot`).
 
 `mesh`/`scene`/`panel`/`surface`/`brain`/`sensor`/`head`/`camera` are the new
 3D framework:
@@ -79,12 +80,6 @@ from .power import (
     plot_power_precision_curves,
 )
 
-from .stats import (
-    metric_box_significance,
-    metric_relational_clusters,
-    metric_relational_cluster_summary,
-)
-
 __all__ = [
     "plot_multi_scatterplots",
     "Layer",
@@ -105,7 +100,4 @@ __all__ = [
     "add_panel",
     "build_preprocessing_report",
     "plot_power_precision_curves",
-    "metric_box_significance",
-    "metric_relational_clusters",
-    "metric_relational_cluster_summary",
 ]

@@ -12,6 +12,7 @@ import mne
 import pytest
 
 from mindmap.viz.brain import BrainPlot
+from mindmap.viz.mesh import find_clim
 from mindmap.viz.panel import CombinedPanel, Layout
 from mindmap.geometry.io import surf_to_polydata
 from mindmap.anatomy.source_space.process import build_dense_vertex_map
@@ -222,6 +223,36 @@ def test_from_source_space_always_lazy_even_for_plain_array(src):
     assert callable(layer._provider)
 
 
+def test_from_source_space_applies_func_params_and_infers_clim(src):
+    """The lazy provider is a callable, which `layers` passes through
+    unprocessed - so `func_params` and the default `clim` must be handled
+    on the dipole array itself, or they're silently ignored."""
+    np.random.seed(2)
+    n_dipoles = src[0]["nuse"] + src[1]["nuse"]
+    dipole_data = 1e-8 * np.random.randn(n_dipoles, 3)
+    split = src[0]["nuse"]
+    map_l = build_dense_vertex_map(src[0])
+
+    plot = BrainPlot.from_source_space(
+        src, dipole_data, states=np.arange(3), hemi="both",
+        func_params={"normalize": "max", "absolute": True},
+    )
+    layer_l = plot.layers[0]
+    layer_l.update(1)
+
+    expected = np.abs(dipole_data / np.abs(dipole_data).max())
+    assert np.allclose(layer_l.mesh[layer_l.scalar_name], paint_on_dense_mesh(expected[:split, 1], map_l))
+    assert plot.mesh_params["clim"] == find_clim(expected)
+
+
+def test_from_source_space_static_map_needs_no_states(src):
+    """A single (n_dipoles,) map (no time axis) is a one-state plot -
+    `states` is inferred, like `Layer` does for any plain array."""
+    n_dipoles = src[0]["nuse"] + src[1]["nuse"]
+    plot = BrainPlot.from_source_space(src, np.ones(n_dipoles), hemi="both")
+    assert all(layer.n_states == 1 for layer in plot.layers)
+
+
 def test_from_source_space_no_values_is_anatomy_only(src):
     plot = BrainPlot.from_source_space(src, hemi="both")
     layer_l, layer_r = plot.layers
@@ -294,3 +325,21 @@ def test_combined_panel_inherits_first_camera(spheres):
     combined = brain + extra
 
     assert combined.camera == brain.camera
+
+
+def test_brainplot_clim_percentile_and_symmetric(spheres):
+    sphere_l, sphere_r = spheres
+    rng = np.random.default_rng(0)
+    left, right = np.abs(rng.normal(size=sphere_l.n_points)), np.abs(rng.normal(size=sphere_r.n_points))
+    plot = BrainPlot([sphere_l, sphere_r], [left, right], mesh_params={"clim_percentile": 95, "symmetric": True})
+    layer_l, layer_r = plot.layers
+    assert layer_l.plot_kwargs["clim"] == layer_r.plot_kwargs["clim"] == find_clim([left, right], 95, True)
+    assert layer_l.plot_kwargs["cmap"] == "bwr" and "symmetric" not in layer_l.plot_kwargs
+
+
+def test_from_source_space_clim_percentile(src):
+    n_dipoles = src[0]["nuse"] + src[1]["nuse"]
+    data = np.abs(np.random.default_rng(1).normal(size=(n_dipoles, 2)))
+    plot = BrainPlot.from_source_space(src, data, mesh_params={"clim_percentile": 95, "symmetric": True})
+    assert plot.mesh_params["clim"] == find_clim(data, 95, True)
+    assert "clim_percentile" not in plot.layers[0].plot_kwargs

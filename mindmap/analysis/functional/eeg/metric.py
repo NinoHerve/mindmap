@@ -91,7 +91,9 @@ def get_rising_phase(
     out = data.times[rising_phase_idx]
 
     if as_idx:
-        out = eeg.time_as_index(out)
+        # `out` is an exact sample time; MNE truncates by default, which lands one
+        # sample early whenever (t - times[0]) * sfreq comes out as k - 1e-12.
+        out = eeg.time_as_index(out, use_rounding=True)
 
     return out
 
@@ -200,6 +202,7 @@ def estimate_evoked_snr(
         whitener, _ = mne.cov.compute_whitener(noise_cov, evoked.info, pca=False)
         data = whitener @ data
 
+    # TODO: truncates (MNE default); use_rounding=True would fix edges landing one sample early, but shifts SNR/lambda and the Study III windows, so rerun first.
     b_start, b_stop = evoked.time_as_index(baseline)
     return estimate_snr(data, (b_start, b_stop), method=method)
 
@@ -235,6 +238,7 @@ def estimate_evoked_snr_peak(
     snr: np.ndarray
         SNR per channel.
     """
+    # TODO: truncates (MNE default); use_rounding=True would fix edges landing one sample early, but shifts SNR/lambda and the Study III windows, so rerun first.
     s0, s1 = evoked.time_as_index(signal_window)
     b0, b1 = evoked.time_as_index(baseline)
     return peak_amplitude_snr(evoked.data, (s0, s1), (b0, b1))
@@ -267,6 +271,7 @@ def estimate_evoked_snr_peak_to_peak(
     snr: np.ndarray
         SNR per channel.
     """
+    # TODO: truncates (MNE default); use_rounding=True would fix edges landing one sample early, but shifts SNR/lambda and the Study III windows, so rerun first.
     s0, s1 = evoked.time_as_index(signal_window)
     b0, b1 = evoked.time_as_index(baseline)
     return peak_to_peak_snr(evoked.data, (s0, s1), (b0, b1))
@@ -309,6 +314,7 @@ def estimate_evoked_snr_gfp(
         whitener, _ = mne.cov.compute_whitener(noise_cov, evoked.info, pca=False)
         data = whitener @ data
 
+    # TODO: truncates (MNE default); use_rounding=True would fix edges landing one sample early, but shifts SNR/lambda and the Study III windows, so rerun first.
     s0, s1 = evoked.time_as_index(signal_window)
     b0, b1 = evoked.time_as_index(baseline)
     return float(gfp_snr(data, (s0, s1), (b0, b1), channel_axis=-2))

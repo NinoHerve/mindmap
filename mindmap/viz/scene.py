@@ -54,6 +54,7 @@ class Scene:
         interaction_event: str = "always",
         interactive: bool = True,
         off_screen: Optional[bool] = None,
+        notebook: Optional[bool] = None,
     ):
         """
         Parameters
@@ -118,6 +119,13 @@ class Scene:
             `pv.OFF_SCREEN` flag some callers, e.g. tests, rely on).
             `screenshot` sets this itself; only useful directly if you
             want an off-screen interactive Scene for some other reason.
+
+        notebook: bool, optional
+            Passed to `pv.Plotter` only if explicitly given. Left unset,
+            pyvista detects a Jupyter kernel and then forces the plotter
+            off-screen at construction - so `notebook=False` is the only
+            way to get a native OS window from inside a notebook (passing
+            `jupyter_backend="none"` to `show` alone is too late).
         """
         self.panels = panels
         self.states = _resolve_shared_states(panels)
@@ -139,6 +147,8 @@ class Scene:
             link_views = not any(cameras)
 
         plotter_kwargs = {} if off_screen is None else {"off_screen": off_screen}
+        if notebook is not None:
+            plotter_kwargs["notebook"] = notebook
         if window_size is not None:
             plotter_kwargs["window_size"] = window_size
         self.plotter = pv.Plotter(shape=self.shape, **plotter_kwargs)
@@ -244,7 +254,9 @@ class Scene:
         ("trame" for the default inline interactive widget, "none" for a
         native OS render window, "static" for a single non-interactive
         image, ...). Ignored (and irrelevant) outside a notebook, where
-        `.show()` already opens a native window on its own.
+        `.show()` already opens a native window on its own. A native
+        window from inside a notebook needs `notebook=False` at
+        construction instead (see `__init__`).
         """
         self.plotter.show(**kwargs)
 

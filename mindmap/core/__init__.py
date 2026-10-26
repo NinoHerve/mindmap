@@ -45,6 +45,10 @@ from .power import (
 
 from .stats import (
     paired_test,
+    estimate,
+    effect_size,
+    bootstrap_draws,
+    bootstrap_pvalue,
     correct_pvalues,
     compare_to_reference,
     cluster_threshold,
@@ -79,6 +83,10 @@ __all__ = [
     "simulate_splitplot_power",
     "precision_of_mean",
     "paired_test",
+    "estimate",
+    "bootstrap_draws",
+    "bootstrap_pvalue",
+    "effect_size",
     "correct_pvalues",
     "compare_to_reference",
     "cluster_threshold",

@@ -24,9 +24,21 @@ from mindmap.core.process import normalize_data
 Provider = Callable[[int], np.ndarray]
 
 
-def find_clim(data, percentile: float = 99) -> Optional[tuple]:
+#: The colormaps `default_cmap` picks: diverging for a `clim` spanning 0, sequential otherwise.
+#: Set them module-wide, e.g. `mindmap.viz.mesh.DIVERGING_CMAP = "RdBu_r"`.
+DIVERGING_CMAP = "bwr"
+SEQUENTIAL_CMAP = "Reds"
+
+#: The `mesh_params` keys that steer the inferred `clim` instead of going to pyvista.
+CLIM_OPTIONS = ("clim_percentile", "symmetric")
+
+
+def find_clim(data, percentile: float = 99, symmetric: bool = False) -> Optional[tuple]:
     """
-    Find color limits across one or multiple arrays.
+    Find color limits across one or multiple arrays: `(-m, m)`, or `(0, m)`
+    when every value is non-negative, with `m` the `percentile` of |values|
+    -- a robust range that a few outliers don't stretch. Values beyond it
+    saturate at the colormap's ends when rendered.
 
     Parameters
     ----------
@@ -34,13 +46,20 @@ def find_clim(data, percentile: float = 99) -> Optional[tuple]:
         Arrays to inspect. None entries are ignored.
 
     percentile: float
-        Percentile of the (absolute) data used as the limit magnitude.
+        Percentile of the (absolute) data used as the limit magnitude
+        (default 99; 100 is the plain maximum).
+
+    symmetric: bool
+        Always `(-m, m)` -- a diverging scale centred on 0 even when the
+        values happen to be all positive (e.g. one of several signed maps).
 
     Returns
     -------
     clim: (vmin, vmax) or None
         None if all data is empty/None/zero.
     """
+    if isinstance(percentile, (bool, np.bool_)) or not np.isscalar(percentile) or not 0 < percentile <= 100:
+        raise ValueError(f"`clim_percentile` must be in (0, 100], got {percentile!r}.")
     if not isinstance(data, list):
         data = [data]
 
@@ -61,16 +80,29 @@ def find_clim(data, percentile: float = 99) -> Optional[tuple]:
     if abs_max == 0:
         return None
 
-    return (0, abs_max) if only_positive else (-abs_max, abs_max)
+    return (0, abs_max) if only_positive and not symmetric else (-abs_max, abs_max)
+
+
+def pop_clim_options(mesh_params: dict) -> dict:
+    """
+    Removes `CLIM_OPTIONS` from `mesh_params` (in place, so they never
+    reach pyvista) and returns them as `find_clim` keywords:
+    `clim_percentile` -> `percentile` (default 99), `symmetric` (default
+    False).
+    """
+    return {
+        "percentile": mesh_params.pop("clim_percentile", 99),
+        "symmetric": bool(mesh_params.pop("symmetric", False)),
+    }
 
 
 def default_cmap(clim: Optional[tuple]) -> Optional[str]:
-    """Pick a sequential ('Reds') or diverging ('bwr') colormap from `clim`."""
+    """Pick a sequential (`SEQUENTIAL_CMAP`) or diverging (`DIVERGING_CMAP`) colormap from `clim`."""
     if clim is None:
         return None
 
     vmin, _ = clim
-    return "bwr" if vmin < 0 else "Reds"
+    return DIVERGING_CMAP if vmin < 0 else SEQUENTIAL_CMAP
 
 
 def preprocess(values, func_params: dict):
