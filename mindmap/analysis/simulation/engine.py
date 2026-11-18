@@ -396,16 +396,19 @@ class Simulator:
             - jitter: uncertainties in total delays.
             - spatial_decay: signal decay from node to node.
         """
-        # 1. Get temporal delays and spatial hop-distances
-        delays = self.hm.compute_delay_from_source(
+        # 1. Get temporal delays and hop counts, both along the same path: the
+        # fastest (smallest-delay) one. The decay therefore counts the relays
+        # the activity actually passes through, not the fewest-hop route,
+        # which can differ (and be slower).
+        delays, hops = self.hm.compute_delay_from_source(
             source_indices,
             config.conduction_speed,
             config.nodal_delay,
             config.jitter,
             config.u_fiber_speed,
             config.u_fiber_max_length,
+            return_hops=True,
         )
-        hops = self.hm.compute_distance_from_source(source_indices, weight="hop")
 
         # handle isolated nodes (infinity)
         delays[np.isinf(delays)] = 1e6

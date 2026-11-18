@@ -15,6 +15,31 @@ from mindmap.anatomy.parcellation.base import Parcellation
 from mindmap.anatomy.source_space.io import get_dipole_positions
 from mindmap.analysis.simulation.signals import Signal
 
+def _hops_along_paths(predecessors: np.ndarray, distances: np.ndarray) -> np.ndarray:
+    """
+    Number of edges along each shortest path, from the predecessor and
+    distance arrays of scipy's `dijkstra` (shape (N,) or (n_sources, N)).
+
+    Follows every node's predecessor chain back to its source, all nodes at
+    once (one vectorized step per hop). Sources get 0, unreachable nodes
+    (infinite distance) `np.inf`.
+    """
+    pred = np.atleast_2d(predecessors)
+    no_pred = -9999                        # scipy's marker for "no predecessor"
+    hops = np.zeros(pred.shape, dtype=float)
+    rows = np.arange(pred.shape[0])[:, None]
+
+    cur = pred.copy()
+    active = cur != no_pred
+    while active.any():
+        hops[active] += 1
+        cur = np.where(active, pred[rows, np.where(active, cur, 0)], no_pred)
+        active = cur != no_pred
+
+    hops[~np.isfinite(np.atleast_2d(distances))] = np.inf
+    return hops
+
+
 class Source:
     """
     Class to handle source information, including source locations and waveforms.
@@ -250,6 +275,7 @@ class HeadModel:
         jitter: float = 0.0,
         u_fiber_speed: float | None = None,
         u_fiber_max_length: float | None = None,
+        return_hops: bool = False,
     ):
         """
         Compute delay with uncertainties.
@@ -286,10 +312,18 @@ class HeadModel:
             Edge length in [mm] at or below which `u_fiber_speed` is used
             instead of `conduction_speed`. Ignored if `u_fiber_speed` is None.
 
+        - return_hops: bool
+            If True, also return the number of edges along each node's
+            fastest (smallest-delay) path, i.e. the path the delay is summed
+            over. Unreachable nodes get `np.inf`.
+
         Returns
         -------
         delays: np.ndarray
             Delays from source with added uncertainties.
+
+        hops: np.ndarray
+            Only if `return_hops`: number of edges along each fastest path.
         """
         # edge delay matrix
         delays = self._lengths.copy()
@@ -300,25 +334,31 @@ class HeadModel:
             delays.data = delays.data / conduction_speed
         delays.data += nodal_delay
 
-        # dijkstra returns a (N,) array of distances from the source_idx
-        delays_from_source = dijkstra(
+        # dijkstra returns a (N,) array of distances from the source_idx, and
+        # the predecessor of each node on its fastest path
+        delays_from_source, predecessors = dijkstra(
             csgraph = delays,
             directed = False,
             indices = source_idx,
             unweighted = False,
-        ).squeeze()
+            return_predecessors = True,
+        )
+        # number of edges along each fastest path -- the same path the delay
+        # (and its nodal_delay terms) is summed over, NOT the fewest-hop path,
+        # which can be shorter in edges but slower
+        hops = _hops_along_paths(predecessors, delays_from_source).squeeze()
+        delays_from_source = delays_from_source.squeeze()
 
         if jitter > 0:
             # Path SELECTION stays deterministic (based on the mean edge
             # weights above) -- only the total delay along that fixed,
-            # anatomically-real path becomes noisy. This mirrors how
-            # `spatial_decay`'s hop count is computed: reuse the same
-            # unweighted shortest-path hop count so per-hop jitter variance
-            # (hops * jitter**2) accumulates consistently with nodal_delay's
-            # own per-hop accounting.
-            hops = self.compute_distance_from_source(source_idx, weight="hop")
+            # anatomically-real path becomes noisy: one independent draw per
+            # (source, node) pair, with variance hops * jitter**2, as if the
+            # path's per-hop jitters were independent and summed.
             delays_from_source += np.random.normal(0, jitter, size=delays_from_source.size) * np.sqrt(hops)
 
+        if return_hops:
+            return delays_from_source, hops
         return delays_from_source
 
     def __str__(self):
